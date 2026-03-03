@@ -200,6 +200,7 @@ typedef enum {
   /* 表达式相关 */
   SKW_NEW,
   SKW_SUPER,
+  SKW_MATCH,
   /* 总数 */
   SKW_COUNT
 } SoftKWID;
@@ -212,7 +213,7 @@ typedef struct {
   SoftKWID id;                /* 关键字 ID */
   unsigned int contexts;      /* 允许的上下文（位掩码） */
   int lookahead_tokens[8];    /* 前瞻匹配列表（以 0 结尾，后面跟这些时识别为关键字） */
-  int exclude_tokens[4];      /* 排除列表（以 0 结尾，后面跟这些时不识别为关键字） */
+  int exclude_tokens[8];      /* 排除列表（以 0 结尾，后面跟这些时不识别为关键字） */
   unsigned int hash;          /* 名称哈希值（运行时计算） */
 } SoftKWDef;
 
@@ -251,6 +252,7 @@ static SoftKWDef soft_keywords[] = {
   {"set",        SKW_SET,        SOFTKW_CTX_CLASS_BODY,    {TK_NAME, 0}, {'=', 0}, 0},
   /* static - 类体内，后面跟function或标识符名 */
   {"static",     SKW_STATIC,     SOFTKW_CTX_CLASS_BODY,    {TK_FUNCTION, TK_NAME, 0}, {'=', 0}, 0},
+  {"match",      SKW_MATCH,      SOFTKW_CTX_STMT_BEGIN,    {TK_NAME, '{', '[', TK_STRING, TK_INT, TK_FLT, 0}, {'=', '.', ':', '(', 0}, 0},
   /* 结束标记 */
   {NULL,         SKW_NONE,       0,                         {0}, {0}, 0}
 };
@@ -1471,7 +1473,6 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_RETURN: ts = luaS_newliteral(ls->L, "return"); break;
       case TK_STRUCT: ts = luaS_newliteral(ls->L, "struct"); break;
       case TK_SWITCH: ts = luaS_newliteral(ls->L, "switch"); break;
-      case TK_MATCH: ts = luaS_newliteral(ls->L, "match"); break;
       case TK_TAKE: ts = luaS_newliteral(ls->L, "take"); break;
       case TK_THEN: ts = luaS_newliteral(ls->L, "then"); break;
       case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
@@ -3133,7 +3134,6 @@ static void suffixedexp (LexState *ls, expdesc *v) {
             case TK_REPEAT: ts = luaS_newliteral(ls->L, "repeat"); break;
             case TK_RETURN: ts = luaS_newliteral(ls->L, "return"); break;
             case TK_SWITCH: ts = luaS_newliteral(ls->L, "switch"); break;
-      case TK_MATCH: ts = luaS_newliteral(ls->L, "match"); break;
             case TK_TAKE: ts = luaS_newliteral(ls->L, "take"); break;
             case TK_THEN: ts = luaS_newliteral(ls->L, "then"); break;
             case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
@@ -4517,7 +4517,6 @@ static void cond_suffixedexp (LexState *ls, expdesc *v) {
             case TK_REPEAT: ts = luaS_newliteral(ls->L, "repeat"); break;
             case TK_RETURN: ts = luaS_newliteral(ls->L, "return"); break;
             case TK_SWITCH: ts = luaS_newliteral(ls->L, "switch"); break;
-      case TK_MATCH: ts = luaS_newliteral(ls->L, "match"); break;
             case TK_TAKE: ts = luaS_newliteral(ls->L, "take"); break;
             case TK_THEN: ts = luaS_newliteral(ls->L, "then"); break;
             case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
@@ -11952,10 +11951,6 @@ static void statement (LexState *ls) {
       switchstat(ls, line);
       break;
     }
-    case TK_MATCH:{
-      matchstat(ls, line);
-      break;
-    }
     case TK_WHILE: {  /* stat -> whilestat */
       whilestat(ls, line);
       break;
@@ -12167,7 +12162,11 @@ static void statement (LexState *ls) {
     case TK_NAME: {
       /* 使用软关键字系统检查语句开头的软关键字 */
       SoftKWID skw = softkw_check(ls, SOFTKW_CTX_STMT_BEGIN);
-      if (skw == SKW_CLASS) {
+      if (skw == SKW_MATCH) {
+        matchstat(ls, line);
+        break;
+      }
+      else if (skw == SKW_CLASS) {
         /* class 作为软关键字，触发类定义解析 */
         classstat(ls, line, 0, 0);  /* 无修饰符 */
         break;
@@ -12235,6 +12234,11 @@ static void statement (LexState *ls) {
       break;
     }
     default: {  /* stat -> func | assignment */
+      SoftKWID skw = softkw_check(ls, SOFTKW_CTX_STMT_BEGIN);
+      if (skw == SKW_MATCH) {
+        matchstat(ls, line);
+        break;
+      }
       exprstat(ls);
       break;
     }
