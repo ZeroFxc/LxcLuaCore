@@ -15,19 +15,26 @@ local wasm3 = require("wasm3")
 
 print("wasm3 library loaded successfully")
 
-local env = wasm3.new_environment()
+local env = wasm3.newEnvironment()
 print("WASM3 environment created:", env)
 
-local module = env:parse_module(wasm_bytes)
+local module = env:parseModule(wasm_bytes)
 print("WASM module parsed:", module)
 
-local runtime = env:new_runtime(1024)
+local runtime = env:newRuntime(1024)
 print("WASM runtime created:", runtime)
 
-runtime:load(module)
+-- optional: check name
+module:setName("test_module")
+print("Module name set to:", module:getName())
+
+runtime:loadModule(module)
 print("WASM module loaded into runtime")
 
-local add_func = runtime:find_function("add")
+local memorySize = runtime:getMemorySize()
+print("Runtime memory size:", memorySize)
+
+local add_func = runtime:findFunction("add")
 print("Found function 'add':", add_func)
 
 local result = add_func:call(10, 20)
