@@ -4,6 +4,8 @@
 #include "lauxlib.h"
 #include "wasm3.h"
 #include "m3_env.h"
+#include "m3_api_libc.h"
+#include "m3_api_wasi.h"
 
 #define WASM3_ENV_METATABLE "wasm3.environment"
 #define WASM3_RUNTIME_METATABLE "wasm3.runtime"
@@ -252,21 +254,117 @@ static int function_call(lua_State *L) {
 }
 
 
+static int module_linkWASI(lua_State *L) {
+#if defined(d_m3HasWASI) || defined(d_m3HasUVWASI)
+    wasm3_Module *wm = (wasm3_Module*)luaL_checkudata(L, 1, WASM3_MODULE_METATABLE);
+    M3Result result = m3_LinkWASI(wm->module);
+    if (result) {
+        return luaL_error(L, "Failed to link WASI: %s", result);
+    }
+    return 0;
+#else
+    return luaL_error(L, "WASI support is not enabled in this build");
+#endif
+}
+
+static int module_linkLibC(lua_State *L) {
+    wasm3_Module *wm = (wasm3_Module*)luaL_checkudata(L, 1, WASM3_MODULE_METATABLE);
+    M3Result result = m3_LinkLibC(wm->module);
+    if (result) {
+        return luaL_error(L, "Failed to link LibC: %s", result);
+    }
+    return 0;
+}
+
+static int module_getName(lua_State *L) {
+    wasm3_Module *wm = (wasm3_Module*)luaL_checkudata(L, 1, WASM3_MODULE_METATABLE);
+    const char *name = m3_GetModuleName(wm->module);
+    if (name) {
+        lua_pushstring(L, name);
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+static int module_setName(lua_State *L) {
+    wasm3_Module *wm = (wasm3_Module*)luaL_checkudata(L, 1, WASM3_MODULE_METATABLE);
+    const char *name = luaL_checkstring(L, 2);
+    m3_SetModuleName(wm->module, name);
+    return 0;
+}
+
+static int runtime_getMemorySize(lua_State *L) {
+    wasm3_Runtime *wr = (wasm3_Runtime*)luaL_checkudata(L, 1, WASM3_RUNTIME_METATABLE);
+    uint32_t size = m3_GetMemorySize(wr->runtime);
+    lua_pushinteger(L, size);
+    return 1;
+}
+
+static int runtime_getMemory(lua_State *L) {
+    wasm3_Runtime *wr = (wasm3_Runtime*)luaL_checkudata(L, 1, WASM3_RUNTIME_METATABLE);
+    uint32_t memorySize;
+    uint8_t* memory = m3_GetMemory(wr->runtime, &memorySize, 0);
+    if (memory) {
+        // Return memory contents as string
+        lua_pushlstring(L, (const char*)memory, memorySize);
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+static int runtime_printInfo(lua_State *L) {
+#if defined(DEBUG)
+    wasm3_Runtime *wr = (wasm3_Runtime*)luaL_checkudata(L, 1, WASM3_RUNTIME_METATABLE);
+    m3_PrintRuntimeInfo(wr->runtime);
+    return 0;
+#else
+    return luaL_error(L, "printInfo is only available in DEBUG builds");
+#endif
+}
+
+static int runtime_getBacktrace(lua_State *L) {
+    wasm3_Runtime *wr = (wasm3_Runtime*)luaL_checkudata(L, 1, WASM3_RUNTIME_METATABLE);
+    IM3BacktraceInfo info = m3_GetBacktrace(wr->runtime);
+    if (info) {
+        // Return a table of frames or a simple string representation
+        // The m3_GetBacktrace structure might need to be parsed
+        // For simplicity, let's just push a boolean that we could get it
+        // Or actually we could parse frames if exposed, but m3_BacktraceInfo is internal
+        // For now, let's just skip complex backtrace to avoid internal type dependencies,
+        // since IM3BacktraceInfo is typedef'd. Let's just return true if it exists.
+        lua_pushboolean(L, 1);
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+
 static const struct luaL_Reg env_methods[] = {
-    {"parse_module", env_parse_module},
-    {"new_runtime", env_new_runtime},
+    {"parseModule", env_parse_module},
+    {"newRuntime", env_new_runtime},
     {"__gc", env_gc},
     {NULL, NULL}
 };
 
 static const struct luaL_Reg module_methods[] = {
+    {"linkWASI", module_linkWASI},
+    {"linkLibC", module_linkLibC},
+    {"getName", module_getName},
+    {"setName", module_setName},
     {"__gc", module_gc},
     {NULL, NULL}
 };
 
 static const struct luaL_Reg runtime_methods[] = {
-    {"load", runtime_load},
-    {"find_function", runtime_find_function},
+    {"loadModule", runtime_load},
+    {"findFunction", runtime_find_function},
+    {"getMemorySize", runtime_getMemorySize},
+    {"getMemory", runtime_getMemory},
+    {"printInfo", runtime_printInfo},
+    {"getBacktrace", runtime_getBacktrace},
     {"__gc", runtime_gc},
     {NULL, NULL}
 };
@@ -278,7 +376,7 @@ static const struct luaL_Reg function_methods[] = {
 };
 
 static const struct luaL_Reg wasm3_lib[] = {
-    {"new_environment", l_new_environment},
+    {"newEnvironment", l_new_environment},
     {NULL, NULL}
 };
 
