@@ -6,7 +6,7 @@ local lexer = require("lexer")
 
 -- Function to print tokens cleanly
 local function print_tokens(code)
-    local tokens = lexer.lex(code)
+    local tokens = lexer(code)
     for i, t in ipairs(tokens) do
         local val_str = t.value and string.format(" [Value: %s]", tostring(t.value)) or ""
         print(string.format("%4d: Line %d, Token %d, Type %s%s",
@@ -35,7 +35,7 @@ print_tokens(sample_code)
 
 -- Example: Finding all function definitions in the token stream
 local function find_functions(code)
-    local tokens = lexer.lex(code)
+    local tokens = lexer(code)
     local funcs = {}
     for i = 1, #tokens do
         if tokens[i].type == "'function'" then
