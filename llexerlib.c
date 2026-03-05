@@ -203,12 +203,23 @@ static const luaL_Reg lexer_lib[] = {
     {NULL, NULL}
 };
 
+static int lexer_call(lua_State *L) {
+    lua_remove(L, 1); /* remove the module table */
+    return lexer_lex(L);
+}
+
 #define REG_TK(L, tk) \
   lua_pushinteger(L, tk); \
   lua_setfield(L, -2, #tk)
 
 LUAMOD_API int luaopen_lexer(lua_State *L) {
     luaL_newlib(L, lexer_lib);
+
+    /* set metatable for __call */
+    lua_newtable(L);
+    lua_pushcfunction(L, lexer_call);
+    lua_setfield(L, -2, "__call");
+    lua_setmetatable(L, -2);
 
     /* Register token constants */
     REG_TK(L, TK_ADDEQ);
