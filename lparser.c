@@ -1416,10 +1416,7 @@ static int block_follow (LexState *ls, int withuntil) {
 static void statlist (LexState *ls) {
   /* statlist -> { stat [';'] } */
   while (!block_follow(ls, 1)) {
-    if (ls->t.token == TK_RETURN) {
-      statement(ls);
-      return;  /* 'return' must be last statement */
-    }
+
     statement(ls);
   }
 }
@@ -1977,10 +1974,7 @@ static void body (LexState *ls, expdesc *e, int ismethod, int line) {
       adjustlocalvars(ls, 1);
     }
     while (ls->t.token != '}' && ls->t.token != TK_EOS) {
-      if (ls->t.token == TK_RETURN) {
-        statement(ls);
-        break;
-      }
+
       statement(ls);
     }
     check_match(ls, '}', '{', line);
@@ -2550,10 +2544,7 @@ static void parse_generic_arrow_body(LexState *ls, FuncState *factory_fs, expdes
     if (ls->t.token == '{') {
        luaX_next(ls);
        while (ls->t.token != '}' && ls->t.token != TK_EOS) {
-          if (ls->t.token == TK_RETURN) {
-             statement(ls);
-             break;
-          }
+
           statement(ls);
        }
        check_match(ls, '}', '{', line);
@@ -4037,10 +4028,7 @@ static void simpleexp (LexState *ls, expdesc *v) {
       checknext(ls, '{');
       if (varargname) namedvararg(ls, varargname);
       while (ls->t.token != '}' && ls->t.token != TK_EOS) {
-        if (ls->t.token == TK_RETURN) {
-          statement(ls);
-          break;
-        }
+
         statement(ls);
       }
       check_match(ls, '}', '{', line);
@@ -5704,10 +5692,7 @@ static void trystat (LexState *ls, int line) {
            ls->t.token != TK_END && 
            ls->t.token != TK_EOS) {
       statement(ls);
-      if (ls->t.token == TK_RETURN) {
-        statement(ls);
-        break;
-      }
+
     }
     
     new_fs.f->lastlinedefined = ls->linenumber;
@@ -5770,10 +5755,7 @@ static void trystat (LexState *ls, int line) {
            ls->t.token != TK_END && 
            ls->t.token != TK_EOS) {
       statement(ls);
-      if (ls->t.token == TK_RETURN) {
-        statement(ls);
-        break;
-      }
+
     }
     
     leaveblock(fs);
@@ -5788,10 +5770,7 @@ static void trystat (LexState *ls, int line) {
     /* finally 块无条件执行 */
     while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
       statement(ls);
-      if (ls->t.token == TK_RETURN) {
-        statement(ls);
-        break;
-      }
+
     }
   }
   
@@ -11799,11 +11778,7 @@ static void declaration_stat (LexState *ls, int line) {
      while (!testtoken(ls, '}')) {
        if (ls->t.token == TK_EOS)
          luaX_syntaxerror(ls, "unfinished function");
-       if (ls->t.token == TK_RETURN) {
-         statement(ls);
-       } else {
-         statement(ls);
-       }
+       statement(ls);
      }
      luaX_next(ls); /* skip '}' */
 
