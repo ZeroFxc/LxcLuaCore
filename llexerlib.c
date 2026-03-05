@@ -1006,29 +1006,142 @@ static int lexer_parse_local(lua_State *L) {
 
 #include "llexer_compiler.h"
 
-static int lexer_obfuscate(lua_State *L) {
-    const char *code = luaL_checkstring(L, 1);
-    int cff = 0, bogus = 0, str_enc = 0;
+static int lexer_find_label(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const char *label_name = luaL_checkstring(L, 2);
+    int num_tokens = luaL_len(L, 1);
 
-    if (lua_istable(L, 2)) {
-        lua_getfield(L, 2, "cff");
-        cff = lua_toboolean(L, -1);
-        lua_pop(L, 1);
-
-        lua_getfield(L, 2, "bogus_branches");
-        bogus = lua_toboolean(L, -1);
-        lua_pop(L, 1);
-
-        lua_getfield(L, 2, "string_encryption");
-        str_enc = lua_toboolean(L, -1);
-        lua_pop(L, 1);
+    for (int i = 1; i <= num_tokens - 2; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "token");
+            if (lua_isinteger(L, -1) && lua_tointeger(L, -1) == TK_DBCOLON) {
+                /* check next token */
+                lua_rawgeti(L, 1, i + 1);
+                if (lua_istable(L, -1)) {
+                    lua_getfield(L, -1, "token");
+                    if (lua_isinteger(L, -1) && lua_tointeger(L, -1) == TK_NAME) {
+                        lua_getfield(L, -2, "value");
+                        if (lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), label_name) == 0) {
+                            lua_rawgeti(L, 1, i + 2);
+                            if (lua_istable(L, -1)) {
+                                lua_getfield(L, -1, "token");
+                                if (lua_isinteger(L, -1) && lua_tointeger(L, -1) == TK_DBCOLON) {
+                                    lua_pushinteger(L, i);
+                                    return 1;
+                                }
+                                lua_pop(L, 2);
+                            } else {
+                                lua_pop(L, 1);
+                            }
+                        }
+                        lua_pop(L, 1); /* pop value */
+                    }
+                    lua_pop(L, 1); /* pop token */
+                }
+                lua_pop(L, 1); /* pop table at i+1 */
+            }
+            lua_pop(L, 1); /* pop token */
+        }
+        lua_pop(L, 1); /* pop table at i */
     }
 
-    return lua_lexer_obfuscate(L, code, cff, bogus, str_enc);
+    lua_pushnil(L);
+    return 1;
+}
+
+static int lexer_get_block_bounds(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int target_idx = luaL_checkinteger(L, 2);
+    int num_tokens = luaL_len(L, 1);
+
+    if (target_idx < 1 || target_idx > num_tokens) {
+        return 0;
+    }
+
+    int best_start = -1;
+    int best_end = -1;
+    int min_width = num_tokens + 1;
+
+    for (int i = 1; i <= target_idx; i++) {
+        lua_rawgeti(L, 1, i);
+        if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+        lua_getfield(L, -1, "token");
+        if (!lua_isinteger(L, -1)) { lua_pop(L, 2); continue; }
+        int tk = lua_tointeger(L, -1);
+        lua_pop(L, 2);
+
+        int is_opener = (tk == TK_FUNCTION || tk == TK_IF || tk == TK_WHILE || tk == TK_FOR || tk == TK_REPEAT || tk == TK_DO || tk == '{' || tk == '[' || tk == '(');
+        if (!is_opener) continue;
+
+        /* Temporarily push LUA_TTABLE to call find_match recursively/iteratively or just use simple logic */
+        /* To avoid complex nested C logic, we can just track depth like find_match does */
+        int depth = 1;
+        int target_tk = -1;
+        int is_block = 0;
+
+        if (tk == TK_IF || tk == TK_FUNCTION || tk == TK_DO || tk == TK_SWITCH || tk == TK_TRY || tk == TK_WHILE || tk == TK_FOR) {
+            target_tk = TK_END;
+            is_block = 1;
+        } else if (tk == TK_REPEAT) {
+            target_tk = TK_UNTIL;
+            is_block = 1;
+        } else if (tk == '(') { target_tk = ')'; }
+        else if (tk == '{') { target_tk = '}'; }
+        else if (tk == '[') { target_tk = ']'; }
+        else { continue; }
+
+        int found_end = -1;
+        for (int j = i + 1; j <= num_tokens; j++) {
+            lua_rawgeti(L, 1, j);
+            if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+            lua_getfield(L, -1, "token");
+            if (!lua_isinteger(L, -1)) { lua_pop(L, 2); continue; }
+            int inner_tk = lua_tointeger(L, -1);
+            lua_pop(L, 2);
+
+            if (is_block) {
+                if (inner_tk == TK_IF || inner_tk == TK_FUNCTION || inner_tk == TK_DO || inner_tk == TK_SWITCH || inner_tk == TK_TRY || inner_tk == TK_REPEAT || inner_tk == TK_WHILE || inner_tk == TK_FOR) {
+                    depth++;
+                } else if (inner_tk == TK_END || inner_tk == TK_UNTIL) {
+                    depth--;
+                }
+            } else {
+                if (inner_tk == tk) {
+                    depth++;
+                } else if (inner_tk == target_tk) {
+                    depth--;
+                }
+            }
+
+            if (depth == 0) {
+                found_end = j;
+                break;
+            }
+        }
+
+        if (found_end != -1 && found_end >= target_idx) {
+            int width = found_end - i;
+            if (width < min_width) {
+                min_width = width;
+                best_start = i;
+                best_end = found_end;
+            }
+        }
+    }
+
+    if (best_start != -1) {
+        lua_pushinteger(L, best_start);
+        lua_pushinteger(L, best_end);
+        return 2;
+    }
+
+    lua_pushinteger(L, 1);
+    lua_pushinteger(L, num_tokens);
+    return 2;
 }
 
 static const luaL_Reg lexer_lib[] = {
-    {"obfuscate", lexer_obfuscate},
     {"find_match", lexer_find_match},
     {"build_tree", lexer_build_tree},
     {"flatten_tree", lexer_flatten_tree},
@@ -1041,6 +1154,8 @@ static const luaL_Reg lexer_lib[] = {
     {"remove_tokens", lexer_remove_tokens},
     {"split_statements", lexer_split_statements},
     {"parse_local", lexer_parse_local},
+    {"find_label", lexer_find_label},
+    {"get_block_bounds", lexer_get_block_bounds},
     {NULL, NULL}
 };
 
