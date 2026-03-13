@@ -4500,6 +4500,11 @@ static void simpleexp (LexState *ls, expdesc *v) {
 
           expdesc expr_v;
           expr(ls, &expr_v);
+          /* 必须在解析条件之前将表达式物化到寄存器中，
+          ** 否则条件求值的临时寄存器会覆盖表达式结果。
+          ** 因为 expr_v 是 VRELOCABLE，其目标寄存器尚未分配，
+          ** 延迟到条件解析之后分配会导致和条件的临时寄存器重叠。 */
+          luaK_exp2nextreg(&new_fs, &expr_v);
 
           int if_jmp = NO_JUMP;
           if (testnext(ls, TK_IF)) {
@@ -4508,8 +4513,6 @@ static void simpleexp (LexState *ls, expdesc *v) {
             luaK_goiftrue(&new_fs, &cond_v);
             if_jmp = cond_v.f;
           }
-
-          luaK_exp2nextreg(&new_fs, &expr_v);
 
           int len_reg = new_fs.freereg;
           luaK_reserveregs(&new_fs, 1);
