@@ -66,8 +66,6 @@ DECLARE_VMP_MARKER(lvm_vmp);
 
 __attribute__((used))
 static void lvm_security_handler() {
-  void *caller = __builtin_return_address(0);
-  printf("[Security] lvm VMP 钩子被触发, 来源地址: %p\n", caller);
   /* Dummy handler representing the dynamic dispatcher */
 }
 

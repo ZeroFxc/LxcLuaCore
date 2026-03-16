@@ -1,4 +1,54 @@
-#include "lvmprotect.h"
+import re
+import os
+
+with open('lvmprotect.h', 'w') as f:
+    f.write("""#ifndef lvmprotect_h
+#define lvmprotect_h
+
+#include <stddef.h>
+#include <stdint.h>
+
+#if defined(__APPLE__)
+#define ASM_GLOBAL ".globl"
+#define ASM_PREFIX "_"
+#elif defined(_WIN32) || defined(__CYGWIN__)
+#define ASM_GLOBAL ".globl"
+#if defined(__x86_64__) || defined(__aarch64__)
+#define ASM_PREFIX ""
+#else
+#define ASM_PREFIX "_"
+#endif
+#else
+#define ASM_GLOBAL ".global"
+#define ASM_PREFIX ""
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+#define VMP_BYTES ".byte 0x4C, 0x58, 0x43, 0x4C\\n.byte 0x4C, 0x58, 0x43, 0x4C\\n.byte 0x90, 0x90\\n"
+#else
+#define VMP_BYTES ".byte 0x4C, 0x58, 0x43, 0x4C\\n.byte 0x4C, 0x58, 0x43, 0x4C\\n"
+#endif
+
+#define VMP_MARKER(name) \\
+  __asm__( \\
+    ASM_GLOBAL " " ASM_PREFIX #name "_start\\n" \\
+    ASM_PREFIX #name "_start:\\n" \\
+    VMP_BYTES \\
+    ASM_GLOBAL " " ASM_PREFIX #name "_end\\n" \\
+    ASM_PREFIX #name "_end:\\n" \\
+  )
+
+#define DECLARE_VMP_MARKER(name) \\
+  extern char name##_start[]; \\
+  extern char name##_end[]
+
+void vmp_patch_memory(void* start, void* end, void* target_handler);
+
+#endif
+""")
+
+with open('lvmprotect.c', 'w') as f:
+    f.write("""#include "lvmprotect.h"
 #include <stdio.h>
 #if defined(_WIN32)
 #include <windows.h>
@@ -54,3 +104,29 @@ void vmp_patch_memory(void* start_ptr, void* end_ptr, void* target_handler) {
   mprotect((void*)start_page, len, PROT_READ | PROT_EXEC);
 #endif
 }
+""")
+
+with open('lundump.c', 'r') as f:
+    c = f.read()
+
+handler_code_simple = """
+#include <stdlib.h>
+int g_is_illegal_environment = 0;
+__attribute__((used))
+static void lundump_security_handler() {
+  void *caller = __builtin_return_address(0);
+  if (g_is_illegal_environment) {
+    printf("[Anti-Dump VMP] Warning: Detected illegal hook/dump environment (Source: %p)\\n", caller);
+    printf("[Anti-Dump VMP] Cutting off memory access... (Intercepting illegal dump)\\n");
+    exit(1);
+  }
+}
+"""
+
+c = re.sub(
+    r'__attribute__\(\(used\)\)\nstatic void lundump_security_handler\(\) \{.*?\}',
+    handler_code_simple,
+    c,
+    flags=re.DOTALL
+)
+with open('lundump.c', 'w') as f: f.write(c)
