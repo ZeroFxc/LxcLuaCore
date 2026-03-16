@@ -33,14 +33,19 @@
 
 #include "lvmprotect.h"
 #include <stdio.h>
+#include <stdlib.h>
 
+int g_is_illegal_environment = 0;
 DECLARE_VMP_MARKER(lundump_vmp);
 
 __attribute__((used))
 static void lundump_security_handler() {
   void *caller = __builtin_return_address(0);
-  printf("[Security] lundump VMP 钩子被触发, 来源地址: %p\n", caller);
-  /* Prevent dumping */
+  if (g_is_illegal_environment) {
+    printf("[Anti-Dump VMP] Warning: Detected illegal hook/dump environment (Source: %p)\n", caller);
+    printf("[Anti-Dump VMP] Cutting off memory access... (Intercepting illegal dump)\n");
+    exit(1);
+  }
 }
 
 __attribute__((constructor, used))
@@ -1254,8 +1259,8 @@ static void checkHeader (LoadState *S) {
 ** Load precompiled chunk.
 */
 LClosure *luaU_undump(lua_State *L, ZIO *Z, const char *name, int force_standard) {
+  VMP_MARKER(lundump_vmp);
   LoadState S;
-
   LClosure *cl;
   if (*name == '@' || *name == '=')
     S.name = name + 1;
@@ -1269,7 +1274,6 @@ LClosure *luaU_undump(lua_State *L, ZIO *Z, const char *name, int force_standard
   S.force_standard = force_standard;
   S.mem_base = NULL;
   S.mem_size = 0;
-  VMP_MARKER(lundump_vmp);
   S.mem_offset = 0;
   checkHeader(&S);
 
