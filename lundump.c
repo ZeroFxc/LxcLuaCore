@@ -31,6 +31,23 @@
 #include "sha256.h"
 #include "lobfuscate.h"
 
+#include "lvmprotect.h"
+#include <stdio.h>
+
+DECLARE_VMP_MARKER(lundump_vmp);
+
+__attribute__((used))
+static void lundump_security_handler() {
+  void *caller = __builtin_return_address(0);
+  printf("[Security] lundump VMP 钩子被触发, 来源地址: %p\n", caller);
+  /* Prevent dumping */
+}
+
+__attribute__((constructor, used))
+static void patch_lundump() {
+  vmp_patch_memory(lundump_vmp_start, lundump_vmp_end, lundump_security_handler);
+}
+
 
 #if !defined(luai_verifycode)
 #define luai_verifycode(L,f)  /* empty */
@@ -1238,6 +1255,7 @@ static void checkHeader (LoadState *S) {
 */
 LClosure *luaU_undump(lua_State *L, ZIO *Z, const char *name, int force_standard) {
   LoadState S;
+
   LClosure *cl;
   if (*name == '@' || *name == '=')
     S.name = name + 1;
@@ -1251,6 +1269,7 @@ LClosure *luaU_undump(lua_State *L, ZIO *Z, const char *name, int force_standard
   S.force_standard = force_standard;
   S.mem_base = NULL;
   S.mem_size = 0;
+  VMP_MARKER(lundump_vmp);
   S.mem_offset = 0;
   checkHeader(&S);
 

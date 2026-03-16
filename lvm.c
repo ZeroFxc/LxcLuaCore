@@ -60,6 +60,22 @@
 #include "lbigint.h"
 #include "lauxlib.h"
 
+#include "lvmprotect.h"
+
+DECLARE_VMP_MARKER(lvm_vmp);
+
+__attribute__((used))
+static void lvm_security_handler() {
+  void *caller = __builtin_return_address(0);
+  printf("[Security] lvm VMP 钩子被触发, 来源地址: %p\n", caller);
+  /* Dummy handler representing the dynamic dispatcher */
+}
+
+__attribute__((constructor, used))
+static void patch_lvm() {
+  vmp_patch_memory(lvm_vmp_start, lvm_vmp_end, lvm_security_handler);
+}
+
 /* Helper functions for new opcodes */
 
 static int check_subtype_internal(lua_State *L, const TValue *val, const TValue *type_obj) {
@@ -2234,6 +2250,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   for (;;) {
     Instruction i;  /* instruction being executed */
     vmfetch();
+    VMP_MARKER(lvm_vmp);
     #if 0
     { /* low-level line tracing for debugging Lua */
       #include "lopnames.h"
