@@ -32,20 +32,16 @@
 #include "lobfuscate.h"
 
 #include "lvmprotect.h"
-#include <stdio.h>
-#include <stdlib.h>
 
-int g_is_illegal_environment = 0;
 DECLARE_VMP_MARKER(lundump_vmp);
 
 __attribute__((used))
 static void lundump_security_handler() {
   void *caller = __builtin_return_address(0);
-  if (g_is_illegal_environment) {
-    printf("[Anti-Dump VMP] Warning: Detected illegal hook/dump environment (Source: %p)\n", caller);
-    printf("[Anti-Dump VMP] Cutting off memory access... (Intercepting illegal dump)\n");
-    exit(1);
-  }
+  /*
+  ** [VMP] 字节码加载器安全接管函数
+  ** 在此处执行核心保护逻辑：例如环境检测、重定向 VM 分发、反调试验证等
+  */
 }
 
 __attribute__((constructor, used))
