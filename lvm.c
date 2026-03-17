@@ -60,18 +60,43 @@
 #include "lbigint.h"
 #include "lauxlib.h"
 
-#include "lvmprotect.h"
+/* VMP Marker bytes */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+#define VMP_BYTES ".byte 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90\n"
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define VMP_BYTES ".byte 0x1F, 0x20, 0x03, 0xD5\n.byte 0x1F, 0x20, 0x03, 0xD5\n"
+#else
+#define VMP_BYTES ".byte 0x90, 0x90, 0x90, 0x90\n"
+#endif
 
-DECLARE_VMP_MARKER(lvm_vmp);
+/* ASM Prefix handling */
+#if defined(__APPLE__)
+#define ASM_GLOBAL ".globl"
+#define ASM_PREFIX "_"
+#elif defined(_WIN32) || defined(__CYGWIN__)
+#define ASM_GLOBAL ".globl"
+#if defined(__x86_64__) || defined(__aarch64__)
+#define ASM_PREFIX ""
+#else
+#define ASM_PREFIX "_"
+#endif
+#else
+#define ASM_GLOBAL ".global"
+#define ASM_PREFIX ""
+#endif
 
-__attribute__((used))
-static void lvm_security_handler() {
-  /* Dummy handler representing the dynamic dispatcher */
-}
+#define VMP_MARKER(name) \
+  __asm__( \
+    ASM_GLOBAL " " ASM_PREFIX #name "_start\n" \
+    ASM_PREFIX #name "_start:\n" \
+    VMP_BYTES \
+    ASM_GLOBAL " " ASM_PREFIX #name "_end\n" \
+    ASM_PREFIX #name "_end:\n" \
+  )
 
-__attribute__((constructor, used))
-static void patch_lvm() {
-  vmp_patch_memory(lvm_vmp_start, lvm_vmp_end, lvm_security_handler);
+__attribute__((noinline))
+void lvm_vmp_hook_point(void) {
+  VMP_MARKER(lvm_vmp);
 }
 
 /* Helper functions for new opcodes */
@@ -2248,7 +2273,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   for (;;) {
     Instruction i;  /* instruction being executed */
     vmfetch();
-    VMP_MARKER(lvm_vmp);
+    lvm_vmp_hook_point();
     #if 0
     { /* low-level line tracing for debugging Lua */
       #include "lopnames.h"
