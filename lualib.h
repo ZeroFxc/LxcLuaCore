@@ -271,6 +271,8 @@ LUAMOD_API int (luaopen_smgr) (lua_State *L);
  * @return 1 (the library table).
  */
 LUAMOD_API int (luaopen_package) (lua_State *L);
+#define LUA_PATCHLIBNAME "patch"
+LUAMOD_API int (luaopen_patch) (lua_State *L);
 
 
 /**
