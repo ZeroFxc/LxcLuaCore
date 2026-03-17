@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #define lpatchlib_c
 #define LUA_LIB
 
@@ -17,9 +21,6 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <dlfcn.h>
 #endif
 
