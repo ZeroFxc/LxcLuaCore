@@ -31,22 +31,43 @@
 #include "sha256.h"
 #include "lobfuscate.h"
 
-#include "lvmprotect.h"
+/* VMP Marker bytes */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+#define VMP_BYTES ".byte 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90\n"
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define VMP_BYTES ".byte 0x1F, 0x20, 0x03, 0xD5\n.byte 0x1F, 0x20, 0x03, 0xD5\n"
+#else
+#define VMP_BYTES ".byte 0x90, 0x90, 0x90, 0x90\n"
+#endif
 
-DECLARE_VMP_MARKER(lundump_vmp);
+/* ASM Prefix handling */
+#if defined(__APPLE__)
+#define ASM_GLOBAL ".globl"
+#define ASM_PREFIX "_"
+#elif defined(_WIN32) || defined(__CYGWIN__)
+#define ASM_GLOBAL ".globl"
+#if defined(__x86_64__) || defined(__aarch64__)
+#define ASM_PREFIX ""
+#else
+#define ASM_PREFIX "_"
+#endif
+#else
+#define ASM_GLOBAL ".global"
+#define ASM_PREFIX ""
+#endif
 
-__attribute__((used))
-static void lundump_security_handler() {
-  void *caller = __builtin_return_address(0);
-  /*
-  ** [VMP] 字节码加载器安全接管函数
-  ** 在此处执行核心保护逻辑：例如环境检测、重定向 VM 分发、反调试验证等
-  */
-}
+#define VMP_MARKER(name) \
+  __asm__( \
+    ASM_GLOBAL " " ASM_PREFIX #name "_start\n" \
+    ASM_PREFIX #name "_start:\n" \
+    VMP_BYTES \
+    ASM_GLOBAL " " ASM_PREFIX #name "_end\n" \
+    ASM_PREFIX #name "_end:\n" \
+  )
 
-__attribute__((constructor, used))
-static void patch_lundump() {
-  vmp_patch_memory(lundump_vmp_start, lundump_vmp_end, lundump_security_handler);
+__attribute__((noinline))
+void lundump_vmp_hook_point(void) {
+  VMP_MARKER(lundump_vmp);
 }
 
 
@@ -1255,9 +1276,9 @@ static void checkHeader (LoadState *S) {
 ** Load precompiled chunk.
 */
 LClosure *luaU_undump(lua_State *L, ZIO *Z, const char *name, int force_standard) {
-  VMP_MARKER(lundump_vmp);
   LoadState S;
   LClosure *cl;
+  lundump_vmp_hook_point();
   if (*name == '@' || *name == '=')
     S.name = name + 1;
   else if (*name == LUA_SIGNATURE[0])
