@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #define lpatchlib_c
 #define LUA_LIB
 
@@ -13,15 +17,19 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <psapi.h>
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#include <dlfcn.h>
 #endif
 
 extern char lundump_vmp_start[];
 extern char lundump_vmp_end[];
 extern char lvm_vmp_start[];
 extern char lvm_vmp_end[];
+extern char ldump_vmp_start[];
+extern char ldump_vmp_end[];
 
 static int patch_get_marker(lua_State *L) {
   const char *name = luaL_checkstring(L, 1);
@@ -32,6 +40,10 @@ static int patch_get_marker(lua_State *L) {
   } else if (strcmp(name, "lvm") == 0) {
     lua_pushlightuserdata(L, lvm_vmp_start);
     lua_pushinteger(L, lvm_vmp_end - lvm_vmp_start);
+    return 2;
+  } else if (strcmp(name, "ldump") == 0) {
+    lua_pushlightuserdata(L, ldump_vmp_start);
+    lua_pushinteger(L, ldump_vmp_end - ldump_vmp_start);
     return 2;
   }
   return luaL_error(L, "Unknown marker name: %s", name);
@@ -89,8 +101,34 @@ static int patch_write(lua_State *L) {
   return 1;
 }
 
+static int patch_get_symbol(lua_State *L) {
+  const char *name = luaL_checkstring(L, 1);
+  void *address = NULL;
+
+#if defined(_WIN32)
+  HMODULE hMods[1024];
+  DWORD cbNeeded;
+  if (EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded)) {
+    for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+      address = (void*)GetProcAddress(hMods[i], name);
+      if (address) break;
+    }
+  }
+#else
+  address = dlsym(RTLD_DEFAULT, name);
+#endif
+
+  if (address == NULL) {
+    return luaL_error(L, "Symbol not found: %s", name);
+  }
+
+  lua_pushlightuserdata(L, address);
+  return 1;
+}
+
 static const luaL_Reg patchlib[] = {
   {"get_marker", patch_get_marker},
+  {"get_symbol", patch_get_symbol},
   {"write", patch_write},
   {NULL, NULL}
 };
