@@ -259,6 +259,88 @@ static int patch_mprotect(lua_State *L) {
   return 1;
 }
 
+static int patch_to_num(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uintptr_t ptr = (uintptr_t)lua_topointer(L, 1);
+  lua_pushinteger(L, (lua_Integer)ptr);
+  return 1;
+}
+
+static int patch_to_ptr(lua_State *L) {
+  uintptr_t ptr = (uintptr_t)luaL_checkinteger(L, 1);
+  lua_pushlightuserdata(L, (void *)ptr);
+  return 1;
+}
+
+static int patch_read_u8(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint8_t *ptr = (uint8_t *)lua_topointer(L, 1);
+  lua_pushinteger(L, (lua_Integer)(*ptr));
+  return 1;
+}
+
+static int patch_read_u32(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint32_t *ptr = (uint32_t *)lua_topointer(L, 1);
+  lua_pushinteger(L, (lua_Integer)(*ptr));
+  return 1;
+}
+
+static int patch_read_u64(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint64_t *ptr = (uint64_t *)lua_topointer(L, 1);
+  lua_pushinteger(L, (lua_Integer)(*ptr));
+  return 1;
+}
+
+static int patch_write_u8(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint8_t *ptr = (uint8_t *)lua_topointer(L, 1);
+  uint8_t val = (uint8_t)luaL_checkinteger(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_write_u32(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint32_t *ptr = (uint32_t *)lua_topointer(L, 1);
+  uint32_t val = (uint32_t)luaL_checkinteger(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_write_u64(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint64_t *ptr = (uint64_t *)lua_topointer(L, 1);
+  uint64_t val = (uint64_t)luaL_checkinteger(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_memcpy(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid dest pointer");
+  luaL_argcheck(L, lua_topointer(L, 2) != NULL, 2, "invalid src pointer");
+  void *dst = (void *)lua_topointer(L, 1);
+  void *src = (void *)lua_topointer(L, 2);
+  size_t size = (size_t)luaL_checkinteger(L, 3);
+  memcpy(dst, src, size);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static long long get_arg_as_int(lua_State *L, int index) {
+  if (lua_isnoneornil(L, index)) {
+    return 0;
+  }
+  if (lua_isnumber(L, index)) {
+    return (long long)lua_tointeger(L, index);
+  }
+  return (long long)(uintptr_t)lua_topointer(L, index);
+}
+
 static int patch_call(lua_State *L) {
   void *address;
   luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
@@ -268,9 +350,18 @@ static int patch_call(lua_State *L) {
     return luaL_error(L, "Cannot call NULL pointer");
   }
 
-  // Cast address to a void function pointer that takes no arguments
-  void (*func)(void) = (void (*)(void))address;
-  func();
+  long long a1 = get_arg_as_int(L, 2);
+  long long a2 = get_arg_as_int(L, 3);
+  long long a3 = get_arg_as_int(L, 4);
+  long long a4 = get_arg_as_int(L, 5);
+  long long a5 = get_arg_as_int(L, 6);
+  long long a6 = get_arg_as_int(L, 7);
+
+  // Cast address to a void function pointer that takes 6 arguments
+  void (*func)(long long, long long, long long, long long, long long, long long) =
+    (void (*)(long long, long long, long long, long long, long long, long long))address;
+
+  func(a1, a2, a3, a4, a5, a6);
 
   return 0;
 }
@@ -284,9 +375,18 @@ static int patch_call_ret(lua_State *L) {
     return luaL_error(L, "Cannot call NULL pointer");
   }
 
+  long long a1 = get_arg_as_int(L, 2);
+  long long a2 = get_arg_as_int(L, 3);
+  long long a3 = get_arg_as_int(L, 4);
+  long long a4 = get_arg_as_int(L, 5);
+  long long a5 = get_arg_as_int(L, 6);
+  long long a6 = get_arg_as_int(L, 7);
+
   // Cast address to a function pointer that returns a 64-bit integer
-  long long (*func)(void) = (long long (*)(void))address;
-  long long result = func();
+  long long (*func)(long long, long long, long long, long long, long long, long long) =
+    (long long (*)(long long, long long, long long, long long, long long, long long))address;
+
+  long long result = func(a1, a2, a3, a4, a5, a6);
 
   lua_pushinteger(L, result);
   return 1;
@@ -318,6 +418,15 @@ static const luaL_Reg patchlib[] = {
   {"mprotect", patch_mprotect},
   {"call", patch_call},
   {"call_ret", patch_call_ret},
+  {"to_num", patch_to_num},
+  {"to_ptr", patch_to_ptr},
+  {"read_u8", patch_read_u8},
+  {"read_u32", patch_read_u32},
+  {"read_u64", patch_read_u64},
+  {"write_u8", patch_write_u8},
+  {"write_u32", patch_write_u32},
+  {"write_u64", patch_write_u64},
+  {"memcpy", patch_memcpy},
   {NULL, NULL}
 };
 
