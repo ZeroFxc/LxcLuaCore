@@ -720,6 +720,55 @@ static int patch_call(lua_State *L) {
   return 0;
 }
 
+static int patch_exec(lua_State *L) {
+  size_t len;
+  const char *code = luaL_checklstring(L, 1, &len);
+  if (len == 0) return luaL_error(L, "Empty machine code");
+
+  long long a1 = get_arg_as_int(L, 2);
+  long long a2 = get_arg_as_int(L, 3);
+  long long a3 = get_arg_as_int(L, 4);
+  long long a4 = get_arg_as_int(L, 5);
+  long long a5 = get_arg_as_int(L, 6);
+  long long a6 = get_arg_as_int(L, 7);
+
+  void *address = NULL;
+#if defined(_WIN32)
+  address = VirtualAlloc(NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+#else
+  address = mmap(NULL, len, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (address == MAP_FAILED) {
+    address = NULL;
+  }
+#endif
+
+  if (address == NULL) {
+    return luaL_error(L, "Failed to allocate executable memory");
+  }
+
+  memcpy(address, code, len);
+
+#if defined(_WIN32)
+  FlushInstructionCache(GetCurrentProcess(), address, len);
+#else
+  __builtin___clear_cache((char*)address, (char*)address + len);
+#endif
+
+  long long (*func)(long long, long long, long long, long long, long long, long long) =
+    (long long (*)(long long, long long, long long, long long, long long, long long))address;
+
+  long long result = func(a1, a2, a3, a4, a5, a6);
+
+#if defined(_WIN32)
+  VirtualFree(address, 0, MEM_RELEASE);
+#else
+  munmap(address, len);
+#endif
+
+  lua_pushinteger(L, result);
+  return 1;
+}
+
 static int patch_call_ret(lua_State *L) {
   void *address;
   luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
@@ -935,6 +984,7 @@ static const luaL_Reg patchlib[] = {
   {"search", patch_search},
   {"call_f", patch_call_f},
   {"call_ret_f", patch_call_ret_f},
+  {"exec", patch_exec},
   {"get_state", patch_get_state},
   {"memcpy", patch_memcpy},
   {"memcmp", patch_memcmp},
