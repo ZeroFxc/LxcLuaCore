@@ -484,7 +484,7 @@ static int patch_write_struct(lua_State *L) {
       else if (*fmt == '6' && *(fmt+1) == '4') { fmt++; *(double*)ptr = (double)luaL_checknumber(L, -1); ptr += 8; }
       else return luaL_error(L, "invalid struct format");
     } else if (*fmt == 'p') {
-      luaL_argcheck(L, lua_islightuserdata(L, -1) || lua_isnil(L, -1), 3, "expected lightuserdata for 'p'");
+      luaL_argcheck(L, lua_topointer(L, -1) != NULL || lua_isnil(L, -1) || lua_islightuserdata(L, -1), 3, "expected pointer-compatible type or nil for 'p'");
       *(void**)ptr = (void*)lua_topointer(L, -1);
       ptr += sizeof(void*);
     } else if (*fmt == 'x') {
