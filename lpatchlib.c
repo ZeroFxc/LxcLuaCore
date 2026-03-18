@@ -407,6 +407,121 @@ static int patch_get_arch(lua_State *L) {
   return 1;
 }
 
+static int patch_read_u16(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint16_t *ptr = (uint16_t *)lua_topointer(L, 1);
+  lua_pushinteger(L, (lua_Integer)(*ptr));
+  return 1;
+}
+
+static int patch_write_u16(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  uint16_t *ptr = (uint16_t *)lua_topointer(L, 1);
+  uint16_t val = (uint16_t)luaL_checkinteger(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_read_f32(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  float *ptr = (float *)lua_topointer(L, 1);
+  lua_pushnumber(L, (lua_Number)(*ptr));
+  return 1;
+}
+
+static int patch_write_f32(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  float *ptr = (float *)lua_topointer(L, 1);
+  float val = (float)luaL_checknumber(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_read_f64(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  double *ptr = (double *)lua_topointer(L, 1);
+  lua_pushnumber(L, (lua_Number)(*ptr));
+  return 1;
+}
+
+static int patch_write_f64(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  double *ptr = (double *)lua_topointer(L, 1);
+  double val = (double)luaL_checknumber(L, 2);
+  *ptr = val;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+static int patch_read_cstring(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  const char *ptr = (const char *)lua_topointer(L, 1);
+  lua_pushstring(L, ptr);
+  return 1;
+}
+
+static int patch_search(lua_State *L) {
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  const uint8_t *start = (const uint8_t *)lua_topointer(L, 1);
+  size_t size = (size_t)luaL_checkinteger(L, 2);
+  size_t pat_len;
+  const char *pattern = luaL_checklstring(L, 3, &pat_len);
+
+  if (pat_len == 0 || size < pat_len) {
+    lua_pushnil(L);
+    return 1;
+  }
+
+  for (size_t i = 0; i <= size - pat_len; ++i) {
+    if (memcmp(start + i, pattern, pat_len) == 0) {
+      lua_pushlightuserdata(L, (void *)(start + i));
+      return 1;
+    }
+  }
+
+  lua_pushnil(L);
+  return 1;
+}
+
+static double get_arg_as_float(lua_State *L, int index) {
+  if (lua_isnoneornil(L, index)) {
+    return 0.0;
+  }
+  return (double)lua_tonumber(L, index);
+}
+
+static int patch_call_f(lua_State *L) {
+  void *address;
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  address = (void *)lua_topointer(L, 1);
+  if (address == NULL) return luaL_error(L, "Cannot call NULL pointer");
+  double a1 = get_arg_as_float(L, 2); double a2 = get_arg_as_float(L, 3);
+  double a3 = get_arg_as_float(L, 4); double a4 = get_arg_as_float(L, 5);
+  void (*func)(double, double, double, double) = (void (*)(double, double, double, double))address;
+  func(a1, a2, a3, a4);
+  return 0;
+}
+
+static int patch_call_ret_f(lua_State *L) {
+  void *address;
+  luaL_argcheck(L, lua_topointer(L, 1) != NULL, 1, "invalid pointer");
+  address = (void *)lua_topointer(L, 1);
+  if (address == NULL) return luaL_error(L, "Cannot call NULL pointer");
+  double a1 = get_arg_as_float(L, 2); double a2 = get_arg_as_float(L, 3);
+  double a3 = get_arg_as_float(L, 4); double a4 = get_arg_as_float(L, 5);
+  double (*func)(double, double, double, double) = (double (*)(double, double, double, double))address;
+  double result = func(a1, a2, a3, a4);
+  lua_pushnumber(L, result);
+  return 1;
+}
+
+static int patch_get_state(lua_State *L) {
+  lua_pushlightuserdata(L, L);
+  return 1;
+}
+
 static const luaL_Reg patchlib[] = {
   {"get_arch", patch_get_arch},
   {"get_marker", patch_get_marker},
@@ -421,11 +536,22 @@ static const luaL_Reg patchlib[] = {
   {"to_num", patch_to_num},
   {"to_ptr", patch_to_ptr},
   {"read_u8", patch_read_u8},
+  {"read_u16", patch_read_u16},
   {"read_u32", patch_read_u32},
   {"read_u64", patch_read_u64},
   {"write_u8", patch_write_u8},
+  {"write_u16", patch_write_u16},
   {"write_u32", patch_write_u32},
   {"write_u64", patch_write_u64},
+  {"read_f32", patch_read_f32},
+  {"read_f64", patch_read_f64},
+  {"write_f32", patch_write_f32},
+  {"write_f64", patch_write_f64},
+  {"read_cstring", patch_read_cstring},
+  {"search", patch_search},
+  {"call_f", patch_call_f},
+  {"call_ret_f", patch_call_ret_f},
+  {"get_state", patch_get_state},
   {"memcpy", patch_memcpy},
   {NULL, NULL}
 };
