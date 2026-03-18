@@ -58,3 +58,26 @@ end
 patch.free(mem, 4096)
 patch.free(mem2, 4096)
 print("All extensions verified successfully.")
+
+-- Test new extensions
+local p = patch.alloc(32)
+patch.write_u16(p, 0x1234)
+assert(patch.read_u16(p) == 0x1234, "u16 failed")
+
+patch.write_f32(p, 3.14)
+assert(math.abs(patch.read_f32(p) - 3.14) < 0.001, "f32 failed")
+
+patch.write_f64(p, 2.71828)
+assert(math.abs(patch.read_f64(p) - 2.71828) < 0.001, "f64 failed")
+
+patch.write(p, "hello\0")
+assert(patch.read_cstring(p) == "hello", "cstring failed")
+
+local s = patch.search(p, 32, "lo")
+assert(s ~= nil, "search failed")
+
+local L = patch.get_state()
+assert(L ~= nil, "get_state failed")
+
+patch.free(p, 32)
+print("All NEW patch extensions passed!")
