@@ -75,11 +75,11 @@ int plugin_install(lua_State *L) {
         snprintf(url, sizeof(url), "https://shop.lxclua.org/pkg/%s.plugin", pkg_name);
         lua_pushstring(L, url);
 
-        if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
-            /* Assuming http.get returns a response table with a 'body' field */
-            if (lua_istable(L, -1)) {
-                lua_getfield(L, -1, "body");
-                if (lua_isstring(L, -1)) {
+        if (lua_pcall(L, 1, 2, 0) == LUA_OK) {
+            /* http.get returns status_code, body */
+            if (lua_isnumber(L, -2) && lua_isstring(L, -1)) {
+                int status = lua_tointeger(L, -2);
+                if (status >= 200 && status < 300) {
                     size_t len;
                     const char *body = lua_tolstring(L, -1, &len);
 
@@ -88,25 +88,21 @@ int plugin_install(lua_State *L) {
                         fwrite(body, 1, len, fp);
                         fclose(fp);
                         printf("Package %s installed successfully to %s\n", pkg_name, filepath);
+                        lua_pop(L, 2); /* pop status_code, body */
                         lua_pushboolean(L, 1);
                         return 1;
                     } else {
                         printf("Failed to write to %s\n", filepath);
                     }
+                } else {
+                    printf("HTTP Error: %d\n", status);
                 }
-                lua_pop(L, 1); /* body */
-            } else if (lua_isstring(L, -1)) { /* Fallback if http.get directly returns string */
-                size_t len;
-                const char *body = lua_tolstring(L, -1, &len);
-                FILE *fp = fopen(filepath, "wb");
-                if (fp) {
-                    fwrite(body, 1, len, fp);
-                    fclose(fp);
-                    printf("Package %s installed successfully to %s\n", pkg_name, filepath);
-                    lua_pushboolean(L, 1);
-                    return 1;
-                }
+            } else if (lua_isnil(L, -2) && lua_isstring(L, -1)) {
+                printf("HTTP Request failed: %s\n", lua_tostring(L, -1));
+            } else {
+                printf("Invalid response from http.get\n");
             }
+            lua_pop(L, 2); /* pop status_code, body */
         } else {
             printf("HTTP Request failed: %s\n", lua_tostring(L, -1));
         }
