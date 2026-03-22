@@ -71,13 +71,9 @@ int plugin_parse(lua_State *L) {
                     p = skip_ws(p);
                 }
             }
-            if (*p == '}') {
-                p++; /* Skip '}' */
-            }
         }
     }
 
-    /* Create metadata table */
     lua_newtable(L);
     if (name[0] != '\0') {
         lua_pushstring(L, name);
@@ -88,8 +84,5 @@ int plugin_parse(lua_State *L) {
         lua_setfield(L, -2, "version");
     }
 
-    /* Push remaining data as the second return value (Lua script body) */
-    lua_pushstring(L, p);
-
-    return 2; /* Return table, and the remaining lua code */
+    return 1; /* Return table */
 }
