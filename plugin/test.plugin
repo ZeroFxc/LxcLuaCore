@@ -1,3 +1,0 @@
-plugin "my_awesome_plugin" {
-    version = "2.0.1"
-}
