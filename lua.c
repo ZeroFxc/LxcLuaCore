@@ -653,26 +653,6 @@ static int pmain (lua_State *L) {
   }
   if (!runargs(L, argv, optlim))  /* execute arguments -e and -l */
     return 0;  /* something failed */
-
-  if (script > 0 && strcmp(argv[script], "install") == 0) {
-    if (script + 1 < argc) {
-      lua_getglobal(L, "require");
-      lua_pushstring(L, "plugin");
-      if (docall(L, 1, 1) == LUA_OK) {
-        lua_getfield(L, -1, "install");
-        lua_pushstring(L, argv[script + 1]);
-        if (docall(L, 1, 0) != LUA_OK) {
-           report(L, -1);
-        }
-      } else {
-         report(L, -1);
-      }
-    } else {
-      l_message(progname, "install requires a package name");
-    }
-    return 1;
-  }
-
   if (script > 0) {  /* execute main script (if there is one) */
     if (handle_script(L, argv + script) != LUA_OK)
       return 0;  /* interrupt in case of error */
