@@ -38,11 +38,9 @@ int plugin_parse(lua_State *L) {
     const char *data = luaL_checkstring(L, 1);
 
     char name[64] = {0};
+    char version[64] = {0};
 
     const char *p = skip_ws(data);
-
-    /* Create metadata table */
-    lua_newtable(L);
 
     /* Parse `plugin "name"` */
     if (strncmp(p, "plugin", 6) == 0) {
@@ -50,47 +48,44 @@ int plugin_parse(lua_State *L) {
         p = parse_string(p, name, sizeof(name));
         p = skip_ws(p);
 
-        if (name[0] != '\0') {
-            lua_pushstring(L, name);
-            lua_setfield(L, -2, "name");
-        }
-
         /* Parse `{ ... }` block */
         if (*p == '{') {
             p = skip_ws(p + 1);
             while (*p && *p != '}') {
-                /* Parse key */
-                char key[64] = {0};
-                size_t k_len = 0;
-                while (*p && !isspace((unsigned char)*p) && *p != '=' && *p != '}') {
-                    if (k_len < sizeof(key) - 1) {
-                        key[k_len++] = *p;
+                if (strncmp(p, "version", 7) == 0) {
+                    p = skip_ws(p + 7);
+                    if (*p == '=') {
+                        p = skip_ws(p + 1);
+                        p = parse_string(p, version, sizeof(version));
                     }
-                    p++;
-                }
-                key[k_len] = '\0';
-                p = skip_ws(p);
-
-                if (*p == '=') {
-                    p = skip_ws(p + 1);
-                    char value[256] = {0};
-                    p = parse_string(p, value, sizeof(value));
-
-                    if (key[0] != '\0' && value[0] != '\0') {
-                        lua_pushstring(L, value);
-                        lua_setfield(L, -2, key);
+                } else {
+                    /* Skip unknown keys for now */
+                    while (*p && *p != ',' && *p != '}' && *p != '\n') {
+                        p++;
                     }
                 }
 
-                p = skip_ws(p);
                 if (*p == ',') {
                     p = skip_ws(p + 1);
+                } else {
+                    p = skip_ws(p);
                 }
             }
             if (*p == '}') {
                 p++; /* Skip '}' */
             }
         }
+    }
+
+    /* Create metadata table */
+    lua_newtable(L);
+    if (name[0] != '\0') {
+        lua_pushstring(L, name);
+        lua_setfield(L, -2, "name");
+    }
+    if (version[0] != '\0') {
+        lua_pushstring(L, version);
+        lua_setfield(L, -2, "version");
     }
 
     /* Push remaining data as the second return value (Lua script body) */
