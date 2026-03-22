@@ -63,6 +63,44 @@ int plugin_install(lua_State *L) {
     get_plugin_dir(plugin_dir, sizeof(plugin_dir));
     recursive_mkdir(plugin_dir);
 
+    /* Check if the package name is a local file path */
+    FILE *local_file = fopen(pkg_name, "rb");
+    if (local_file) {
+        printf("Found local file, copying to plugin directory...\n");
+
+        /* Get the filename from the path */
+        const char *filename = pkg_name;
+        const char *p = pkg_name;
+        while (*p) {
+            if (*p == '/' || *p == '\\') {
+                filename = p + 1;
+            }
+            p++;
+        }
+
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s%s", plugin_dir, filename);
+
+        FILE *dest_file = fopen(filepath, "wb");
+        if (dest_file) {
+            char buffer[4096];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), local_file)) > 0) {
+                fwrite(buffer, 1, bytes, dest_file);
+            }
+            fclose(dest_file);
+            fclose(local_file);
+            printf("Local file %s installed successfully to %s\n", pkg_name, filepath);
+            lua_pushboolean(L, 1);
+            return 1;
+        } else {
+            printf("Failed to write to %s\n", filepath);
+            fclose(local_file);
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+    }
+
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s%s.plugin", plugin_dir, pkg_name);
 
@@ -108,23 +146,6 @@ int plugin_install(lua_State *L) {
         }
     } else {
         printf("Failed to load http module: %s\n", lua_tostring(L, -1));
-    }
-
-    /* Fallback: create a dummy file if the network request fails for demonstration purposes */
-    printf("Network fetch failed, generating fallback mock plugin...\n");
-    FILE *fp = fopen(filepath, "w");
-    if (fp) {
-        fprintf(fp, "plugin \"%s\" {\n  version = \"1.0.0\"\n}\n", pkg_name);
-        fprintf(fp, "\n");
-        fprintf(fp, "-- This is embedded Lua code in the .plugin file!\n");
-        fprintf(fp, "local meta = ...\n");
-        fprintf(fp, "print(\"Hello from \" .. (meta.name or \"unknown\") .. \" v\" .. (meta.version or \"unknown\"))\n");
-        fprintf(fp, "meta.loaded = true\n");
-        fprintf(fp, "return meta\n");
-        fclose(fp);
-        printf("Fallback Package %s installed successfully to %s\n", pkg_name, filepath);
-        lua_pushboolean(L, 1);
-        return 1;
     }
 
     printf("Failed to install package: %s\n", pkg_name);

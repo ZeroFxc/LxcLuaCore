@@ -480,6 +480,52 @@ local hash = sha256.hash("Hello World")
 
 ---
 
+## Package Management and Mixed Development
+
+LXCLUA-NCore features a built-in package manager accessed via the `lxclua install <pkg>` command or the `plugin` API. It natively supports mixed-language development, allowing declarative `.plugin` metadata files and standard `.lua` files to seamlessly co-exist and interoperate within the engine.
+
+### Installing Packages
+
+You can install packages from the network or local files:
+
+```bash
+# Install from the official repository
+lxclua install my_awesome_plugin
+
+# Install a local .plugin or .lua file directly
+lxclua install ./local_pkg.plugin
+lxclua install ./local_lib.lua
+```
+
+### The `.plugin` Format
+
+A `.plugin` file contains a declarative metadata block followed by standard Lua code. The package manager automatically parses the metadata and makes it available to the embedded script.
+
+```lua
+-- sample_pkg.plugin
+plugin "sample_pkg" {
+    version = "1.0.0",
+    author = "lxclua developer",
+    description = "A sample package demonstrating mixed-language development."
+}
+
+-- Embedded lua code follows
+local meta = ...
+
+-- Because the package manager automatically updates package.path,
+-- you can seamlessly require pure .lua files installed alongside this plugin!
+local lib = require("sample_pkg_lib")
+
+print("Loaded: " .. meta.name .. " v" .. meta.version)
+print(lib.greet(meta.name))
+
+return meta
+```
+
+When you use `require("sample_pkg")`, the engine automatically parses the metadata, executes the embedded Lua code passing the metadata as arguments, and returns the result.
+
+---
+
 ## Threading Support
 
 Full multithreading support with synchronization primitives.

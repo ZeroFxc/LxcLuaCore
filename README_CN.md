@@ -434,6 +434,52 @@ local flag: bool = true
 
 ---
 
+## 包管理和混合开发
+
+LXCLUA-NCore 具有一个内置的包管理器，可以通过 `lxclua install <pkg>` 命令或 `plugin` API 进行访问。它原生支持混合语言开发，允许声明式的 `.plugin` 元数据文件和标准的 `.lua` 文件在引擎内无缝共存并互操作。
+
+### 安装包
+
+您可以从网络或本地文件安装包：
+
+```bash
+# 从官方仓库安装
+lxclua install my_awesome_plugin
+
+# 直接安装本地的 .plugin 或 .lua 文件
+lxclua install ./local_pkg.plugin
+lxclua install ./local_lib.lua
+```
+
+### `.plugin` 格式
+
+`.plugin` 文件包含一个声明式的元数据块，后跟标准的 Lua 代码。包管理器会自动解析元数据并将其提供给嵌入的脚本。
+
+```lua
+-- sample_pkg.plugin
+plugin "sample_pkg" {
+    version = "1.0.0",
+    author = "lxclua developer",
+    description = "A sample package demonstrating mixed-language development."
+}
+
+-- Embedded lua code follows
+local meta = ...
+
+-- Because the package manager automatically updates package.path,
+-- you can seamlessly require pure .lua files installed alongside this plugin!
+local lib = require("sample_pkg_lib")
+
+print("Loaded: " .. meta.name .. " v" .. meta.version)
+print(lib.greet(meta.name))
+
+return meta
+```
+
+当您使用 `require("sample_pkg")` 时，引擎会自动解析元数据，执行嵌入的 Lua 代码并将元数据作为参数传递，然后返回结果。
+
+---
+
 ## 安全特性
 
 ### 代码混淆

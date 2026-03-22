@@ -62,6 +62,17 @@ int luaopen_plugin(lua_State *L) {
             lua_rawseti(L, -2, len + 1);
         }
         lua_pop(L, 1); /* pop searchers */
+
+        /* Append plugin directory to package.path */
+        if (lua_getfield(L, -1, "path") == LUA_TSTRING) {
+            char plugin_dir[512];
+            get_plugin_dir(plugin_dir, sizeof(plugin_dir));
+
+            const char *current_path = lua_tostring(L, -1);
+            lua_pushfstring(L, "%s;%s?.lua", current_path, plugin_dir);
+            lua_setfield(L, -3, "path");
+        }
+        lua_pop(L, 1); /* pop path */
     }
     lua_pop(L, 1); /* pop package */
 
