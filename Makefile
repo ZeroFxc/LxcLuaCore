@@ -6,7 +6,7 @@
 # Your platform. See PLATS for possible values.
 PLAT= guess
 
-CC= gcc -std=c11 -pipe
+CC= gcc -std=gnu11 -pipe
 CFLAGS= -O3 -funroll-loops -fomit-frame-pointer -ffunction-sections -fdata-sections -fstrict-aliasing -g0 -DNDEBUG -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration -D_GNU_SOURCE
 
 AR= ar rcu
@@ -39,9 +39,10 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 LUA_A=	liblua.a
 CORE_O= lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o
 WASM3_O= m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o
-LIB_O= lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o
+LIB_O= lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o
+QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= lwasm3.o $(WASM3_O)
-BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS)
+BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS)
 BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS)
 
 LUA_T=	lxclua
@@ -139,7 +140,7 @@ ios:
 	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_IOS"
 
 Linux linux:
-	$(MAKE) $(ALL) CC="gcc -std=c11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread" SYSLDFLAGS="-s"
+	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread" SYSLDFLAGS="-s"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
 termux:
@@ -474,6 +475,14 @@ release:
 	@echo "Created: $(RELEASE_NAME)-$(RELEASE_VERSION).tar.gz"
 
 # Compiler modules may use special flags.
+
+# QuickJS targets
+quickjs/%.o: quickjs/%.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
+
+lquickjs.o: lquickjs.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c lquickjs.c -o lquickjs.o
+
 llex.o:
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c llex.c
 
