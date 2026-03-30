@@ -10,6 +10,7 @@ LOCAL_CFLAGS += -g0 -DNDEBUG
 
 # 极致性能构建配置
 LOCAL_CFLAGS += -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration
+LOCAL_CFLAGS += -std=gnu99 -fasm
 
 
 
@@ -78,6 +79,7 @@ LOCAL_SRC_FILES := \
 	llexer_compiler.c\
 	lobfuscate.c \
 	lwasm3.c \
+	lquickjs.c \
 	m3_api_libc.c \
 	m3_api_meta_wasi.c \
 	m3_api_tracer.c \
@@ -92,9 +94,18 @@ LOCAL_SRC_FILES := \
 	m3_function.c \
 	m3_info.c \
 	m3_module.c \
-	m3_parse.c
+	m3_parse.c \
+	quickjs/quickjs.c \
+	quickjs/libregexp.c \
+	quickjs/libunicode.c \
+	quickjs/cutils.c \
+	quickjs/quickjs-libc.c \
+	quickjs/dtoa.c
 
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
+
+# QuickJS 配置
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/quickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\"
 
 # 针对不同 ABI 设置架构优化
 ifeq ($(TARGET_ARCH_ABI), arm64-v8a)
