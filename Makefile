@@ -55,7 +55,12 @@ LBCDUMP_T=	lbcdump
 LBCDUMP_O=	lbcdump.o
 
 ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O)
-ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T)
+QJS_T= qjs
+QJSC_T= qjsc
+QJSC_O= quickjs/qjsc.o
+
+ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(QJS_T) $(QJSC_T)
+
 ALL_A= $(LUA_A)
 
 # Targets start here.
@@ -76,6 +81,11 @@ $(LUA_T): $(LUA_O) $(LUA_A)
 
 $(LUAC_T): $(LUAC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+$(QJS_T): $(QJS_EXE_O) $(LUA_A)
+	$(CC) -o $@ $(LDFLAGS) $(QJS_EXE_O) $(LUA_A) $(LIBS)
+
+$(QJSC_T): $(QJSC_O) $(LUA_A)
+	$(CC) -o $@ $(LDFLAGS) $(QJSC_O) $(LUA_A) $(LIBS)
 
 $(LBCDUMP_T): $(LBCDUMP_O)
 	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
@@ -85,11 +95,11 @@ $(WEBSERVER_A): $(WEBSERVER_O) $(LUA_A)
 
 test:
 	./$(LUA_T) -v
-
 clean:
-	$(RM) $(ALL_T) $(ALL_O)
-	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll
+	$(RM) $(ALL_T) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
+	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
+
 
 depend:
 	@$(CC) $(CFLAGS) -MM l*.c
@@ -199,7 +209,7 @@ wasm:
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
-	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 --closure 1"
+	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0"
 
 # WASM 最小化版本（无文件系统，更小体积）
 wasm-minimal:
@@ -212,7 +222,7 @@ wasm-minimal:
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
-	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 --closure 1 -sINVOKE_RUN=0"
+	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINVOKE_RUN=0"
 
 # 将 C 文件编译为 WASM 模块（供 wasm3 使用）
 # 用法: 
@@ -482,6 +492,11 @@ quickjs/%.o: quickjs/%.c
 
 lquickjs.o: lquickjs.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c lquickjs.c -o lquickjs.o
+quickjs/qjsc.o: quickjs/qjsc.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
+
+quickjs/qjs.o: quickjs/qjs.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
 llex.o:
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c llex.c
