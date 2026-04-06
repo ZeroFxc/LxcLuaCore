@@ -638,7 +638,7 @@ typedef struct Udata0 {
 #define LUA_VPROTO	makevariant(LUA_TPROTO, 0)
 
 
-typedef l_uint64 Instruction;
+
 
 
 /**
