@@ -424,6 +424,101 @@ static IRNode *parse_stmt(ParserState *ps) {
         if(val) free(val);
 
         get_token(ps, &t, &val);
+
+        /* 检测 local async function ... end */
+        if (t.token == TK_ASYNC) {
+            ps->current_idx++;
+            if(val) free(val);
+
+            get_token(ps, &t, &val);
+            if (t.token == TK_FUNCTION) {
+                ps->current_idx++;
+                if(val) free(val);
+
+                get_token(ps, &t, &val);
+                IRNode *n = new_node(IR_STMT_ASYNC_FUNCTION);
+                n->str_val = val;  /* 函数名 */
+                n->int_val = 1;    /* 标记为 local */
+                ps->current_idx++;
+
+                get_token(ps, &t, &val);
+                if (t.token == '(') ps->current_idx++;
+                if(val) free(val);
+
+                /* 解析参数列表 - 支持多参数 */
+                IRNode *params_head = NULL, *params_tail = NULL;
+                while (ps->current_idx <= ps->num_tokens) {
+                    get_token(ps, &t, &val);
+                    if (t.token == ')') {
+                        if(val) free(val);
+                        ps->current_idx++;
+                        break;
+                    }
+                    if (t.token == TK_NAME) {
+                        IRNode *param = new_node(IR_EXPR_NAME);
+                        param->str_val = val;
+                        if (!params_head) params_head = params_tail = param;
+                        else { params_tail->next = param; params_tail = param; }
+                        ps->current_idx++;
+
+                        /* 检查逗号分隔的多参数 */
+                        get_token(ps, &t, &val);
+                        if (t.token == ',') {
+                            ps->current_idx++;
+                            if(val) free(val);
+                            continue;
+                        } else if (t.token == ')') {
+                            if(val) free(val);
+                            ps->current_idx++;
+                            break;
+                        } else {
+                            /* 非预期的 token，回退 */
+                            if(val) free(val);
+                            break;
+                        }
+                    } else {
+                        if(val) free(val);
+                        break;
+                    }
+                }
+                n->children[0] = params_head;
+
+                /* 解析函数体 */
+                IRNode *body_head = NULL, *body_tail = NULL;
+                while (ps->current_idx <= ps->num_tokens) {
+                    get_token(ps, &t, &val);
+                    if (t.token == TK_END) {
+                        if(val) free(val);
+                        ps->current_idx++;
+                        break;
+                    }
+                    if(val) free(val);
+                    IRNode *s = parse_stmt(ps);
+                    if (s) {
+                        if (!body_head) body_head = body_tail = s;
+                        else { body_tail->next = s; body_tail = s; }
+                    }
+                }
+                n->children[1] = body_head;
+                return n;
+            }
+
+            /* local async 但不是函数声明：当作普通变量处理（带 async 前缀的错误情况） */
+            IRNode *n = new_node(IR_STMT_LOCAL);
+            n->str_val = val;  /* 这里的 val 是 async 后面的标识符 */
+            ps->current_idx++;
+
+            get_token(ps, &t, &val);
+            if (t.token == '=') {
+                ps->current_idx++;
+                if(val) free(val);
+                n->children[0] = parse_expr(ps);
+            } else {
+                if(val) free(val);
+            }
+            return n;
+        }
+
         if (t.token == TK_FUNCTION) {
             ps->current_idx++;
             if(val) free(val);
@@ -486,7 +581,89 @@ static IRNode *parse_stmt(ParserState *ps) {
         }
         return n;
     }
- else if (t.token == TK_IF) {
+    /* 顶层 async function name(args) ... end */
+    else if (t.token == TK_ASYNC) {
+        ps->current_idx++;
+        if(val) free(val);
+
+        get_token(ps, &t, &val);
+        if (t.token == TK_FUNCTION) {
+            ps->current_idx++;
+            if(val) free(val);
+
+            get_token(ps, &t, &val);
+            IRNode *n = new_node(IR_STMT_ASYNC_FUNCTION);
+            n->str_val = val;  /* 函数名 */
+            n->int_val = 0;    /* 标记为全局（非 local） */
+            ps->current_idx++;
+
+            get_token(ps, &t, &val);
+            if (t.token == '(') ps->current_idx++;
+            if(val) free(val);
+
+            /* 解析参数列表 - 支持多参数 */
+            IRNode *params_head = NULL, *params_tail = NULL;
+            while (ps->current_idx <= ps->num_tokens) {
+                get_token(ps, &t, &val);
+                if (t.token == ')') {
+                    if(val) free(val);
+                    ps->current_idx++;
+                    break;
+                }
+                if (t.token == TK_NAME) {
+                    IRNode *param = new_node(IR_EXPR_NAME);
+                    param->str_val = val;
+                    if (!params_head) params_head = params_tail = param;
+                    else { params_tail->next = param; params_tail = param; }
+                    ps->current_idx++;
+
+                    get_token(ps, &t, &val);
+                    if (t.token == ',') {
+                        ps->current_idx++;
+                        if(val) free(val);
+                        continue;
+                    } else if (t.token == ')') {
+                        if(val) free(val);
+                        ps->current_idx++;
+                        break;
+                    } else {
+                        if(val) free(val);
+                        break;
+                    }
+                } else {
+                    if(val) free(val);
+                    break;
+                }
+            }
+            n->children[0] = params_head;
+
+            /* 解析函数体 */
+            IRNode *body_head = NULL, *body_tail = NULL;
+            while (ps->current_idx <= ps->num_tokens) {
+                get_token(ps, &t, &val);
+                if (t.token == TK_END) {
+                    if(val) free(val);
+                    ps->current_idx++;
+                    break;
+                }
+                if(val) free(val);
+                IRNode *s = parse_stmt(ps);
+                if (s) {
+                    if (!body_head) body_head = body_tail = s;
+                    else { body_tail->next = s; body_tail = s; }
+                }
+            }
+            n->children[1] = body_head;
+            return n;
+        }
+
+        /* async 后面不是 function：当作表达式处理 */
+        ps->current_idx--;  /* 回退，让 parse_expr 处理 */
+        IRNode *n = new_node(IR_STMT_EXPR);
+        n->children[0] = parse_expr(ps);
+        return n;
+    }
+    else if (t.token == TK_IF) {
         ps->current_idx++;
         if(val) free(val);
 
@@ -1390,6 +1567,46 @@ static void generate_code(IRNode *node, luaL_Buffer *B, int indent) {
         generate_code(node->children[1], B, indent + 2);
         luaL_addstring(B, spaces);
         luaL_addstring(B, "end\n");
+    } else if (node->type == IR_STMT_ASYNC_FUNCTION) {
+        /*
+         * async function 脱糖规则：
+         * local async function name(args) body end
+         *   → local name = asyncio.wrap(function(args) body end)
+         *
+         * async function name(args) body end （全局）
+         *   → name = asyncio.wrap(function(args) body end)
+         */
+        luaL_addstring(B, spaces);
+        if (node->int_val == 1) {
+            /* local async function */
+            luaL_addstring(B, "local ");
+        }
+        if (node->str_val) {
+            luaL_addstring(B, node->str_val);
+        }
+        luaL_addstring(B, " = asyncio.wrap(function(");
+
+        /* 生成参数列表 */
+        if (node->children[0]) {
+            IRNode *param = node->children[0];
+            int first = 1;
+            while (param) {
+                if (!first) luaL_addstring(B, ", ");
+                generate_code(param, B, 0);
+                param = param->next;
+                first = 0;
+            }
+        }
+
+        luaL_addstring(B, ")\n");
+
+        /* 生成函数体 */
+        if (node->children[1]) {
+            generate_code(node->children[1], B, indent + 2);
+        }
+
+        luaL_addstring(B, spaces);
+        luaL_addstring(B, "end)\n");
         } else if (node->type == IR_EXPR_SPREAD) {
         luaL_addstring(B, "...");
         generate_code(node->children[0], B, 0);
@@ -1405,11 +1622,40 @@ static void generate_code(IRNode *node, luaL_Buffer *B, int indent) {
         luaL_addstring(B, "\\\\");
         generate_code(node->children[0], B, 0);
     } else if (node->type == IR_EXPR_ASYNC_FUNC) {
-        luaL_addstring(B, "async ");
-        generate_code(node->children[0], B, 0);
+        /* async 脱糖：async function f(args) body end
+         *       → local f = asyncio.wrap(function(args) body end)
+         *       或 async (args) => expr
+         *       → asyncio.wrap(function(args) return expr end)
+         */
+        IRNode *child = node->children[0];
+        if (child && child->type == IR_STMT_FUNCTION) {
+            /* async function name(args) body end */
+            luaL_addstring(B, "local ");
+            if (child->str_val) luaL_addstring(B, child->str_val);
+            luaL_addstring(B, " = asyncio.wrap(function(");
+            if (child->children[0]) generate_code(child->children[0], B, 0); /* 参数 */
+            luaL_addstring(B, ")\n");
+            if (child->children[1]) generate_code(child->children[1], B, indent + 2); /* 函数体 */
+            luaL_addstring(B, spaces);
+            luaL_addstring(B, "end)\n");
+        } else if (child && child->type == IR_EXPR_ARROW_FUNC) {
+            /* async (args) => expr */
+            luaL_addstring(B, "asyncio.wrap(function(");
+            if (child->children[0]) generate_code(child->children[0], B, 0); /* 参数 */
+            luaL_addstring(B, ") return ");
+            if (child->children[1]) generate_code(child->children[1], B, 0); /* 表达式 */
+            luaL_addstring(B, " end)");
+        } else {
+            /* fallback: 通用 async 表达式 */
+            luaL_addstring(B, "asyncio.wrap(");
+            generate_code(child, B, 0);
+            luaL_addstring(B, ")");
+        }
     } else if (node->type == IR_EXPR_AWAIT) {
-        luaL_addstring(B, "await ");
+        /* await 脱糖：await(expr) → asyncio.wait(expr) */
+        luaL_addstring(B, "asyncio.wait(");
         generate_code(node->children[0], B, 0);
+        luaL_addstring(B, ")");
     } else if (node->type == IR_EXPR_TERNARY) {
         generate_code(node->children[0], B, 0);
         luaL_addstring(B, " ? ");

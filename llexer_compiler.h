@@ -43,6 +43,9 @@ typedef enum {
     IR_STMT_NAMESPACE,
     IR_STMT_COMPOUND_ASSIGN,
 
+    /* Async/Await 语法糖 */
+    IR_STMT_ASYNC_FUNCTION,     /**< async function 声明（local/全局） */
+
     IR_EXPR_BINOP,
     IR_EXPR_UNOP,
     IR_EXPR_NAME,

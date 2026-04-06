@@ -2175,55 +2175,6 @@ static int do_file_test(const char *path, int op_type) {
 ** 返回值：
 **   布尔值，表示测试结果
 */
-static int async_start(lua_State *L) {
-    int n = lua_gettop(L);
-    lua_State *co = lua_newthread(L);
-    lua_insert(L, 1); /* Move thread to bottom (stack: thread, arg1, arg2...) */
-
-    /* Get wrapper from registry */
-    lua_getfield(L, LUA_REGISTRYINDEX, "_ASYNC_LAZY_WRAPPER");
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        /* Create wrapper if not exists (lazy init) */
-        if (luaL_dostring(L, "return function(f, ...) coroutine.yield(); return f(...) end") != LUA_OK) {
-            return lua_error(L);
-        }
-        lua_pushvalue(L, -1);
-        lua_setfield(L, LUA_REGISTRYINDEX, "_ASYNC_LAZY_WRAPPER");
-    }
-    lua_xmove(L, co, 1);
-
-    /* Push function */
-    lua_pushvalue(L, lua_upvalueindex(1));
-    lua_xmove(L, co, 1);
-
-    /* Move arguments */
-    lua_xmove(L, co, n);
-
-    int nres;
-    int status = lua_resume(co, L, n + 1, &nres);
-
-    if (status != LUA_YIELD) {
-        if (status != LUA_OK) {
-            lua_xmove(co, L, 1);
-            return lua_error(L);
-        }
-    }
-
-    if (nres > 0) {
-        lua_pop(co, nres);
-    }
-
-    return 1;
-}
-
-static int luaB_async_wrap(lua_State *L) {
-    luaL_checktype(L, 1, LUA_TFUNCTION);
-    lua_pushvalue(L, 1);
-    lua_pushcclosure(L, async_start, 1);
-    return 1;
-}
-
 static int luaB_test (lua_State *L) {
   int nargs = lua_gettop(L);
   
@@ -2845,33 +2796,7 @@ static int generic_call (lua_State *L) {
     return lua_gettop(L) - impl_idx;
 }
 
-static int luaB_generic_wrap(lua_State *L) {
-    luaL_checktype(L, 1, LUA_TFUNCTION);
-    luaL_checktype(L, 2, LUA_TTABLE);
-    luaL_checktype(L, 3, LUA_TTABLE);
-
-    lua_newtable(L); /* wrapper table */
-    lua_newtable(L); /* metatable */
-
-    lua_pushvalue(L, 1);
-    lua_pushvalue(L, 2);
-    lua_pushvalue(L, 3);
-    lua_pushcclosure(L, generic_call, 3);
-    lua_setfield(L, -2, "__call");
-
-    lua_pushboolean(L, 1);
-    lua_setfield(L, -2, "__is_generic");
-
-    lua_setmetatable(L, -2);
-    return 1;
-}
-
 static const luaL_Reg base_funcs[] = {
-  {"__async_wrap", luaB_async_wrap},
-  {"__generic_wrap", luaB_generic_wrap},
-  {"__check_type", luaB_check_type},
-  {"__lxc_get_cmds", luaB_lxc_get_cmds},
-  {"__lxc_get_ops", luaB_lxc_get_ops},
   {"typeof", luaB_typeof},
   {"issubtype", luaB_issubtype},
   {"isgeneric", luaB_isgeneric},
@@ -2916,7 +2841,6 @@ static const luaL_Reg base_funcs[] = {
   {"type", luaB_type},
   {"isstruct", luaB_isstruct},
   {"isinstance", luaB_isinstance},
-  {"__test__", luaB_test},
   {"xpcall", luaB_xpcall},
   /* placeholders */
   {LUA_GNAME, NULL},
@@ -3051,7 +2975,39 @@ LUAMOD_API int luaopen_base (lua_State *L) {
   lua_pushliteral(L, "thread"); lua_setfield(L, -2, "thread");
   lua_pushliteral(L, "userdata"); lua_setfield(L, -2, "userdata");
   lua_pushliteral(L, "nil"); lua_setfield(L, -2, "nil_type"); /* avoid clashing with nil value */
-  
+
+  /*
+   * ====================================================================
+   * 注册内部工具函数到注册表（不暴露给 Lua 用户）
+   * ====================================================================
+   *
+   * 这些函数存储在 LUA_REGISTRYINDEX["LXC_INTERNAL"] 中，
+   * 仅供 C 层代码（如 lparser.c、lvm.c）通过注册表访问。
+   * 用户无法通过 _G 或常规方式获取它们。
+   */
+
+  /* 创建内部工具表 */
+  lua_createtable(L, 0, 4);  /* 预留4个槽位 */
+
+  /* 1. __check_type - 类型检查（供编译器的类型系统使用） */
+  lua_pushcfunction(L, luaB_check_type);
+  lua_setfield(L, -2, "check_type");
+
+  /* 2. __lxc_get_cmds - LXC 命令表获取（供编译器使用） */
+  lua_pushcfunction(L, luaB_lxc_get_cmds);
+  lua_setfield(L, -2, "get_cmds");
+
+  /* 3. __lxc_get_ops - LXC 操作符表获取（供编译器使用） */
+  lua_pushcfunction(L, luaB_lxc_get_ops);
+  lua_setfield(L, -2, "get_ops");
+
+  /* 4. __test__ - 测试辅助函数（供调试和测试框架使用） */
+  lua_pushcfunction(L, luaB_test);
+  lua_setfield(L, -2, "test");
+
+  /* 将内部表存储到注册表中 */
+  lua_setfield(L, LUA_REGISTRYINDEX, "LXC_INTERNAL");
+
   return 1;
 }
 

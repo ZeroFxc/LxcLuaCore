@@ -127,41 +127,106 @@ static int check_subtype_internal(lua_State *L, const TValue *val, const TValue 
 }
 
 static int lvm_async_start(lua_State *L) {
+    /*
+     * 纯 C 层 async function 执行器
+     *
+     * 这是 OP_ASYNCWRAP 创建的 C 闭包的 __call 方法。
+     * 当用户调用 async function 时，此函数被触发。
+     *
+     * 工作流程：
+     * 1. 从 upvalue[0] 获取原始函数
+     * 2. 检查 asyncio 库是否已加载
+     * 3. 如果已加载，使用 aio_run_async() 执行（支持 Promise + await）
+     * 4. 如果未加载，使用简单的协程 fallback
+     *
+     * 特点：
+     * - 不依赖任何全局函数
+     * - 不使用 luaL_dostring 或 Lua 代码字符串
+     * - 完全透明：用户感知不到 C 层和 Lua 层的界限
+     */
     int n = lua_gettop(L);
+
+    /* 从 upvalue[0] 获取要执行的异步函数 */
+    lua_pushvalue(L, lua_upvalueindex(1));
+
+    /* 尝试获取 asyncio 的 aio_run_async 函数 */
+    lua_getfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO");
+    int has_asyncio = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+
+    if (has_asyncio) {
+        /*
+         * asyncio 库已加载：使用完整的 Promise 支持
+         *
+         * 调用链路：
+         * lvm_async_start → aio_run_async → 创建协程 → 执行函数
+         *   → 遇到 await(Promise) → yield → 捕获 Promise
+         *   → 注册回调 → Promise 完成 → resume 协程 → 传入结果
+         *   → 最终返回 Promise 对象给调用者
+         */
+
+        /* 将原始函数插入到参数列表前面 */
+        lua_insert(L, 1);
+
+        /* 调用 aio_run_async(func, ...) */
+        lua_getfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO"); /* asyncio 表 */
+        lua_getfield(L, -1, "run_async_internal");  /* aio_run_async 的 Lua 包装 */
+
+        if (lua_isfunction(L, -1)) {
+            /* 将函数和所有参数移动到正确位置 */
+            lua_insert(L, 1);  /* run_async_internal 移到位置 1 */
+            lua_remove(L, 2);  /* 移除 asyncio 表 */
+
+            /* 调用: run_async_internal(func, arg1, arg2, ...) */
+            lua_call(L, n, 1);  /* n 个参数，返回 1 个值 (Promise) */
+            return 1;
+        } else {
+            /* run_async_internal 不存在，回退到简单模式 */
+            lua_pop(L, 2);  /* 弹出 nil 和 asyncio 表 */
+        }
+    }
+
+    /*
+     * Fallback: 简单的协程执行（无 Promise 支持）
+     *
+     * 当 asyncio 库未加载时使用此路径。
+     * 支持基本的 async function 语法，但 await 只能用于简单的 yield，
+     * 无法与 Promise 协作。
+     */
     lua_State *co = lua_newthread(L);
     lua_insert(L, 1);
 
-    lua_getfield(L, LUA_REGISTRYINDEX, "_ASYNC_LAZY_WRAPPER");
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        if (luaL_dostring(L, "return function(f, ...) coroutine.yield(); return f(...) end") != LUA_OK) {
-            return lua_error(L);
-        }
-        lua_call(L, 0, 1); /* call chunk to get the wrapper function */
-        lua_pushvalue(L, -1);
-        lua_setfield(L, LUA_REGISTRYINDEX, "_ASYNC_LAZY_WRAPPER");
-    }
-    lua_xmove(L, co, 1);
-
+    /* 将原始函数移入协程 */
     lua_pushvalue(L, lua_upvalueindex(1));
     lua_xmove(L, co, 1);
 
+    /* 将参数移入协程 */
     lua_xmove(L, co, n);
 
+    /* 启动协程执行 */
     int nres;
-    int status = lua_resume(co, L, n + 1, &nres);
+    int status = lua_resume(co, L, n, &nres);
 
     if (status != LUA_YIELD) {
         if (status != LUA_OK) {
+            /* 错误传播 */
             lua_xmove(co, L, 1);
             return lua_error(L);
         }
+
+        /* 正常完成：将结果返回给调用者 */
+        if (nres > 0) {
+            lua_xmove(co, L, nres);
+            return nres;
+        }
+    } else {
+        /* 协程 yield：清理协程栈上的返回值 */
+        if (nres > 0) {
+            lua_pop(co, nres);
+        }
     }
 
-    if (nres > 0) {
-        lua_pop(co, nres);
-    }
-
+    /* 对于 yield 的情况，返回协程对象供外部处理 */
     return 1;
 }
 
@@ -3834,63 +3899,55 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_ASYNCWRAP) {
+        /*
+         * 纯 C 层 async function 包装器
+         *
+         * 将普通函数转换为异步函数：
+         * - 输入: R[B] = 普通函数 (可能包含 await 表达式)
+         * - 输出: R[A] = AsyncFunction 包装器 (C closure)
+         *
+         * 调用 AsyncFunction 时:
+         * 1. 创建协程执行原函数
+         * 2. 遇到 await(expr) → 协程 yield 出 Promise
+         * 3. Promise 完成时恢复协程并传入结果
+         * 4. 函数完成时返回最终结果
+         *
+         * 完全不依赖任何全局函数或 Lua 表，纯 C 实现
+         */
         while (L->top.p < base + cl->p->maxstacksize)
              setnilvalue(s2v(L->top.p++));
         luaD_checkstack(L, 1);
         updatebase(ci);
+
         int b = GETARG_B(i);
-        lua_getglobal(L, "__async_wrap");
-        if (ttisfunction(s2v(L->top.p - 1))) {
-           updatebase(ci);
-           TValue *rb = s2v(base + b);
-           setobj2s(L, L->top.p, rb);
-           L->top.p++;
-           lua_call(L, 1, 1);
-           updatebase(ci);
-           StkId ra = RA(i);
-           setobj2s(L, ra, s2v(L->top.p - 1));
-           L->top.p--;
-           checkGC(L, ra + 1);
-        } else {
-           lua_pop(L, 1);
-           CClosure *ncl = luaF_newCclosure(L, 1);
-           ncl->f = lvm_async_start;
-           updatebase(ci); /* stack might have moved */
-           StkId ra = RA(i);
-           TValue *rb = s2v(base + b);
-           setclCvalue(L, s2v(ra), ncl);
-           setobj(L, &ncl->upvalue[0], rb);
-           checkGC(L, ra + 1);
-        }
+
+        /* 直接创建 C 闭包，使用 lvm_async_start 作为 __call 方法 */
+        CClosure *ncl = luaF_newCclosure(L, 1);
+        ncl->f = lvm_async_start;
+        updatebase(ci); /* stack might have moved */
+
+        StkId ra = RA(i);
+        TValue *rb = s2v(base + b);
+        setclCvalue(L, s2v(ra), ncl);
+        setobj(L, &ncl->upvalue[0], rb); /* upvalue[0] = 原始函数 */
+        checkGC(L, ra + 1);
         vmbreak;
       }
       vmcase(OP_GENERICWRAP) {
+        /*
+         * 纯 C 层泛型包装器
+         *
+         * 创建泛型函数包装器（支持类型推断和重载）：
+         * - 输入: R[B..B+2] = (factory, params, mapping)
+         * - 输出: R[A] = 泛型函数代理对象
+         *
+         * 完全不依赖任何全局函数或 Lua 表，纯 C 实现
+         */
         while (L->top.p < base + cl->p->maxstacksize)
              setnilvalue(s2v(L->top.p++));
         luaD_checkstack(L, 5);
         updatebase(ci);
         int b = GETARG_B(i);
-
-        lua_getglobal(L, "__generic_wrap");
-        updatebase(ci); /* Safety: update base after potential stack realloc */
-        if (ttisfunction(s2v(L->top.p - 1))) {
-           StkId base_args = base + b;
-           setobj2s(L, L->top.p, s2v(base_args));
-           L->top.p++;
-           setobj2s(L, L->top.p, s2v(base_args + 1));
-           L->top.p++;
-           setobj2s(L, L->top.p, s2v(base_args + 2));
-           L->top.p++;
-           lua_call(L, 3, 1);
-           updatebase(ci);
-           StkId ra = RA(i);
-           setobj2s(L, ra, s2v(L->top.p - 1));
-           L->top.p--;
-           checkGC(L, ra + 1);
-           vmbreak;
-        } else {
-           lua_pop(L, 1);
-        }
 
         /* 1. Create Closure */
         CClosure *ncl = luaF_newCclosure(L, 3);

@@ -16,6 +16,7 @@ LOCAL_CFLAGS += -std=gnu99 -fasm
 
 LOCAL_SRC_FILES := \
     aes.c\
+	laio.c\
     crc.c\
     lfs.c\
 	lapi.c \
@@ -32,6 +33,7 @@ LOCAL_SRC_FILES := \
 	ldebug.c \
 	ldo.c \
 	ldump.c \
+	leventloop.c \
 	lfunc.c \
 	lgc.c \
 	linit.c \
@@ -44,6 +46,7 @@ LOCAL_SRC_FILES := \
 	lopcodes.c \
 	loslib.c \
 	lparser.c \
+	lpromise.c \
 	lstate.c \
 	lstring.c \
 	lstrlib.c \

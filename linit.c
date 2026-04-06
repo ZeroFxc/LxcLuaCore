@@ -74,6 +74,9 @@ int luaopen_lexer(lua_State *L);
 /* 声明quickjs库的初始化函数 */
 int luaopen_quickjs(lua_State *L);
 
+/* 声明asyncio库的初始化函数 */
+int luaopen_asyncio(lua_State *L);
+
 // clang and ffi libraries
 
 /*
@@ -113,6 +116,7 @@ static const luaL_Reg stdlibs[] = {
   {"wasm3", luaopen_wasm3},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
+  {"asyncio", luaopen_asyncio},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},
@@ -186,6 +190,7 @@ static const luaL_Reg loadedlibs[] = {
   {"wasm3", luaopen_wasm3},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
+  {"asyncio", luaopen_asyncio},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},
