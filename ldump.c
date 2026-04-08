@@ -27,6 +27,7 @@
 #include "lundump.h"
 
 #include "lobfuscate.h"
+#include "csprng.h"
 
 #include "sha256.h"
 
@@ -80,6 +81,7 @@ typedef struct {
   unsigned int obfuscate_seed;  /* 混淆随机种子 */
   const char *log_path;  /* 调试日志输出路径 */
   Buffer *cur_buf;
+  CSPRNG_State rng;  /* 密码学安全伪随机数生成器状态（替代srand/rand） */
 } DumpState;
 
 
@@ -117,10 +119,9 @@ static void generateOpcodeMap(DumpState *D) {
     D->opcode_map[i] = i;
   }
   
-  /* 使用Fisher-Yates算法随机打乱映射表 */
-  srand((unsigned int)D->timestamp);
+  /* 使用Fisher-Yates算法随机打乱映射表（使用CSPRNG替代srand/rand） */
   for (i = NUM_OPCODES - 1; i > 0; i--) {
-    j = rand() % (i + 1);
+    j = (int)csprng_range(&D->rng, (uint64_t)(i + 1));
     /* 交换 */
     temp = D->opcode_map[i];
     D->opcode_map[i] = D->opcode_map[j];
@@ -491,20 +492,18 @@ static void dumpUpvalues (DumpState *D, const Proto *f) {
   int anti_import_count = 0x99; // 防导入标记
   dumpInt(D, anti_import_count);
   
-  // 1. 使用随机化的 idx 值，不依赖连续性
-  srand((unsigned int)D->timestamp);
+  // 1. 使用随机化的 idx 值，不依赖连续性（使用CSPRNG替代srand/rand）
   for (i = 0; i < 15; i++) {
-    dumpByte(D, rand() % 2); // 随机 instack
-    dumpByte(D, rand() % 256); // 随机 idx，不连续
-    dumpByte(D, rand() % 3); // 随机 kind
+    dumpByte(D, (int)csprng_range(&D->rng, 2)); // 随机 instack (0或1)
+    dumpByte(D, (int)csprng_range(&D->rng, 256)); // 随机 idx (0-255)
+    dumpByte(D, (int)csprng_range(&D->rng, 3)); // 随机 kind (0-2)
   }
   
-  // 2. 添加加密的验证数据
+  // 2. 添加加密的验证数据（使用CSPRNG生成高质量随机数）
   uint8_t validation_data[16];
+  csprng_bytes(&D->rng, validation_data, 16);  /* 直接填充16字节随机数据 */
   for (i = 0; i < 16; i++) {
-    do {
-      validation_data[i] = (uint8_t)(rand() % 256);
-    } while (validation_data[i] == 0);  // 确保不为0，避免加载时验证失败
+    if (validation_data[i] == 0) validation_data[i] = 1;  /* 确保不为0 */
   }
   // 使用时间戳加密验证数据
   for (i = 0; i < 16; i++) {
@@ -614,6 +613,11 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
   D->cur_buf = &buf_meta;
   dumpInt(D, count);
 
+  /* 关键：为多轮签名准备固定的基准时间戳（必须在处理proto之前设置） */
+  /* 这个timestamp将被用于所有HMAC签名的密钥派生，确保dump和load端一致 */
+  int64_t base_timestamp = time(NULL);
+  D->timestamp = base_timestamp;  /* 第一个proto将使用这个timestamp */
+
   for (int i = 0; i < count; i++) {
     Proto *work_proto = (Proto *)list[i].p;
 
@@ -631,7 +635,7 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
     dumpSize(D, off_debug);
 
     /* Original Meta Info */
-    D->timestamp = time(NULL);
+    D->timestamp = (i == 0) ? base_timestamp : base_timestamp;  /* 所有proto使用相同timestamp */
     dumpVar(D, D->timestamp);
 
     dumpByte(D, work_proto->numparams);
@@ -701,7 +705,7 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
 
   /* Header Index Table and writing to stream */
   D->cur_buf = NULL; // write direct to writer
-  
+
   int seg_count = 6;
   dumpInt(D, seg_count);
 
@@ -713,13 +717,61 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
   dumpSize(D, buf_protoref.size);
   dumpSize(D, buf_debug.size);
 
-  /* Dump Segments */
-  dumpBlock(D, buf_meta.data, buf_meta.size);
-  dumpBlock(D, buf_code.data, buf_code.size);
-  dumpBlock(D, buf_const.data, buf_const.size);
-  dumpBlock(D, buf_upval.data, buf_upval.size);
-  dumpBlock(D, buf_protoref.data, buf_protoref.size);
-  dumpBlock(D, buf_debug.data, buf_debug.size);
+  /* 从时间戳派生动态密钥（每次编译都不同，所有签名共用） */
+  /* 重要：必须使用base_timestamp（与load端从第一个proto读取的timestamp一致） */
+  uint8_t hmac_key[32];
+  SHA256((uint8_t*)&base_timestamp, sizeof(base_timestamp), hmac_key);
+
+  /* 多轮签名：为每个段生成独立的HMAC-SHA256签名 + 全局签名 */
+  {
+    /* 定义段信息数组便于循环处理 */
+    struct { char* data; size_t size; const char* name; } segments[] = {
+      {buf_meta.data, buf_meta.size, "meta"},
+      {buf_code.data, buf_code.size, "code"},
+      {buf_const.data, buf_const.size, "const"},
+      {buf_upval.data, buf_upval.size, "upval"},
+      {buf_protoref.data, buf_protoref.size, "protoref"},
+      {buf_debug.data, buf_debug.size, "debug"}
+    };
+
+    /* 第一轮：写入每个段的数据 + 该段的独立签名 */
+    for (int i = 0; i < 6; i++) {
+      /* 写入段数据 */
+      dumpBlock(D, segments[i].data, segments[i].size);
+
+      /* 计算该段的独立HMAC签名 */
+      uint8_t segment_sig[SHA256_DIGEST_SIZE];
+      HMAC_SHA256(hmac_key, 32, (uint8_t*)segments[i].data, segments[i].size, segment_sig);
+
+      /* 写入段签名（紧跟在段数据之后） */
+      dumpVector(D, segment_sig, SHA256_DIGEST_SIZE);
+    }
+
+    /* 第二轮：计算并写入全局签名（覆盖所有段数据的联合哈希） */
+    {
+      size_t total_data_size = buf_meta.size + buf_code.size + buf_const.size +
+                               buf_upval.size + buf_protoref.size + buf_debug.size;
+      uint8_t* all_segments = (uint8_t*)luaM_malloc_(D->L, total_data_size, 0);
+      if (all_segments != NULL) {
+        size_t offset = 0;
+        memcpy(all_segments + offset, buf_meta.data, buf_meta.size); offset += buf_meta.size;
+        memcpy(all_segments + offset, buf_code.data, buf_code.size); offset += buf_code.size;
+        memcpy(all_segments + offset, buf_const.data, buf_const.size); offset += buf_const.size;
+        memcpy(all_segments + offset, buf_upval.data, buf_upval.size); offset += buf_upval.size;
+        memcpy(all_segments + offset, buf_protoref.data, buf_protoref.size); offset += buf_protoref.size;
+        memcpy(all_segments + offset, buf_debug.data, buf_debug.size);
+
+        /* 计算全局HMAC-SHA256签名 */
+        uint8_t global_signature[SHA256_DIGEST_SIZE];
+        HMAC_SHA256(hmac_key, 32, all_segments, total_data_size, global_signature);
+
+        /* 写入全局签名（32字节） */
+        dumpVector(D, global_signature, SHA256_DIGEST_SIZE);
+
+        luaM_free_(D->L, all_segments, total_data_size);
+      }
+    }
+  }
 
   /* Free buffers */
   buf_free(&buf_meta);
@@ -769,6 +821,7 @@ int luaU_dump(lua_State *L, const Proto *f, lua_Writer w, void *data,
   D.obfuscate_seed = 0;
   D.log_path = NULL;  /* 不输出日志 */
   D.cur_buf = NULL;
+  csprng_init(&D.rng, (uint64_t)time(NULL));  /* 初始化CSPRNG（使用时间戳作为种子） */
   dumpHeader(&D);
   dumpByte(&D, f->sizeupvalues);
   dumpSegmented(&D, f);
@@ -815,6 +868,7 @@ int luaU_dump_obfuscated(lua_State *L, const Proto *f, lua_Writer w, void *data,
   D.obfuscate_seed = (seed != 0) ? seed : (unsigned int)time(NULL);
   D.log_path = log_path;
   D.cur_buf = NULL;
+  csprng_init(&D.rng, (uint64_t)(D.obfuscate_seed ^ time(NULL)));  /* CSPRNG初始化（混合种子+时间戳） */
   dumpHeader(&D);
   dumpByte(&D, f->sizeupvalues);
   dumpSegmented(&D, f);

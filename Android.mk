@@ -15,6 +15,7 @@ LOCAL_CFLAGS += -std=gnu99 -fasm
 
 
 LOCAL_SRC_FILES := \
+    csprng.c\
     aes.c\
 	laio.c\
     crc.c\

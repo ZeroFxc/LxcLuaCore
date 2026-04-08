@@ -226,3 +226,56 @@ int SHA256(const uint8_t* msg, size_t msgLen, uint8_t* digest) {
   free(hashedMsg);
   return 0;
 }
+
+/**
+ * @brief HMAC-SHA256实现（RFC 2104）
+ * 使用SHA-256作为底层哈希函数，提供消息认证码功能。
+ * 密钥长度不足64字节时自动补零，超过64字节时先哈希处理。
+ */
+int HMAC_SHA256(const uint8_t* key, size_t keyLen,
+                const uint8_t* data, size_t dataLen,
+                uint8_t* digest) {
+    const size_t BLOCK_SIZE = 64;  // SHA-256块大小
+
+    /* 步骤1：准备密钥 */
+    uint8_t k[BLOCK_SIZE];
+    if (keyLen <= BLOCK_SIZE) {
+        memset(k, 0, BLOCK_SIZE);
+        memcpy(k, key, keyLen);
+    } else {
+        /* 密钥过长时先进行哈希 */
+        SHA256(key, keyLen, k);
+        memset(k + SHA256_DIGEST_SIZE, 0, BLOCK_SIZE - SHA256_DIGEST_SIZE);
+    }
+
+    /* 步骤2：创建内部和外部填充密钥 */
+    uint8_t ipad[BLOCK_SIZE], opad[BLOCK_SIZE];
+    for (size_t i = 0; i < BLOCK_SIZE; i++) {
+        ipad[i] = k[i] ^ 0x36;  // 内部填充
+        opad[i] = k[i] ^ 0x5c;  // 外部填充
+    }
+
+    /* 步骤3：计算 inner hash = SHA256(ipad || data) */
+    size_t inner_len = BLOCK_SIZE + dataLen;
+    uint8_t* inner_data = (uint8_t*)malloc(inner_len);
+    if (inner_data == NULL) return 1;
+    memcpy(inner_data, ipad, BLOCK_SIZE);
+    memcpy(inner_data + BLOCK_SIZE, data, dataLen);
+
+    uint8_t inner_hash[SHA256_DIGEST_SIZE];
+    int status = SHA256(inner_data, inner_len, inner_hash);
+    free(inner_data);
+    if (status != 0) return status;
+
+    /* 步骤4：计算 outer hash = SHA256(opad || inner_hash) */
+    size_t outer_len = BLOCK_SIZE + SHA256_DIGEST_SIZE;
+    uint8_t* outer_data = (uint8_t*)malloc(outer_len);
+    if (outer_data == NULL) return 1;
+    memcpy(outer_data, opad, BLOCK_SIZE);
+    memcpy(outer_data + BLOCK_SIZE, inner_hash, SHA256_DIGEST_SIZE);
+
+    status = SHA256(outer_data, outer_len, digest);
+    free(outer_data);
+
+    return status;
+}

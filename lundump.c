@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "lua.h"
@@ -619,15 +620,107 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
   size_t len_protoref = loadSize(S);
   size_t len_debug = loadSize(S);
 
-  size_t total_size = len_meta + len_code + len_const + len_upval + len_protoref + len_debug;
-  char *mem_base = (char *)luaM_malloc_(S->L, total_size, 0);
+  /* 计算纯段数据总大小 */
+  size_t total_data_size = len_meta + len_code + len_const + len_upval + len_protoref + len_debug;
 
-  /* Load all data into memory at once */
-  loadBlock(S, mem_base, total_size);
+  /* 为段数据分配内存 */
+  char *mem_base = (char *)luaM_malloc_(S->L, total_data_size, 0);
 
-  /* Enable segmented memory reading */
+  /* 段信息 */
+  struct { size_t size; char* data; const char* name; } segments[] = {
+    {len_meta, NULL, "meta"},
+    {len_code, NULL, "code"},
+    {len_const, NULL, "const"},
+    {len_upval, NULL, "upval"},
+    {len_protoref, NULL, "protoref"},
+    {len_debug, NULL, "debug"}
+  };
+
+  /* 设置各段数据指针 */
+  size_t offset = 0;
+  for (int i = 0; i < 6; i++) {
+    segments[i].data = mem_base + offset;
+    offset += segments[i].size;
+  }
+
+  /* ===== 第一阶段：从流中读取所有数据和签名（不使用mem_base模式） ===== */
+  uint8_t* segment_sigs[6];  /* 存储各段签名的指针 */
+  uint8_t global_sig[SHA256_DIGEST_SIZE];
+
+  /* 读取meta段数据 */
+  loadBlock(S, segments[0].data, segments[0].size);
+
+  /* 从meta段提取timestamp（使用临时缓冲区模拟load函数行为） */
+  {
+    LoadState temp_S = *S;
+    temp_S.mem_base = segments[0].data;
+    temp_S.mem_size = segments[0].size;
+    temp_S.mem_offset = 0;
+
+    int count = loadInt(&temp_S);
+    if (count > 0) {
+      for (int i = 0; i < 5; i++) loadSize(&temp_S);
+      S->timestamp = loadInt64(&temp_S);
+    }
+  }
+
+  /* 读取meta段签名 */
+  {
+    uint8_t* meta_sig_buf = (uint8_t*)luaM_malloc_(S->L, SHA256_DIGEST_SIZE, 0);
+    loadVector(S, meta_sig_buf, SHA256_DIGEST_SIZE);
+    segment_sigs[0] = meta_sig_buf;
+  }
+
+  /* 读取剩余5个段的数据和签名 */
+  for (int i = 1; i < 6; i++) {
+    loadBlock(S, segments[i].data, segments[i].size);
+
+    uint8_t* sig_buf = (uint8_t*)luaM_malloc_(S->L, SHA256_DIGEST_SIZE, 0);
+    loadVector(S, sig_buf, SHA256_DIGEST_SIZE);
+    segment_sigs[i] = sig_buf;
+  }
+
+  /* 读取全局签名 */
+  loadVector(S, global_sig, SHA256_DIGEST_SIZE);
+
+  /* ===== 第二阶段：验证所有签名 ===== */
+  {
+    uint8_t hmac_key[32];
+    SHA256((uint8_t*)&S->timestamp, sizeof(S->timestamp), hmac_key);
+
+    /* 验证每个段的独立签名 */
+    for (int i = 0; i < 6; i++) {
+      uint8_t computed_sig[SHA256_DIGEST_SIZE];
+      HMAC_SHA256(hmac_key, 32, (uint8_t*)segments[i].data, segments[i].size, computed_sig);
+
+      if (memcmp(computed_sig, segment_sigs[i], SHA256_DIGEST_SIZE) != 0) {
+        /* 释放签名缓冲区 */
+        for (int j = 0; j < 6; j++) luaM_free_(S->L, segment_sigs[j], SHA256_DIGEST_SIZE);
+        luaM_free_(S->L, mem_base, total_data_size);
+        error(S, luaO_pushfstring(S->L,
+               "%s segment integrity verification failed", segments[i].name));
+        return;
+      }
+      /* 验证通过，释放该段签名缓冲区 */
+      luaM_free_(S->L, segment_sigs[i], SHA256_DIGEST_SIZE);
+    }
+
+    /* 验证全局签名 */
+    {
+      uint8_t computed_global_sig[SHA256_DIGEST_SIZE];
+      HMAC_SHA256(hmac_key, 32, (uint8_t*)mem_base, total_data_size, computed_global_sig);
+
+      if (memcmp(computed_global_sig, global_sig, SHA256_DIGEST_SIZE) != 0) {
+        luaM_free_(S->L, mem_base, total_data_size);
+        error(S, "global integrity verification failed");
+        return;
+      }
+    }
+  }
+
+  /* Enable segmented memory reading (only data portion) */
   S->mem_base = mem_base;
-  S->mem_size = total_size;
+  S->mem_size = total_data_size;
 
   /* Base offsets for segments */
   size_t base_meta = 0;
@@ -723,7 +816,7 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
   }
 
   S->mem_base = NULL;
-  luaM_free_(S->L, mem_base, total_size);
+  luaM_free_(S->L, mem_base, total_data_size);
   luaM_free_(S->L, protos, count * sizeof(Proto*));
 }
 
