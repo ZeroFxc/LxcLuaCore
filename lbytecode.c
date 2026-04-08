@@ -376,7 +376,7 @@ static int bytecode_dump (lua_State *L) {
         luaL_addstring(&b, buf);
         break;
       case iAsBx:
-        snprintf(buf, sizeof(buf), "\t%d %d", GETARG_A(inst), GETARG_sBx(inst));
+        snprintf(buf, sizeof(buf), "\t%d %lld", GETARG_A(inst), (long long)GETARG_sBx(inst));
         luaL_addstring(&b, buf);
         break;
       case iAx:

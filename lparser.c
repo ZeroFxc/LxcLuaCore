@@ -3268,7 +3268,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
         case TK_REVPIPE: opstr = "<|"; break;
         case TK_SPACESHIP: opstr = "<=>"; break;
         case TK_NULLCOAL: opstr = "??"; break;
-        case TK_NULLCOALEQ: opstr = "??="; break;
+        case TK_NULLCOALEQ: opstr = "?\?="; break;
         case TK_ARROW: opstr = "->"; break;
         case TK_MEAN: opstr = "=>"; break;
         case TK_ADDEQ: opstr = "+="; break;
@@ -10090,7 +10090,7 @@ static void operatorstat (LexState *ls, int line) {
     case TK_REVPIPE: opstr = "<|"; break;
     case TK_SPACESHIP: opstr = "<=>"; break;
     case TK_NULLCOAL: opstr = "??"; break;
-    case TK_NULLCOALEQ: opstr = "??="; break;
+    case TK_NULLCOALEQ: opstr = "?\?="; break;
     case TK_ARROW: opstr = "->"; break;
     case TK_MEAN: opstr = "=>"; break;
     case TK_ADDEQ: opstr = "+="; break;
