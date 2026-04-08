@@ -16,6 +16,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__EMSCRIPTEN__)
+#include <emscripten.h>
 #else
 #include <unistd.h>
 #endif
@@ -1046,6 +1048,9 @@ int promise_await_sync(promise *p, lua_State *L, int timeout_ms) {
 
 #ifdef _WIN32
         Sleep(1);
+#elif defined(__EMSCRIPTEN__)
+        /* Emscripten 环境下使用 emscripten_sleep 函数 */
+        emscripten_sleep(1);
 #else
         usleep(1000);
 #endif

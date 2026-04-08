@@ -16,6 +16,18 @@
 #include <stdio.h>
 #include <errno.h>
 
+#ifdef __EMSCRIPTEN__
+/* Emscripten 环境下提供 strdup 函数的实现 */
+char *strdup(const char *s) {
+    size_t len = strlen(s) + 1;
+    char *copy = (char *)malloc(len);
+    if (copy) {
+        memcpy(copy, s, len);
+    }
+    return copy;
+}
+#endif
+
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
