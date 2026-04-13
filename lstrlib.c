@@ -32,6 +32,7 @@
 #include "aes.h"
 #include "crc.h"
 #include "sha256.h"
+#include "csprng.h"
 
 
 /*
@@ -330,16 +331,11 @@ static void aux_envelop(lua_State *L, const char *s, size_t l) {
   /* 1. Timestamp */
   memcpy(payload, &timestamp, 8);
 
-  /* 2. IV (Random) */
+  /* 2. IV (密码学安全随机数) */
   {
-    /* Generate random IV using local LCG seeded by luaL_makeseed to avoid
-       time collision and global state modification */
-    unsigned int seed = luaL_makeseed(L);
-    int i;
-    for (i = 0; i < 16; i++) {
-      seed = seed * 1103515245 + 12345;
-      payload[8 + i] = (unsigned char)((seed >> 16) & 0xFF);
-    }
+    CSPRNG_State rng;
+    csprng_init(&rng, (uint64_t)time(NULL) ^ (uint64_t)(size_t)&payload);
+    csprng_bytes(&rng, payload + 8, 16);
   }
 
   /* 3. Encrypt Payload */
