@@ -129,7 +129,9 @@ static int mkdir_recursive(const char *path, mode_t mode) {
   while ((q = strpbrk(q, "/\\")) != NULL) {
     *q = '\0';
     if (*p != '\0') {
-      if (!CreateDirectory(p, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+      wchar_t wp[512] = {0};
+      MultiByteToWideChar(CP_ACP, 0, p, -1, wp, sizeof(wp)/sizeof(wchar_t));
+      if (!CreateDirectoryW(wp, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
         free(p);
         return -1;
       }
@@ -143,7 +145,9 @@ static int mkdir_recursive(const char *path, mode_t mode) {
   
   /* 创建最后一级目录 */
   if (*p != '\0') {
-    if (!CreateDirectory(p, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+    wchar_t wp[512] = {0};
+    MultiByteToWideChar(CP_ACP, 0, p, -1, wp, sizeof(wp)/sizeof(wchar_t));
+    if (!CreateDirectoryW(wp, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
       free(p);
       return -1;
     }
@@ -244,26 +248,30 @@ static void find_files_recursive(const char *base_path, const char *pattern, int
   
   /* 构建搜索路径 */
   snprintf(search_path, sizeof(search_path), "%s\\*", base_path);
+  wchar_t wsearch_path[512] = {0};
+  MultiByteToWideChar(CP_ACP, 0, search_path, -1, wsearch_path, sizeof(wsearch_path)/sizeof(wchar_t));
   
   /* 开始搜索 */
-  WIN32_FIND_DATA findData;
-  HANDLE hFind = FindFirstFile(search_path, &findData);
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(wsearch_path, &findData);
   if (hFind == INVALID_HANDLE_VALUE) {
     return;
   }
   
   /* 遍历搜索结果 */
   do {
+    char cFileName[256] = {0};
+    WideCharToMultiByte(CP_ACP, 0, findData.cFileName, -1, cFileName, sizeof(cFileName) - 1, NULL, NULL);
     /* 跳过 . 和 .. 目录 */
-    if (strcmp(findData.cFileName, ".") == 0 || strcmp(findData.cFileName, "..") == 0) {
+    if (strcmp(cFileName, ".") == 0 || strcmp(cFileName, "..") == 0) {
       continue;
     }
     
     /* 构建完整路径 */
-    snprintf(entry_path, sizeof(entry_path), "%s\\%s", base_path, findData.cFileName);
+    snprintf(entry_path, sizeof(entry_path), "%s\\%s", base_path, cFileName);
     
     /* 检查是否匹配模式 */
-    if (wildcard_match(pattern, findData.cFileName)) {
+    if (wildcard_match(pattern, cFileName)) {
       /* 添加到结果表 */
       lua_newtable(L);
       
@@ -276,7 +284,7 @@ static void find_files_recursive(const char *base_path, const char *pattern, int
       lua_rawset(L, -3);
       
       lua_pushstring(L, "name");
-      lua_pushstring(L, findData.cFileName);
+      lua_pushstring(L, cFileName);
       lua_rawset(L, -3);
       
       if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
@@ -551,11 +559,13 @@ static int smgr_listfiles (lua_State *L) {
 #ifdef _WIN32
   /* Windows上的实现，使用FindFirstFile和FindNextFile函数 */
   /* 构建搜索路径 */
+  wchar_t wsearch_path[512] = {0};
   snprintf(search_path, sizeof(search_path), "%s\\*", dirpath);
+  MultiByteToWideChar(CP_ACP, 0, search_path, -1, wsearch_path, sizeof(wsearch_path)/sizeof(wchar_t));
   
   /* 开始搜索 */
-  WIN32_FIND_DATA findData;
-  HANDLE hFind = FindFirstFile(search_path, &findData);
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(wsearch_path, &findData);
   if (hFind == INVALID_HANDLE_VALUE) {
     lua_pushnil(L);
     lua_pushstring(L, strerror(GetLastError()));
@@ -564,18 +574,20 @@ static int smgr_listfiles (lua_State *L) {
   
   /* 遍历搜索结果 */
   do {
+    char cFileName[256] = {0};
+    WideCharToMultiByte(CP_ACP, 0, findData.cFileName, -1, cFileName, sizeof(cFileName) - 1, NULL, NULL);
     /* 跳过 . 和 .. 目录 */
-    if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+    if (strcmp(cFileName, ".") != 0 && strcmp(cFileName, "..") != 0) {
       /* 创建条目表 */
       lua_newtable(L);
       
       /* 添加名称 */
       lua_pushstring(L, "name");
-      lua_pushstring(L, findData.cFileName);
+      lua_pushstring(L, cFileName);
       lua_rawset(L, -3);
       
       /* 检查是文件还是目录 */
-      snprintf(entry_path, sizeof(entry_path), "%s\\%s", dirpath, findData.cFileName);
+      snprintf(entry_path, sizeof(entry_path), "%s\\%s", dirpath, cFileName);
       
       if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
         /* 是目录 */
@@ -677,7 +689,9 @@ static int smgr_fileexists (lua_State *L) {
   
 #ifdef _WIN32
   /* Windows上的实现，使用GetFileAttributes函数 */
-  DWORD attr = GetFileAttributes(filepath);
+  wchar_t wfilepath[256] = {0};
+  MultiByteToWideChar(CP_ACP, 0, filepath, -1, wfilepath, sizeof(wfilepath)/sizeof(wchar_t));
+  DWORD attr = GetFileAttributesW(wfilepath);
   lua_pushboolean(L, attr != INVALID_FILE_ATTRIBUTES);
 #else
   /* Unix上的实现，使用stat函数 */
@@ -701,8 +715,10 @@ static int smgr_getfilesize (lua_State *L) {
   
 #ifdef _WIN32
   /* Windows上的实现，使用FindFirstFile函数 */
-  WIN32_FIND_DATA findData;
-  HANDLE hFind = FindFirstFile(filepath, &findData);
+  wchar_t wfilepath[256] = {0};
+  MultiByteToWideChar(CP_ACP, 0, filepath, -1, wfilepath, sizeof(wfilepath)/sizeof(wchar_t));
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(wfilepath, &findData);
   if (hFind == INVALID_HANDLE_VALUE) {
     lua_pushnil(L);
     lua_pushstring(L, strerror(GetLastError()));
@@ -851,7 +867,9 @@ static int smgr_find (lua_State *L) {
   /* 检查基础路径是否存在 */
 #ifdef _WIN32
   /* Windows上的实现，使用GetFileAttributes函数 */
-  DWORD attr = GetFileAttributes(full_base_path);
+  wchar_t wfull_base_path[512] = {0};
+  MultiByteToWideChar(CP_ACP, 0, full_base_path, -1, wfull_base_path, sizeof(wfull_base_path)/sizeof(wchar_t));
+  DWORD attr = GetFileAttributesW(wfull_base_path);
   if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
     lua_pushnil(L);
     lua_pushstring(L, "搜索路径不存在或不是目录");

@@ -1470,6 +1470,7 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
       case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
       case TK_IS: ts = luaS_newliteral(ls->L, "is"); break;
+      case TK_INSTANCEOF: ts = luaS_newliteral(ls->L, "instanceof"); break;
       case TK_LAMBDA: ts = luaS_newliteral(ls->L, "lambda"); break;
       case TK_LOCAL: ts = luaS_newliteral(ls->L, "local"); break;
       case TK_NIL: ts = luaS_newliteral(ls->L, "nil"); break;
@@ -3061,17 +3062,18 @@ static void primaryexp (LexState *ls, expdesc *v) {
           return;
       }
 
+      /* 检查是否是海象操作符: (name := expr) */
       if (ls->t.token == TK_NAME && luaX_lookahead(ls) == TK_WALRUS) {
           TString *varname = ls->t.seminfo.ts;
           int save = ls->linenumber;
-          luaX_next(ls);
-          luaX_next(ls);
+          luaX_next(ls);  /* skip NAME */
+          luaX_next(ls);  /* skip := */
           expdesc e;
           expr(ls, &e);
           ls->expr_flags = old_flags;
           check_match(ls, ')', '(', save);
-          luaK_dischargevars(ls->fs, &e);
-          singlevaraux(ls->fs, varname, v, 1);
+          /* 查找变量并存储 */
+          singlevaraux(ls->fs, varname, v, 0);
           if (v->k == VVOID) {
             expdesc key;
             singlevaraux(ls->fs, ls->envn, v, 1);
@@ -3428,6 +3430,7 @@ static void suffixedexp (LexState *ls, expdesc *v) {
             case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
             case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
             case TK_IS: ts = luaS_newliteral(ls->L, "is"); break;
+            case TK_INSTANCEOF: ts = luaS_newliteral(ls->L, "instanceof"); break;
             case TK_LAMBDA: ts = luaS_newliteral(ls->L, "lambda"); break;
             case TK_LOCAL: ts = luaS_newliteral(ls->L, "local"); break;
             case TK_NIL: ts = luaS_newliteral(ls->L, "nil"); break;
@@ -4812,6 +4815,7 @@ static BinOpr getbinopr (int op) {
     case TK_GE: return OPR_GE;
     case TK_SPACESHIP: return OPR_SPACESHIP;
     case TK_IS: return OPR_IS;
+    case TK_INSTANCEOF: return OPR_IS;
     case TK_AND: return OPR_AND;
     case TK_OR: return OPR_OR;
     case TK_IN: return OPR_IN;
@@ -5047,6 +5051,7 @@ static void cond_suffixedexp (LexState *ls, expdesc *v) {
             case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
             case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
             case TK_IS: ts = luaS_newliteral(ls->L, "is"); break;
+            case TK_INSTANCEOF: ts = luaS_newliteral(ls->L, "instanceof"); break;
             case TK_LAMBDA: ts = luaS_newliteral(ls->L, "lambda"); break;
             case TK_LOCAL: ts = luaS_newliteral(ls->L, "local"); break;
             case TK_NIL: ts = luaS_newliteral(ls->L, "nil"); break;
@@ -5402,6 +5407,9 @@ static void restassign (LexState *ls, struct LHS_assign *lh, int nvars) {
 }
 
 
+/*
+** 解析条件表达式
+*/
 static int cond (LexState *ls) {
   /* cond -> exp */
   expdesc v;
@@ -6813,10 +6821,10 @@ static void codegen_destruct_item(LexState *ls, DestructItem *item, int source_r
 
 /*
 ** takestat_full - 解析 take 解构语句
-** 语法: local take {name, age, ...} = source_table
+** 语法: local take {name, age = 18, ...} = source_table
 ** 
 ** 将表字段解构到局部变量
-** 支持: 键值解构、数组解构(跳过元素)、嵌套解构
+** 支持: 键值解构、数组解构(跳过元素)、嵌套解构、默认值
 **
 ** 参数:
 **   ls - 词法分析器状态
@@ -6833,6 +6841,8 @@ static void takestat_full(LexState *ls) {
   int array_indices[MAX_DESTRUCT_ITEMS];
   int is_nested[MAX_DESTRUCT_ITEMS];
   TString *nested_keyname[MAX_DESTRUCT_ITEMS];
+  int has_default[MAX_DESTRUCT_ITEMS];  /* 是否有默认值 */
+  expdesc default_exps[MAX_DESTRUCT_ITEMS];  /* 默认值表达式 */
   int nvars = 0;
   int array_mode = 0;
   int array_idx = 1;
@@ -6869,6 +6879,8 @@ static void takestat_full(LexState *ls) {
     array_indices[nvars] = array_mode ? array_idx : 0;
     is_nested[nvars] = 0;
     nested_keyname[nvars] = NULL;
+    has_default[nvars] = 0;
+    init_exp(&default_exps[nvars], VVOID, 0);
     
     if (testnext(ls, '=')) {
       if (ls->t.token == '{') {
@@ -6894,18 +6906,15 @@ static void takestat_full(LexState *ls) {
           array_indices[nvars] = 0;
           is_nested[nvars] = 1;
           nested_keyname[nvars] = parent_key;
+          has_default[nvars] = 0;
+          init_exp(&default_exps[nvars], VVOID, 0);
           
           luaX_next(ls);
           
-          /* 跳过默认值（暂不支持） */
+          /* 支持嵌套解构的默认值 */
           if (testnext(ls, '=')) {
-            int depth = 0;
-            while (ls->t.token != ',' && ls->t.token != '}' && ls->t.token != TK_EOS) {
-              if (ls->t.token == '{') depth++;
-              else if (ls->t.token == '}' && depth > 0) depth--;
-              else if (ls->t.token == '}' && depth == 0) break;
-              luaX_next(ls);
-            }
+            has_default[nvars] = 1;
+            expr(ls, &default_exps[nvars]);
           }
           
           nvars++;
@@ -6920,14 +6929,9 @@ static void takestat_full(LexState *ls) {
         if (ls->t.token == ',') luaX_next(ls);
         continue;
       } else {
-        /* 跳过默认值（暂不支持） */
-        int depth = 0;
-        while (ls->t.token != ',' && ls->t.token != '}' && ls->t.token != TK_EOS) {
-          if (ls->t.token == '(' || ls->t.token == '{' || ls->t.token == '[') depth++;
-          else if ((ls->t.token == ')' || ls->t.token == '}' || ls->t.token == ']') && depth > 0) depth--;
-          else if (ls->t.token == '}' && depth == 0) break;
-          luaX_next(ls);
-        }
+        /* 支持默认值: name = default_expr */
+        has_default[nvars] = 1;
+        expr(ls, &default_exps[nvars]);
       }
     }
     
@@ -6989,18 +6993,46 @@ static void takestat_full(LexState *ls) {
     }
     luaK_indexed(fs, &src, &key_exp);
     
-    /* 将值直接加载到目标寄存器 */
-    luaK_exp2reg(fs, &src, target_reg);
+    /* 生成条件赋值: 如果 table[key] 为 nil 则使用默认值 */
+    if (has_default[i]) {
+      /* 将 table[key] 加载到临时寄存器 */
+      luaK_exp2nextreg(fs, &src);
+      int val_reg = src.u.info;
+      
+      /* 生成 nil 检查 */
+      luaK_codeABCk(fs, OP_TESTNIL, val_reg, val_reg, 0, 0);
+      int jmp_to_default = luaK_jump(fs);
+      
+      /* table[key] 不为 nil，使用 table[key] 的值 */
+      init_exp(&src, VNONRELOC, val_reg);
+      luaK_exp2reg(fs, &src, target_reg);
+      
+      int jmp_end = luaK_jump(fs);
+      
+      /* table[key] 为 nil，使用默认值 */
+      luaK_patchtohere(fs, jmp_to_default);
+      
+      /* 将默认值移到目标寄存器 */
+      luaK_exp2reg(fs, &default_exps[i], target_reg);
+      
+      luaK_patchtohere(fs, jmp_end);
+      
+      /* 恢复 freereg */
+      fs->freereg = target_reg + 1;
+    } else {
+      /* 无默认值，直接从表读取 */
+      luaK_exp2reg(fs, &src, target_reg);
+    }
     
     /* 重置 freereg 保护源表（在 source_reg 之后） */
     fs->freereg = source_reg + 1;
   }
   
+  /* 第五阶段：一次性激活所有变量 */
+  adjustlocalvars(ls, nvars);
+  
   /* 释放源表临时寄存器，freereg 回到变量区域末尾 */
   fs->freereg = var_base + nvars;
-  
-  /* 第五阶段：激活所有变量 */
-  adjustlocalvars(ls, nvars);
 }
 
 /* ========================================================================= */
@@ -8356,10 +8388,10 @@ static void asmstat (LexState *ls, int line) {
 static void asmstat_ex (LexState *ls, int line, AsmContext *parent_ctx) {
   FuncState *fs = ls->fs;
   AsmContext ctx;
-  
+
   /* 初始化汇编上下文（动态分配，支持嵌套） */
   asm_initcontext(ls->L, &ctx, parent_ctx);
-  
+
   luaX_next(ls);  /* 跳过 'asm' */
   checknext(ls, '(');
   
@@ -8941,35 +8973,20 @@ static void asmstat_ex (LexState *ls, int line, AsmContext *parent_ctx) {
       continue;
     }
     
-    /* str 伪指令: str "string" - 将字符串直接编码为指令序列（每4字节一条指令）*/
+    /* str 伪指令: str "string" - 将字符串数据添加到常量池（推荐方式）*/
     if (strcmp(opname, "str") == 0) {
       luaX_next(ls);  /* 跳过 'str' */
-      
+
       if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
         TString *str_data = ls->t.seminfo.ts;
-        const char *str = getstr(str_data);
-        size_t len = tsslen(str_data);
-        size_t i;
-        
-        /* 每4字节生成一条原始指令 */
-        for (i = 0; i < len; i += 4) {
-          unsigned int data = 0;
-          data |= ((unsigned char)str[i]) << 0;
-          if (i + 1 < len) data |= ((unsigned char)str[i + 1]) << 8;
-          if (i + 2 < len) data |= ((unsigned char)str[i + 2]) << 16;
-          if (i + 3 < len) data |= ((unsigned char)str[i + 3]) << 24;
-          
-          Instruction str_inst = (Instruction)data;
-          luaK_code(fs, str_inst);
-          luaK_fixline(fs, line);
-        }
-        
+        int idx = luaK_stringK(fs, str_data);
+        (void)idx;  /* 字符串已添加到常量池，可供后续指令使用 */
         luaX_next(ls);
       }
       else {
         luaK_semerror(ls, "str expects a string literal");
       }
-      
+
       testnext(ls, ';');
       continue;
     }
@@ -9605,13 +9622,13 @@ static void asmstat_ex (LexState *ls, int line, AsmContext *parent_ctx) {
     /* 可选的分号或换行分隔 */
     testnext(ls, ';');
   }
-  
+
   /* 修补所有待处理的前向引用 */
   asm_patchpending(ls, fs, &ctx);
-  
+
   /* 释放汇编上下文 */
   asm_freecontext(ls->L, &ctx);
-  
+
   checknext(ls, ')');
 }
 
@@ -11712,30 +11729,64 @@ static void incrementstat (LexState *ls, expdesc *var) {
 static int try_command_call (LexState *ls);
 
 static void exprstat (LexState *ls) {
-  /* stat -> func | assignment | compoundassign | increment | cmdcall */
+  /* stat -> func | assignment | compoundassign | increment | cmdcall | walrus */
   FuncState *fs = ls->fs;
   struct LHS_assign v;
-  
+
   /* 优先尝试 Shell 风格命令调用 */
   if (try_command_call(ls)) {
     return;
   }
-  
+
+  /* 检查海象操作符: NAME := expr (作为独立语句) */
+  if (ls->t.token == TK_NAME && luaX_lookahead(ls) == TK_WALRUS) {
+    TString *varname = ls->t.seminfo.ts;
+    luaX_next(ls);  /* 跳过 NAME */
+    luaX_next(ls);  /* 跳过 := */
+
+    /* 解析右侧表达式 */
+    expdesc e;
+    expr(ls, &e);
+
+    /* 查找变量（先查找局部/upvalue，再查找全局） */
+    singlevaraux(fs, varname, &v.v, 0);
+    if (v.v.k == VVOID) {
+      /* 变量不存在，作为全局变量 */
+      singlevaraux(fs, ls->envn, &v.v, 1);
+      expdesc key;
+      codestring(&key, varname);
+      luaK_indexed(fs, &v.v, &key);
+    }
+    luaK_storevar(fs, &v.v, &e);
+
+    /* 海象操作符作为语句时不使用表达式的值 */
+    return;
+  }
+
   suffixedexp(ls, &v.v);
-  
+
+  /* 检查是否是海象操作符: suffixedexp := expr (如 t.name := val) */
+  if (ls->t.token == TK_WALRUS) {
+    expdesc e;
+    luaX_next(ls);  /* 跳过 := */
+    expr(ls, &e);
+    luaK_storevar(fs, &v.v, &e);
+    return;
+  }
+
   /* 检查是否是自增运算符 */
   if (ls->t.token == TK_PLUSPLUS) {
     incrementstat(ls, &v.v);
     return;
   }
-  
+
   /* 检查是否是复合赋值运算符 */
   BinOpr opr = getcompoundop(ls->t.token);
   if (opr != OPR_NOBINOPR) {
     compoundassign(ls, &v.v, opr);
     return;
   }
-  
+
   if (ls->t.token == '=' || ls->t.token == ',') { /* stat -> assignment ? */
     v.prev = NULL;
     restassign(ls, &v, 1);

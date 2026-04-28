@@ -1486,6 +1486,7 @@ LUAMOD_API int luaopen_lexer(lua_State *L) {
     REG_TK(L, TK_INT);
     REG_TK(L, TK_INTERPSTRING);
     REG_TK(L, TK_IS);
+    REG_TK(L, TK_INSTANCEOF);
     REG_TK(L, TK_KEYWORD);
     REG_TK(L, TK_LAMBDA);
     REG_TK(L, TK_LE);

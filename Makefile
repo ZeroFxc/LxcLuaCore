@@ -39,7 +39,8 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 LUA_A=	liblua.a
 CORE_O= lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o
 WASM3_O= m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o
-LIB_O=	lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o
+LIB_O=	lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lguilib.o $(GUI_OBJS)
+GUI_OBJS=	gui_windows.o gui_controls.o gui_controls_ext.o
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= lwasm3.o $(WASM3_O)
 BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS)
@@ -153,6 +154,10 @@ Linux linux:
 	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread" SYSLDFLAGS="-s"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
+Linux-gui linux-gui:
+	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE `pkg-config --cflags gtk+-3.0`" SYSCFLAGS="-DLUA_USE_LINUX" GUI_PLATFORM_DEF="-DGUI_PLATFORM_LINUX" GUI_OBJS="gui_linux.o gui_controls.o gui_controls_ext.o" SYSLIBS="-Wl,-E -ldl -lm -lpthread `pkg-config --libs gtk+-3.0`" SYSLDFLAGS="-s"
+	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
+
 termux:
 	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
@@ -163,7 +168,7 @@ Darwin macos macosx:
 mingw:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32" "SYSLDFLAGS=-s" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
@@ -174,11 +179,11 @@ mingw:
 mingw-static:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32" "SYSLDFLAGS=-s" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread" "SYSLDFLAGS=-s" \
 	luac.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi" lbcdump.exe
 
@@ -200,6 +205,7 @@ EMAR= $(EMSDK_PATH)/emar.bat
 EMRANLIB= $(EMSDK_PATH)/emranlib.bat
 
 wasm:
+	$(MAKE) clean
 	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
 	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN" \
@@ -209,10 +215,13 @@ wasm:
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
+	"LIB_O=lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o" \
+	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0"
 
 # WASM 最小化版本（无文件系统，更小体积）
 wasm-minimal:
+	$(MAKE) clean
 	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-Os -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
 	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN" \
@@ -497,6 +506,25 @@ quickjs/qjsc.o: quickjs/qjsc.c
 
 quickjs/qjs.o: quickjs/qjs.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
+
+GUI_OBJS=	gui_windows.o gui_controls.o gui_controls_ext.o
+GUI_PLATFORM_DEF=	-DGUI_PLATFORM_WINDOWS
+
+# GUI库源文件编译规则 (跨平台)
+lguilib.o: gui/lguilib.c gui/gui_core.h lua.h lauxlib.h lualib.h
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/lguilib.c -o lguilib.o
+
+gui_windows.o: gui/gui_windows.c gui/gui_core.h gui/gui_windows.h
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_windows.c -o gui_windows.o
+
+gui_linux.o: gui/gui_linux.c gui/gui_core.h gui/gui_linux.h
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) `pkg-config --cflags gtk+-3.0` -c gui/gui_linux.c -o gui_linux.o
+
+gui_controls.o: gui/gui_controls.c gui/gui_core.h
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls.c -o gui_controls.o
+
+gui_controls_ext.o: gui/gui_controls_ext.c gui/gui_core.h
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls_ext.c -o gui_controls_ext.o
 
 llex.o:
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c llex.c

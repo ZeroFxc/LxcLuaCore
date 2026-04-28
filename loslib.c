@@ -529,14 +529,16 @@ static int os_randbytes (lua_State *L) {
 }
 
 static int os_procname (lua_State *L) {
+  wchar_t wname[128] = {0};
   char name[128] = {0};
   
 #ifdef _WIN32
   /* Windows上使用GetModuleFileName获取进程名 */
-  DWORD size = GetModuleFileName(NULL, name, sizeof(name) - 1);
+  DWORD size = GetModuleFileNameW(NULL, wname, sizeof(wname)/sizeof(wchar_t) - 1);
   if (size == 0) {
     return luaL_error(L, "cannot get module file name: %lu", GetLastError());
   }
+  WideCharToMultiByte(CP_ACP, 0, wname, -1, name, sizeof(name) - 1, NULL, NULL);
   
   /* 提取文件名部分 */
   char *last_backslash = strrchr(name, '\\');
@@ -638,11 +640,13 @@ static int os_tid(lua_State *L) {
 static int os_arg0(lua_State *L) { 
 #ifdef _WIN32
   /* Windows上使用GetModuleFileName获取argv[0] */
+  wchar_t wbuffer[1024] = {0};
   char buffer[1024] = {0};
-  DWORD size = GetModuleFileName(NULL, buffer, sizeof(buffer) - 1);
+  DWORD size = GetModuleFileNameW(NULL, wbuffer, sizeof(wbuffer)/sizeof(wchar_t) - 1);
   if (size == 0) {
     return luaL_error(L, "cannot get module file name: %lu", GetLastError());
   }
+  WideCharToMultiByte(CP_ACP, 0, wbuffer, -1, buffer, sizeof(buffer) - 1, NULL, NULL);
   
   lua_pushstring(L, buffer); 
   return 1; 
@@ -808,14 +812,16 @@ static int os_seccomp(lua_State *L) {
 static int os_mtime(lua_State *L) {
 #ifdef _WIN32
   /* Windows上获取可执行文件的修改时间 */
+  wchar_t wbuffer[1024] = {0};
   char buffer[1024] = {0};
-  DWORD size = GetModuleFileName(NULL, buffer, sizeof(buffer) - 1);
+  DWORD size = GetModuleFileNameW(NULL, wbuffer, sizeof(wbuffer)/sizeof(wchar_t) - 1);
   if (size == 0) {
     return luaL_error(L, "cannot get module file name: %lu", GetLastError());
   }
+  WideCharToMultiByte(CP_ACP, 0, wbuffer, -1, buffer, sizeof(buffer) - 1, NULL, NULL);
   
-  WIN32_FIND_DATA findData;
-  HANDLE hFind = FindFirstFile(buffer, &findData);
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(wbuffer, &findData);
   if (hFind == INVALID_HANDLE_VALUE) {
     return luaL_error(L, "cannot find file: %lu", GetLastError());
   }
