@@ -243,7 +243,11 @@ static void http_request_work(void *data) {
     
 #ifdef _WIN32
     /* Windows: 使用 WinINet（简化示例） */
-    HINTERNET hInternet = InternetOpen("LXCLua/AsyncIO",
+    wchar_t wAgent[64] = {0};
+    MultiByteToWideChar(CP_ACP, 0, "LXCLua/AsyncIO", -1, wAgent, sizeof(wAgent)/sizeof(wchar_t));
+    wchar_t wUrl[2048] = {0};
+    MultiByteToWideChar(CP_ACP, 0, ctx->url, -1, wUrl, sizeof(wUrl)/sizeof(wchar_t));
+    HINTERNET hInternet = InternetOpenW(wAgent,
                                        INTERNET_OPEN_TYPE_PRECONFIG,
                                        NULL, NULL, 0);
     if (!hInternet) {
@@ -252,7 +256,7 @@ static void http_request_work(void *data) {
         return;
     }
 
-    HINTERNET hConnect = InternetOpenUrl(hInternet, ctx->url, NULL, 0,
+    HINTERNET hConnect = InternetOpenUrlW(hInternet, wUrl, NULL, 0,
                                         INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE,
                                         0);
     if (!hConnect) {

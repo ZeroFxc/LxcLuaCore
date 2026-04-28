@@ -246,10 +246,12 @@ static int fs_ls (lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   check_permission(L, path, "read");
 #if defined(_WIN32)
-  WIN32_FIND_DATA ffd;
+  WIN32_FIND_DATAW ffd;
   char search_path[MAX_PATH];
   sprintf(search_path, "%s\\*", path);
-  HANDLE hFind = FindFirstFile(search_path, &ffd);
+  wchar_t wsearch_path[MAX_PATH] = {0};
+  MultiByteToWideChar(CP_ACP, 0, search_path, -1, wsearch_path, MAX_PATH);
+  HANDLE hFind = FindFirstFileW(wsearch_path, &ffd);
 
   if (hFind == INVALID_HANDLE_VALUE) {
     return luaL_error(L, "cannot open directory %s", path);
@@ -258,12 +260,13 @@ static int fs_ls (lua_State *L) {
   lua_newtable(L);
   int i = 1;
   do {
-    const char *name = ffd.cFileName;
+    char name[256] = {0};
+    WideCharToMultiByte(CP_ACP, 0, ffd.cFileName, -1, name, sizeof(name) - 1, NULL, NULL);
     if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
       lua_pushstring(L, name);
       lua_rawseti(L, -2, i++);
     }
-  } while (FindNextFile(hFind, &ffd) != 0);
+  } while (FindNextFileW(hFind, &ffd) != 0);
 
   FindClose(hFind);
 #else

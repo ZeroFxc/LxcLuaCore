@@ -113,7 +113,8 @@ typedef struct CFFContext {
   int num_groups;           /**< Number of block groups (nested mode). */
   int *group_starts;        /**< Start index of each group (nested mode). */
   int num_fake_funcs;       /**< Number of fake functions (interleaving mode). */
-  unsigned int seed;        /**< Random seed. */
+  unsigned int seed;        /**< Random seed (changes during obfuscation). */
+  unsigned int initial_seed; /**< Initial seed (constant, used for state encoding). */
   int obfuscate_flags;      /**< Obfuscation flags. */
   int skip_pc0;             /**< True if PC 0 should be skipped during block emission. */
 } CFFContext;
