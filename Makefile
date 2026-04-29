@@ -15,11 +15,11 @@ RM= rm -f
 UNAME= uname
 
 SYSCFLAGS= -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
-override CFLAGS+= $(SYSCFLAGS)
+override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS=
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
@@ -29,7 +29,8 @@ LDFLAGS= $(SYSLDFLAGS) $(MYLDFLAGS)
 LIBS= -lm $(SYSLIBS) $(MYLIBS)
 
 # Special flags for compiler modules; -Os reduces code size.
-CMCFLAGS= 
+VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin
+CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin
 
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
@@ -39,7 +40,7 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 LUA_A=	liblua.a
 CORE_O= lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o
 WASM3_O= m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o
-LIB_O=	lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lguilib.o $(GUI_OBJS)
+LIB_O=	lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o
 GUI_OBJS=	gui_windows.o gui_controls.o gui_controls_ext.o
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= lwasm3.o $(WASM3_O)
@@ -59,8 +60,9 @@ ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O)
 QJS_T= qjs
 QJSC_T= qjsc
 QJSC_O= quickjs/qjsc.o
+QJS_EXE_O= quickjs/qjs.o
 
-ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(QJS_T) $(QJSC_T)
+ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T)
 
 ALL_A= $(LUA_A)
 
@@ -215,7 +217,7 @@ wasm:
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
-	"LIB_O=lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o ltcc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o" \
+	"LIB_O=lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o" \
 	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0"
 
@@ -500,7 +502,7 @@ quickjs/%.o: quickjs/%.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
 lquickjs.o: lquickjs.c
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c lquickjs.c -o lquickjs.o
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c $< -o $@
 quickjs/qjsc.o: quickjs/qjsc.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
@@ -527,13 +529,13 @@ gui_controls_ext.o: gui/gui_controls_ext.c gui/gui_core.h
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls_ext.c -o gui_controls_ext.o
 
 llex.o:
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c llex.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
 lparser.o:
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c lparser.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
 lcode.o:
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c lcode.c
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
 # DO NOT DELETE
 

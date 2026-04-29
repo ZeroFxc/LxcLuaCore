@@ -1,4 +1,4 @@
-#define ltcc_c
+#define lbctc_c
 #define LUA_LIB
 
 #include "lprefix.h"
@@ -15,7 +15,7 @@
 #include "lopcodes.h"
 #include "lstate.h"
 #include "lundump.h"
-#include "ltcc.h"
+#include "lbctc.h"
 #include "lopnames.h"
 #include "lobfuscate.h"
 
@@ -107,13 +107,13 @@ LUA_API void lua_tcc_store_results(lua_State *L, int start_reg, int count) {
 /* Helper X-macros to generate API lists */
 #define X(name, ret, args) name,
 static const void *tcc_api_funcs[] = {
-#include "ltcc_api_list.h"
+#include "lbctc_api_list.h"
 };
 #undef X
 
 #define X(name, ret, args) #name,
 static const char *tcc_api_names[] = {
-#include "ltcc_api_list.h"
+#include "lbctc_api_list.h"
 };
 #undef X
 
@@ -1857,7 +1857,7 @@ static int tcc_compile(lua_State *L) {
     int obfuscate_flags = provided_flags;
     if (flatten) obfuscate_flags |= OBFUSCATE_CFF;
     // Note: We do NOT enable OBFUSCATE_STR_ENCRYPT here for luaO_flatten if str_encrypt is set,
-    // because we handle string encryption explicitly during C code generation in ltcc.c.
+    // because we handle string encryption explicitly during C code generation in lbctc.c.
     // if (str_encrypt) obfuscate_flags |= OBFUSCATE_STR_ENCRYPT;
 
     if (obfuscate_flags != 0) {
@@ -1911,7 +1911,7 @@ static int tcc_compile(lua_State *L) {
             add_fmt(&B, "#define %s %s\n", #name, obf_name); \
             counter++;
 
-        #include "ltcc_api_list.h"
+        #include "lbctc_api_list.h"
         #undef X
 
         free(indices);
@@ -1920,7 +1920,7 @@ static int tcc_compile(lua_State *L) {
         add_fmt(&B, "extern void *lua_tcc_get_interface(lua_State *L, int seed);\n");
     }
 
-    // Helpers (now provided by lapi.c/ltcc.c via LUA_API)
+    // Helpers (now provided by lapi.c/lbctc.c via LUA_API)
 
     // Forward declarations
     for (int i = 0; i < count; i++) {
