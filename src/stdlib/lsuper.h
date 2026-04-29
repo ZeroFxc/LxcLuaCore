@@ -1,7 +1,7 @@
 #ifndef lsuper_h
 #define lsuper_h
 
-#include "lobject.h"
+#include "../core/lobject.h"
 
 LUAI_FUNC SuperStruct *luaS_newsuperstruct (lua_State *L, TString *name, unsigned int size);
 LUAI_FUNC void luaS_setsuperstruct (lua_State *L, SuperStruct *ss, TValue *key, TValue *val);

@@ -70,7 +70,7 @@ LOCAL_SRC_FILES := \
 	src/stdlib/lproclib.c\
 	src/stdlib/lptrlib.c \
 	src/utils/lsmgrlib.c \
-	llibc.c \
+	src/utils/llibc.c \
 	src/vm/lvmpro.c\
 	src/utils/logtable.c \
 	src/utils/json_parser.c \

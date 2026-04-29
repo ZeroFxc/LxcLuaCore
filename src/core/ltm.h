@@ -9,7 +9,7 @@
 
 
 #include "lobject.h"
-#include "lsuper.h"
+#include "../stdlib/lsuper.h"
 
 
 /*
