@@ -11,7 +11,7 @@
 #include "lua.h"
 
 #include "lmem.h"
-#include "aes.h"
+#include "../utils/aes.h"
 
 
 #define EOZ	(-1)			/* end of stream */

@@ -15,7 +15,7 @@
 #include "llimits.h"
 #include <stdint.h>
 #include "lua.h"
-#include "lthread.h"
+#include "../utils/lthread.h"
 
 
 /*

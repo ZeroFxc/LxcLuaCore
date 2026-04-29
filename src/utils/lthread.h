@@ -1,7 +1,7 @@
 #ifndef lthread_h
 #define lthread_h
 
-#include "lua.h"
+#include "../core/lua.h"
 
 #if defined(LUA_USE_WINDOWS)
   #include <windows.h>

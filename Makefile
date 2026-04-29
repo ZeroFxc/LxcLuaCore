@@ -6,6 +6,9 @@
 # Your platform. See PLATS for possible values.
 PLAT= guess
 
+# Build directory for object files
+BUILDDIR = build/obj
+
 CC= gcc -std=gnu11 -pipe
 CFLAGS= -O3 -funroll-loops -fomit-frame-pointer -ffunction-sections -fdata-sections -fstrict-aliasing -g0 -DNDEBUG -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration -D_GNU_SOURCE
 
@@ -38,23 +41,23 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblua.a
-CORE_O= lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o
-WASM3_O= m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o
-LIB_O=	lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o
-GUI_OBJS=	gui_windows.o gui_controls.o gui_controls_ext.o
+CORE_O= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
+LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
+GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
-LIB_O_WASM= lwasm3.o $(WASM3_O)
+LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(WASM3_O)
 BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS)
 BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS)
 
 LUA_T=	lxclua
-LUA_O=	lua.o
+LUA_O=	$(BUILDDIR)/lua.o
 
 LUAC_T=	luac
-LUAC_O=	luac.o
+LUAC_O=	$(BUILDDIR)/luac.o
 
 LBCDUMP_T=	lbcdump
-LBCDUMP_O=	lbcdump.o
+LBCDUMP_O=	$(BUILDDIR)/lbcdump.o
 
 ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O)
 QJS_T= qjs
@@ -74,6 +77,14 @@ all:	$(ALL_T)
 o:	$(ALL_O)
 
 a:	$(ALL_A)
+
+# Create build directory
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
+
+# Generic compile rule for .o files in build directory
+$(BUILDDIR)/%.o: %.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(MYCFLAGS) -c $< -o $@
 
 $(LUA_A): $(BASE_O)
 	$(AR) $@ $(BASE_O) $(if $(findstring .dll,$(LUA_A)),$(LDFLAGS) $(LIBS))
@@ -99,6 +110,7 @@ $(WEBSERVER_A): $(WEBSERVER_O) $(LUA_A)
 test:
 	./$(LUA_T) -v
 clean:
+	$(RM) -r $(BUILDDIR)
 	$(RM) $(ALL_T) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
 	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
@@ -157,7 +169,7 @@ Linux linux:
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
 Linux-gui linux-gui:
-	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE `pkg-config --cflags gtk+-3.0`" SYSCFLAGS="-DLUA_USE_LINUX" GUI_PLATFORM_DEF="-DGUI_PLATFORM_LINUX" GUI_OBJS="gui_linux.o gui_controls.o gui_controls_ext.o" SYSLIBS="-Wl,-E -ldl -lm -lpthread `pkg-config --libs gtk+-3.0`" SYSLDFLAGS="-s"
+	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE `pkg-config --cflags gtk+-3.0`" SYSCFLAGS="-DLUA_USE_LINUX" GUI_PLATFORM_DEF="-DGUI_PLATFORM_LINUX" GUI_OBJS="$(BUILDDIR)/gui_linux.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o" SYSLIBS="-Wl,-E -ldl -lm -lpthread `pkg-config --libs gtk+-3.0`" SYSLDFLAGS="-s"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
 termux:
@@ -501,7 +513,7 @@ release:
 quickjs/%.o: quickjs/%.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
-lquickjs.o: lquickjs.c
+$(BUILDDIR)/lquickjs.o: lquickjs.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c $< -o $@
 quickjs/qjsc.o: quickjs/qjsc.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
@@ -509,32 +521,32 @@ quickjs/qjsc.o: quickjs/qjsc.c
 quickjs/qjs.o: quickjs/qjs.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
-GUI_OBJS=	gui_windows.o gui_controls.o gui_controls_ext.o
+GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
 GUI_PLATFORM_DEF=	-DGUI_PLATFORM_WINDOWS
 
 # GUI库源文件编译规则 (跨平台)
-lguilib.o: gui/lguilib.c gui/gui_core.h lua.h lauxlib.h lualib.h
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/lguilib.c -o lguilib.o
+$(BUILDDIR)/lguilib.o: gui/lguilib.c gui/gui_core.h lua.h lauxlib.h lualib.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/lguilib.c -o $@
 
-gui_windows.o: gui/gui_windows.c gui/gui_core.h gui/gui_windows.h
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_windows.c -o gui_windows.o
+$(BUILDDIR)/gui_windows.o: gui/gui_windows.c gui/gui_core.h gui/gui_windows.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_windows.c -o $@
 
-gui_linux.o: gui/gui_linux.c gui/gui_core.h gui/gui_linux.h
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) `pkg-config --cflags gtk+-3.0` -c gui/gui_linux.c -o gui_linux.o
+$(BUILDDIR)/gui_linux.o: gui/gui_linux.c gui/gui_core.h gui/gui_linux.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) `pkg-config --cflags gtk+-3.0` -c gui/gui_linux.c -o $@
 
-gui_controls.o: gui/gui_controls.c gui/gui_core.h
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls.c -o gui_controls.o
+$(BUILDDIR)/gui_controls.o: gui/gui_controls.c gui/gui_core.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls.c -o $@
 
-gui_controls_ext.o: gui/gui_controls_ext.c gui/gui_core.h
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls_ext.c -o gui_controls_ext.o
+$(BUILDDIR)/gui_controls_ext.o: gui/gui_controls_ext.c gui/gui_core.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls_ext.c -o $@
 
-llex.o:
+$(BUILDDIR)/llex.o: llex.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
-lparser.o:
+$(BUILDDIR)/lparser.o: lparser.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
-lcode.o:
+$(BUILDDIR)/lcode.o: lcode.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
 # DO NOT DELETE
