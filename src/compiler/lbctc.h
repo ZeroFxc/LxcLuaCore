@@ -1,5 +1,5 @@
-#ifndef ltcc_h
-#define ltcc_h
+#ifndef lbctc_h
+#define lbctc_h
 
 #include "lua.h"
 

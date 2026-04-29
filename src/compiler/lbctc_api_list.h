@@ -1,5 +1,5 @@
 /*
-** ltcc_api_list.h
+** lbctc_api_list.h
 ** List of Lua APIs used by tcc-transpiled code.
 ** Format: X(name, return_type, args)
 */

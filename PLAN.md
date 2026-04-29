@@ -18,7 +18,7 @@ LXCLUA-NCore is a highly customized, high-performance embedded scripting engine 
 
 While feature-rich, the extensive modifications and integrations introduce specific challenges that need to be addressed:
 
-*   **Complexity of Integration:** Maintaining synchronization between the custom 64-bit `lparser.c`/`lvm.c`, TCC inline C generation (`ltcc.c`), and WebAssembly bindings (`lwasm3.c`) requires immense care. Any structural changes to the Lua stack or bytecode format risk breaking multiple downstream modules.
+*   **Complexity of Integration:** Maintaining synchronization between the custom 64-bit `lparser.c`/`lvm.c`, TCC inline C generation (`lbctc.c`), and WebAssembly bindings (`lwasm3.c`) requires immense care. Any structural changes to the Lua stack or bytecode format risk breaking multiple downstream modules.
 *   **Memory Safety in Native Extensions:** Given the heavy use of raw C APIs in modules like `struct`, `ptr`, and the obfuscator (`lobfuscate.c`), the risk of segfaults or memory leaks (especially during AST generation or CFF restructuring) is higher than in vanilla Lua.
 *   **Documentation & API Standardization:** While `README.md` covers the syntax, deeper modules (like the `ByteCode` API or `lexer` manipulation) lack comprehensive, standardized documentation detailing edge cases (e.g., handling interpolated strings `<interpstring>` vs raw strings `<rawstring>`).
 *   **Test Coverage for Edge Cases:** Some modern syntax features (like async/await, or deeply nested concepts/superstructs) may lack exhaustive regression tests, especially when combined with heavy CFF obfuscation.
