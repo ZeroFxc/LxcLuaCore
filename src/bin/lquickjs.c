@@ -6,7 +6,7 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
-#include "quickjs/quickjs.h"
+#include "quickjs.h"
 
 /* Metatable names */
 #define QJS_RUNTIME_MT "qjs_runtime"

@@ -79,7 +79,7 @@ int luaopen_asyncio(lua_State *L);
 
 /* 声明GUI库的初始化函数（Windows/Linux桌面平台，排除Android） */
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-int luaopen_gui(lua_State *L);
+/* int luaopen_gui(lua_State *L); */
 #endif
 
 // clang and ffi libraries
@@ -124,7 +124,7 @@ static const luaL_Reg stdlibs[] = {
   {"asyncio", luaopen_asyncio},
 
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-  {"gui", luaopen_gui},
+  /* {"gui", luaopen_gui}, */
 #endif
 
 #ifndef _WIN32
@@ -202,7 +202,7 @@ static const luaL_Reg loadedlibs[] = {
   {"asyncio", luaopen_asyncio},
 
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-  {"gui", luaopen_gui},
+  /* {"gui", luaopen_gui}, */
 #endif
 
 #ifndef _WIN32
