@@ -10550,7 +10550,7 @@ static void class_abstract_method(LexState *ls, int class_reg, int is_static, in
   luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
   
   /* flags |= CLASS_FLAG_ABSTRACT (0x02) */
-  luaK_int(fs, fs->freereg, CLASS_FLAG_ABSTRACT);
+  luaK_codeABx(fs, OP_LOADI, fs->freereg, CLASS_FLAG_ABSTRACT);
   luaK_reserveregs(fs, 1);
   luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
   luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
@@ -10673,7 +10673,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
     luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
     
     /* flags |= class_flags */
-    luaK_int(fs, fs->freereg, class_flags);
+    luaK_codeABx(fs, OP_LOADI, fs->freereg, class_flags);
     luaK_reserveregs(fs, 1);
     luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
     luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
