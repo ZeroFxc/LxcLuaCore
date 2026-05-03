@@ -1322,6 +1322,10 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
       luaL_error(L, "不能实例化抽象类");
       return;
     }
+    if (flags & CLASS_FLAG_INTERFACE) {
+      luaL_error(L, "不能实例化接口");
+      return;
+    }
   }
   lua_pop(L, 1);
   
