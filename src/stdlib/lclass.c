@@ -187,6 +187,8 @@ static int class_call(lua_State *L) {
 }
 
 
+static const char* get_class_name_str(lua_State *L, int class_idx);
+
 /*
 ** 类的__index元方法 - 用于访问类成员
 ** 参数：
@@ -249,6 +251,28 @@ static int class_newindex(lua_State *L) {
   
   /* 如果值是函数，设置到方法表（使用rawget/rawset避免递归） */
   if (lua_isfunction(L, 3)) {
+    /* 如果有父类，检查是否在重写 final 方法 */
+    lua_pushstring(L, CLASS_KEY_PARENT);
+    lua_rawget(L, 1);
+    if (lua_istable(L, -1)) {
+      int parent_idx = lua_gettop(L);
+      lua_pushstring(L, CLASS_KEY_FINALS);
+      lua_rawget(L, parent_idx);
+      if (lua_istable(L, -1)) {
+        lua_pushvalue(L, 2);  /* 键 (method_name) */
+        lua_rawget(L, -2);
+        if (lua_toboolean(L, -1)) {
+          const char *parent_name = get_class_name_str(L, parent_idx);
+          const char *method_name = lua_tostring(L, 2);
+          return luaL_error(L, "不能重写类 '%s' 的final方法 '%s'",
+                     parent_name, method_name ? method_name : "?");
+        }
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+
     lua_pushstring(L, CLASS_KEY_METHODS);
     lua_rawget(L, 1);
     if (!lua_istable(L, -1)) {
@@ -1488,6 +1512,28 @@ void luaC_setmethod(lua_State *L, int class_idx, TString *name, int func_idx) {
   class_idx = absindex(L, class_idx);
   func_idx = absindex(L, func_idx);
   
+  /* 如果有父类，检查是否在重写 final 方法 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
+  lua_rawget(L, class_idx);
+  if (lua_istable(L, -1)) {
+    int parent_idx = lua_gettop(L);
+    lua_pushstring(L, CLASS_KEY_FINALS);
+    lua_rawget(L, parent_idx);
+    if (lua_istable(L, -1)) {
+      lua_pushlstring(L, getstr(name), tsslen(name));
+      lua_rawget(L, -2);
+      if (lua_toboolean(L, -1)) {
+        const char *parent_name = get_class_name_str(L, parent_idx);
+        luaL_error(L, "不能重写类 '%s' 的final方法 '%s'",
+                   parent_name, getstr(name));
+        return;
+      }
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+
   /* 使用rawget/rawset访问类表避免触发元方法 */
   lua_pushstring(L, CLASS_KEY_METHODS);
   lua_rawget(L, class_idx);

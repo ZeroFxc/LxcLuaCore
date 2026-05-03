@@ -10322,7 +10322,7 @@ static void class_method(LexState *ls, int class_reg, int is_static, int access_
   
   /* 使用SETFIELD指令设置方法 */
   int key_k = luaK_stringK(fs, method_name);
-  luaK_codeABC(fs, OP_SETFIELD, class_exp.u.info, key_k, method_exp.u.info);
+  luaK_codeABC(fs, OP_SETMETHOD, class_reg, key_k, method_exp.u.info);
   
   fs->freereg = class_reg + 1;  /* 释放临时寄存器 */
 }
@@ -10550,9 +10550,10 @@ static void class_abstract_method(LexState *ls, int class_reg, int is_static, in
   luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
   
   /* flags |= CLASS_FLAG_ABSTRACT (0x02) */
-  luaK_codeABx(fs, OP_LOADI, fs->freereg, CLASS_FLAG_ABSTRACT);
+  luaK_int(fs, fs->freereg, CLASS_FLAG_ABSTRACT);
   luaK_reserveregs(fs, 1);
   luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
+  luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
   
   /* 写回 flags */
   luaK_codeABC(fs, OP_SETFIELD, class_reg, flags_k, flags_reg);
@@ -10610,7 +10611,7 @@ static void class_final_method(LexState *ls, int class_reg, int is_static, int a
   luaK_exp2anyreg(fs, &method_exp);
   
   int key_k = luaK_stringK(fs, method_name);
-  luaK_codeABC(fs, OP_SETFIELD, class_exp.u.info, key_k, method_exp.u.info);
+  luaK_codeABC(fs, OP_SETMETHOD, class_reg, key_k, method_exp.u.info);
   
   /* 将方法名添加到 __finals 表，标记为不可重写 */
   TString *finals_ts = luaS_newliteral(ls->L, "__finals");
@@ -10672,9 +10673,10 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
     luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
     
     /* flags |= class_flags */
-    luaK_codeABx(fs, OP_LOADI, fs->freereg, class_flags);
+    luaK_int(fs, fs->freereg, class_flags);
     luaK_reserveregs(fs, 1);
     luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
+    luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
     
     /* 写回 flags */
     luaK_codeABC(fs, OP_SETFIELD, class_reg, flags_k, flags_reg);
