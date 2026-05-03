@@ -1,6 +1,6 @@
 # LXCLUA-NCore
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-blue.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Cross--Platform-green.svg)]()
 
@@ -147,7 +147,7 @@ The bytecode compilation in this project employs multiple security mechanisms:
 
 ## License
 
-This project is open-sourced under the [MIT License](LICENSE).
+This project is open-sourced under the [MIT License](../LICENSE).
 
 Original Lua code is copyrighted by PUC-Rio. See [Lua License](https://www.lua.org/license.html).
 
@@ -158,7 +158,6 @@ Issues and Pull Requests are welcome. Please refer to the [Contributing Guidelin
 ## Contact
 
 - **Email**: difierline@yeah.net
-- **GitHub**: https://github.com/OxenFxc/LXCLUA-NCORE
 
 ## Acknowledgments
 
