@@ -12,7 +12,7 @@ Thank you for your interest in contributing to LXCLUA-NCore!
 
 #### Reporting Bugs
 
-1. Check if the issue already exists in [Issues](../../issues)
+1. Check if the issue already exists in Issues
 2. Create a new issue with:
    - Clear title describing the problem
    - Steps to reproduce
@@ -60,7 +60,7 @@ make test
 
 #### 报告 Bug
 
-1. 先在 [Issues](../../issues) 中检查是否已存在相同问题
+1. 先在 Issues 中检查是否已存在相同问题
 2. 创建新 Issue，包含：
    - 清晰描述问题的标题
    - 复现步骤

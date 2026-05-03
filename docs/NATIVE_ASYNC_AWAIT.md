@@ -138,7 +138,7 @@ coroutine.yield(expression)  -- 单目操作符 OPR_AWAIT
 
 ### 1. __async_wrap 全局函数
 
-**位置**: [laio.c](file:///e:/Soft/Proje/LXCLUA-NCore/lua/laio.c) - `luaopen_asyncio()` 函数末尾
+**位置**: [laio.c](../src/utils/laio.c) - `luaopen_asyncio()` 函数末尾
 
 **功能**: 将普通函数包装为 AsyncFunction
 
@@ -181,14 +181,14 @@ lua_setglobal(L, "__async_wrap");
 
 ### 2. OP_ASYNCWRAP 操作码
 
-**位置**: [lopcodes.h](file:///e:/Soft/Proje/LXCLUA-NCore/lua/lopcodes.h)
+**位置**: [lopcodes.h](../src/core/lopcodes.h)
 
 **定义**:
 ```c
 OP_ASYNCWRAP,/*	A B	R[A] := async_wrap(R[B])	*/
 ```
 
-**VM 实现** ([lvm.c](file:///e:/Soft/Proje/LXCLUA-NCore/lua/lvm.c)):
+**VM 实现** ([lvm.c](../src/vm/lvm.c)):
 ```c
 vmcase(OP_ASYNCWRAP) {
     // 1. 确保栈空间足够
@@ -225,7 +225,7 @@ vmcase(OP_ASYNCWRAP) {
 
 ### 3. Await 表达式处理
 
-**位置**: [lparser.c](file:///e:/Soft/Proje/LXCLUA-NCore/lua/lparser.c) - `subexpr()` 函数
+**位置**: [lparser.c](../src/compiler/lparser.c) - `subexpr()` 函数
 
 **识别**:
 ```c
@@ -270,7 +270,7 @@ if (uop == OPR_AWAIT) {
 
 ### 4. Yield 处理与 Promise 协作
 
-**位置**: [laio.c](file:///e:/Soft/Proje/LXCLUA-NCore/lua/laio.c) - `aio_run_async()` 函数
+**位置**: [laio.c](../src/utils/laio.c) - `aio_run_async()` 函数
 
 **关键逻辑**:
 ```c
@@ -310,7 +310,7 @@ if (status == LUA_OK || status == LUA_YIELD) {
 
 ### 5. Promise Settled 回调
 
-**位置**: [laio.c](file:///e:/Soft/Proje/LXCLUA-NCore/lua/laio.c) - `laio_promise_settled()` 函数
+**位置**: [laio.c](../src/utils/laio.c) - `laio_promise_settled()` 函数
 
 **功能**: 当 await 的 Promise 完成时，恢复协程并传入结果
 
@@ -443,8 +443,8 @@ result_p = fulfilled(42)
 
 ### 测试文件
 
-- [test_native_async_await.lua](file:///e:/Soft/Proje/LXCLUA-NCore/lua/tests/test_native_async_await.lua) - 原生语法糖测试套件
-- [test_parser_features.lua](file:///e:/Soft/Proje/LXCLUA-NCore/lua/tests/test_parser_features.lua) - Parser 功能测试
+- `test_native_async_await.lua` - 原生语法糖测试套件
+- `test_parser_features.lua` - Parser 功能测试
 
 ### 运行测试
 
@@ -623,10 +623,10 @@ end
 
 ## 📚 相关文档
 
-- [ASYNC_AWAIT_SUGAR.md](file:///e:/Soft/Proje/LXCLUA-NCore/lua/docs/ASYNC_AWAIT_SUGAR.md) - 完整 API 文档
-- [lpromise.h](file:///e:/Soft/Proje/LXCLUA-NCore/lua/lpromise.h) - Promise C API
-- [laio.h](file:///e:/Soft/Proje/LXCLUA-NCore/lua/laio.h) - AsyncIO C API
-- [lopcodes.h](file:///e:/Soft/Proje/LXCLUA-NCore/lua/lopcodes.h) - 操作码定义
+- [ASYNC_AWAIT_SUGAR.md](ASYNC_AWAIT_SUGAR.md) - 完整 API 文档
+- [lpromise.h](../src/utils/lpromise.h) - Promise C API
+- [laio.h](../src/utils/laio.h) - AsyncIO C API
+- [lopcodes.h](../src/core/lopcodes.h) - 操作码定义
 
 ---
 
