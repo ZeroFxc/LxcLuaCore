@@ -1,6 +1,6 @@
 # LXCLUA-NCore
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-blue.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Cross--Platform-green.svg)]()
 
@@ -809,5 +809,5 @@ void   lua_table_iextend(lua_State *L, int idx, int n);
 
 ## 许可证
 
-[MIT License](LICENSE).
+[MIT License](../LICENSE).
 Lua original code Copyright © PUC-Rio.
