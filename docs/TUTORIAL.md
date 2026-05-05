@@ -42,25 +42,33 @@ local path = _raw"C:\Windows\System32"
 
 ### 条件表达式
 ```lua
+local a = 10
+local b = 20
 local max = if a > b then a else b end
 ```
 
-### Switch 表达式
-`switch` 既可以作为语句，也可以作为表达式返回值：
+### Switch 语句
+`switch` 语句需要带有 `do ... end`：
 ```lua
-local type_name = switch (val)
-    case 1: "Integer"
-    case "s": "String"
-    default: "Unknown"
+local val = "s"
+local type_name
+switch (val) do
+    case 1:
+        type_name = "Integer"
+    case "s":
+        type_name = "String"
+    default:
+        type_name = "Unknown"
 end
 ```
 
 ### When 语句
-类似于 `if-elseif-else` 的语法糖：
+类似于 `if-elseif-else` 的语法糖，使用 `when ... case ... else` 结构（注意没有 `then`）：
 ```lua
-when x > 0 then
+local x = -5
+when x > 0
     print("Positive")
-case x < 0 then
+case x < 0
     print("Negative")
 else
     print("Zero")
@@ -72,41 +80,38 @@ end
 ### 强类型声明
 支持 C 风格的变量声明：
 ```lua
-int x = 10;
-float y = 3.14;
-bool flag = true;
-string s = "text";
-```
-也支持 `declare` 关键字声明全局类型提示：
-```lua
-$declare MyGlobal: int
+int i = 10
+string s = "text"
 ```
 
 ### 解构赋值 (take)
 使用 `take` 关键字解构表或数组：
 ```lua
+-- 字典解构
 local data = { x = 10, y = 20, z = 30 }
-take { x, y } = data
+local take { x, y } = data
 print(x, y) -- 10, 20
 
+-- 数组解构 (跳过第二个元素)
 local list = { 1, 2, 3 }
-take { a, , c } = list -- 跳过第二个元素
+local take [ a, , c ] = list
 print(a, c) -- 1, 3
 ```
 
 ### Defer 语句
 `defer` 用于在当前作用域结束时执行代码（类似 Go）：
 ```lua
-local f = io.open("file.txt")
-defer f:close() end
--- 文件会在当前块结束时自动关闭
+local function test_defer()
+    defer print("File closed or cleanup done")
+    print("Doing work...")
+end
+test_defer()
 ```
 
 ### Const 常量
 声明不可修改的变量：
 ```lua
 const PI = 3.14159
--- PI = 3 -- 错误：无法给常量赋值
 ```
 
 ## 4. 数据结构扩展
@@ -122,75 +127,39 @@ struct Point {
 local p = Point{ x = 10, y = 20 }
 print(p.x)
 ```
-支持带类型的字段：
-```lua
-struct Person {
-    string name,
-    int age = 18
-}
-```
-
-### Enum 枚举
-定义枚举类型：
-```lua
-enum Color {
-    Red,
-    Green,
-    Blue = 10
-}
-print(Color.Red)   -- 0
-print(Color.Blue)  -- 10
-```
-
-### 数组 (Typed Arrays)
-支持创建指定类型的数组：
-```lua
-int arr[10] -- 创建包含10个整数的数组
-```
 
 ## 5. 函数扩展
 
 ### 箭头函数
 简洁的函数定义语法：
 ```lua
-local add = (a, b) => a + b      -- 自动返回表达式
-local log = (msg) -> { print(msg) } -- 语句块
-```
+-- 语句块形式
+local log = ->(msg) { print(msg) }
 
-### Lambda 表达式
-```lua
-local f = lambda(x) => x * x
-```
-
-### 泛型函数
-支持泛型参数：
-```lua
-function identity<T>(x)
-    return x
-end
-```
-
-### 异步函数 (Async/Await)
-```lua
-async function fetchData()
-    local data = await http.get("https://example.com")
-    return data
-end
+-- 表达式形式（自动返回）
+local f = =>(x) { x * x }
 ```
 
 ### 管道操作符
 - `|>` (正向管道): 将左侧结果作为右侧函数的第一个参数
-- `<|` (反向管道): 将右侧结果作为左侧函数的第一个参数
-- `|?>` (安全管道): 如果左侧为 nil 则短路返回 nil
 
 ```lua
-"hello" |> string.upper |> print -- PRINT("HELLO")
+local function add1(x) return x + 1 end
+local function mul2(x) return x * 2 end
+
+-- 注意管道调用不要带括号
+local res = 5 |> add1 |> mul2
+
+local s2 = "hello"
+local res3 = s2 |> string.upper |> string.reverse
 ```
 
 ## 6. 面向对象编程 (OOP)
 
 ### 类定义 (class)
-支持单继承、接口实现、静态成员、访问控制：
+支持单继承、接口实现、静态成员、访问控制。
+注意类的构造函数名必须是 `__init__`，并使用类名直接调用来进行实例化。
+
 ```lua
 interface Drawable
     function draw()
@@ -203,9 +172,9 @@ class Shape implements Drawable
 end
 
 class Circle extends Shape
-    private radius
+    private radius = 0
 
-    function Circle(r)
+    function __init__(r)
         self.radius = r
     end
 
@@ -214,9 +183,16 @@ class Circle extends Shape
     end
 
     static function create(r)
-        return new Circle(r)
+        return Circle(r)
     end
 end
+
+-- 实例化
+local c = Circle.create(10)
+c:draw()
+
+local c2 = Circle(20)
+c2:draw()
 ```
 
 ### 属性 (Getter/Setter)
@@ -232,25 +208,9 @@ class Person
         if v >= 0 then self._age = v end
     end
 end
-```
 
-### 访问修饰符
-- `public`: 公开（默认）
-- `private`: 仅类内部可见
-- `protected`: 类及其子类可见
-
-### 其他修饰符
-- `static`: 静态成员
-- `abstract`: 抽象类/方法（需子类实现）
-- `final`: 最终类/方法（不可继承/重写）
-- `sealed`: 密封类
-
-### Concept (概念)
-定义类型约束（类似 C++ Concepts）：
-```lua
-concept Addable(a, b)
-    return a + b
-end
+local p = Person()
+p.age = 25
 ```
 
 ## 7. 错误处理
@@ -272,81 +232,79 @@ end
 组织代码的命名空间：
 ```lua
 namespace MyLib {
-    function test() print("test") end
+    function test(x)
+        return x * 2
+    end
 }
-MyLib::test()
-```
 
-### Using
-引入命名空间或成员：
-```lua
+local res1 = MyLib::test(10)
+print(res1)
+
 using namespace MyLib;
-test()
-```
-
-### Export
-导出模块成员：
-```lua
-export function myFunc() end
-export class MyClass ... end
+local res2 = test(20)
+print(res2)
 ```
 
 ## 9. 元编程与宏
 
 ### 自定义关键字 (keyword)
-定义新的关键字语法：
+定义新的关键字语法。必须先初始化 `_G._KEYWORDS = {}` 才能使用。
 ```lua
-keyword unless(cond)
+_G._KEYWORDS = {}
+
+keyword unless(cond, body)
     if not cond then
-        local _ = ... -- 代码块
+        body()
     end
 end
+
+unless(5 > 10, function()
+    print("5 is not greater than 10")
+end)
 ```
 
 ### 自定义命令 (command)
-定义 Shell 风格的命令：
+定义 Shell 风格的命令。必须先初始化 `_G._CMDS = {}` 才能使用。
 ```lua
+_G._CMDS = {}
+
 command echo(...)
-    print(...)
+    local args = {...}
+    local str = ""
+    for i, v in ipairs(args) do
+        str = str .. tostring(v) .. (i < #args and " " or "")
+    end
+    print(str)
 end
-echo "Hello" "World"
+
+echo("Hello", "World")
 ```
 
 ### 自定义运算符 (operator)
-重载或定义新运算符：
+重载或定义新运算符。必须先初始化 `_G._OPERATORS = {}` 才能使用，调用时需要使用 `$$`。
 ```lua
+_G._OPERATORS = {}
+
 operator ++(x)
     return x + 1
 end
-```
-使用 `$$++(val)` 调用。
 
-### 预处理指令
-- `$if condition`: 条件编译
-- `$define NAME value`: 定义宏常量
-- `$include "file"`: 包含文件
-- `$alias`: 定义别名
+local val = 10
+local val2 = $$++(val)
+```
 
 ## 10. 内联汇编 (ASM)
 使用 `asm` 块直接编写虚拟机指令：
 ```lua
+local result
 asm(
-    LOADI R0 100;
-    RETURN1 R0;
+    newreg a;
+    newreg b;
+    LOADI a 10;
+    LOADI b 20;
+    ADD a a b;
+    MOVE $result a;
 )
+print("Result from asm: " .. result) -- 30
 ```
 更多详情请参考 `ASM_TUTORIAL.md`。
-
-## 11. 标准库扩展
-
-### fs (文件系统)
-提供文件操作：`ls`, `mkdir`, `rm`, `stat`, `exists`, `isdir` 等。
-
-### process (进程管理) (Linux)
-提供进程操作：`open`, `read`, `write`, `getpid`。
-
-### ptr (指针操作)
-直接内存操作：`malloc`, `free`, `copy`, `ptr(addr)`.
-
-### vm (虚拟机控制)
-控制 VM 行为：`vm.execute`, `vm.compile`.
