@@ -6216,7 +6216,7 @@ static void switchstat (LexState *ls, int line) {
   BlockCnt bl;
   expdesc ctrl;
   int jump_to_check;
-  int fallthrough_jump = -1;
+  int escapelist = NO_JUMP;
   int default_label = -1;
   int previous_body_active = 0; /* To track if we need to generate fallthrough jump */
 
@@ -6247,13 +6247,9 @@ static void switchstat (LexState *ls, int line) {
       int to_body_jump = NO_JUMP;
       int next_check_jump;
 
-      /* Handle fallthrough from previous body */
+      /* Handle escape from previous body */
       if (previous_body_active) {
-         int skip = luaK_jump(fs);
-         if (fallthrough_jump == -1)
-            fallthrough_jump = skip;
-         else
-            luaK_concat(fs, &fallthrough_jump, skip);
+         luaK_concat(fs, &escapelist, luaK_jump(fs));
       }
 
       /* Now generating check code */
@@ -6292,10 +6288,7 @@ static void switchstat (LexState *ls, int line) {
 
       /* Body Start */
       luaK_patchtohere(fs, to_body_jump);
-      if (fallthrough_jump != -1) {
-        luaK_patchtohere(fs, fallthrough_jump);
-        fallthrough_jump = -1;
-      }
+
 
       /* Parse Body */
       if (testnext(ls, TK_ARROW)) {
@@ -6317,13 +6310,9 @@ static void switchstat (LexState *ls, int line) {
     } else if (ls->t.token == TK_DEFAULT) {
       if (default_label != -1) luaX_syntaxerror(ls, "multiple default blocks");
 
-      /* Handle fallthrough from previous body */
+      /* Handle escape from previous body */
       if (previous_body_active) {
-         int skip = luaK_jump(fs);
-         if (fallthrough_jump == -1)
-            fallthrough_jump = skip;
-         else
-            luaK_concat(fs, &fallthrough_jump, skip);
+         luaK_concat(fs, &escapelist, luaK_jump(fs));
       }
 
       /* Do NOT patch checks to skip here. Let them skip this block entirely. */
@@ -6332,10 +6321,7 @@ static void switchstat (LexState *ls, int line) {
       default_label = luaK_getlabel(fs);
 
       /* Patch fallthrough to here */
-      if (fallthrough_jump != -1) {
-        luaK_patchtohere(fs, fallthrough_jump);
-        fallthrough_jump = -1;
-      }
+
 
       luaX_next(ls); /* skip DEFAULT */
 
@@ -6366,9 +6352,7 @@ static void switchstat (LexState *ls, int line) {
     luaK_patchtohere(fs, jump_to_check); /* Falls through to end */
   }
 
-  if (fallthrough_jump != -1) {
-    luaK_patchtohere(fs, fallthrough_jump);
-  }
+  luaK_patchtohere(fs, escapelist);
 
   if (ls->t.token == TK_END) {
     luaX_next(ls);
