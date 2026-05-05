@@ -5597,9 +5597,14 @@ static void whilestat (LexState *ls, int line) {
     
     createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
     luaK_jumpto(fs, whileinit);
+    luaK_patchtohere(fs, condexit);
+    if (testnext(ls, TK_ELSE)) {
+        while (!is_stmt_terminator(ls->t.token) && ls->t.token != TK_EOS && ls->t.token != TK_END) {
+            statement(ls);
+        }
+    }
     check_match(ls, TK_END, TK_WHILE, line);
     leaveblock(fs);  /* leaves loop block, discarding locals */
-    luaK_patchtohere(fs, condexit);
   } else {
     luaX_next(ls);  /* skip WHILE */
     whileinit = luaK_getlabel(fs);
@@ -5609,9 +5614,12 @@ static void whilestat (LexState *ls, int line) {
     block(ls);
     createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
     luaK_jumpto(fs, whileinit);
+    luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
+    if (testnext(ls, TK_ELSE)) {
+        block(ls);
+    }
     check_match(ls, TK_END, TK_WHILE, line);
     leaveblock(fs);
-    luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
   }
 }
 
@@ -5763,6 +5771,9 @@ static void forstat (LexState *ls, int line) {
     case '=': fornum(ls, varname, line); break;
     case ',': case TK_IN: forlist(ls, varname); break;
     default: luaX_syntaxerror(ls, "'=' or 'in' expected");
+  }
+  if (testnext(ls, TK_ELSE)) {
+    block(ls);
   }
   check_match(ls, TK_END, TK_FOR, line);
   leaveblock(fs);  /* loop scope ('break' jumps to this point) */
