@@ -1,0 +1,3 @@
+translator/lua/
+translator/*.o
+translator/translator

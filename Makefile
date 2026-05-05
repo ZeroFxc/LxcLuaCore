@@ -22,7 +22,7 @@ override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
