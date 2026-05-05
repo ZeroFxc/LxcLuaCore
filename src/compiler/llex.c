@@ -1227,7 +1227,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
       }
       case '@':{
         next(ls);
-        return TK_OR;
+        return '@';
       }
       case '$':{  /* '$' 宏调用前缀 或 '$$' 运算符调用前缀 */
         next(ls);
@@ -1239,7 +1239,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
       }
       case '|':{
         next(ls);
-        if(check_next1(ls,'|')) return TK_OR;  /* '||' */
+        if(check_next1(ls,'|')) return '@';  /* '||' */
         else if(ls->current == '?') {  /* '|?' 可能是安全管道 '|?>' */
           next(ls);
           if(check_next1(ls,'>')) return TK_SAFEPIPE;  /* '|?>' 安全管道 */

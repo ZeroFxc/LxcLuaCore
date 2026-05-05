@@ -603,6 +603,74 @@ static void init_exp (expdesc *e, expkind k, int i) {
 }
 
 
+typedef struct DecoratorState {
+    int num_decorators;
+    int dec_regs;
+    struct DecoratorState *prev;
+} DecoratorState;
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define TLS_MODIFIER _Thread_local
+#elif defined(__GNUC__)
+#define TLS_MODIFIER __thread
+#else
+#define TLS_MODIFIER
+#endif
+
+static TLS_MODIFIER DecoratorState *current_decorator_state = NULL;
+
+static void push_decorators(LexState *ls, int num, int regs) {
+    DecoratorState *state = (DecoratorState *)luaM_malloc_(ls->L, sizeof(DecoratorState), 0);
+    state->num_decorators = num;
+    state->dec_regs = regs;
+    state->prev = current_decorator_state;
+    current_decorator_state = state;
+}
+
+static void pop_decorators(LexState *ls, int *num, int *regs) {
+    if (current_decorator_state) {
+        *num = current_decorator_state->num_decorators;
+        *regs = current_decorator_state->dec_regs;
+        DecoratorState *prev = current_decorator_state->prev;
+        luaM_free_(ls->L, current_decorator_state, sizeof(DecoratorState));
+        current_decorator_state = prev;
+    } else {
+        *num = 0;
+        *regs = 0;
+    }
+}
+
+static void apply_decorators_inline(LexState *ls, expdesc *v, expdesc *e) {
+    int num_decs = 0, dec_regs = 0;
+    pop_decorators(ls, &num_decs, &dec_regs);
+    // printf("Applying %d decorators at line %d\n", num_decs, ls->linenumber);
+    if (num_decs == 0) return;
+
+    FuncState *fs = ls->fs;
+    luaK_exp2nextreg(fs, e); /* put the function/class into a register */
+    int target_reg = e->u.info;
+
+    for (int i = num_decs - 1; i >= 0; i--) {
+        int d_reg = dec_regs + i;
+        int call_base = fs->freereg;
+        luaK_reserveregs(fs, 2);
+
+        luaK_codeABC(fs, OP_MOVE, call_base, d_reg, 0);
+        luaK_codeABC(fs, OP_MOVE, call_base + 1, target_reg, 0);
+        luaK_codeABC(fs, OP_CALL, call_base, 2, 2);
+        luaK_codeABC(fs, OP_MOVE, target_reg, call_base, 0);
+
+        fs->freereg -= 2;
+    }
+
+    init_exp(e, VNONRELOC, target_reg);
+}
+
+
+static int parse_decorators(LexState *ls);
+
+
+
 static void codestring (expdesc *e, TString *s) {
   e->f = e->t = NO_JUMP;
   e->k = VKSTR;
@@ -9974,6 +10042,7 @@ static void commandstat (LexState *ls, int line) {
   body(ls, &b, 0, line);
   
   /* 存储函数到变量 */
+  apply_decorators_inline(ls, &v, &b);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);
   
@@ -10029,6 +10098,7 @@ static void keywordstat (LexState *ls, int line) {
   body(ls, &b, 0, line);
   
   /* 存储函数到变量 */
+  apply_decorators_inline(ls, &v, &b);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);
   
@@ -10217,6 +10287,7 @@ static void conceptstat (LexState *ls, int line) {
       close_func(ls);
   }
 
+  apply_decorators_inline(ls, &v, &b);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);
 }
@@ -10246,6 +10317,7 @@ static void funcstat (LexState *ls, int line, int isasync) {
       fs->freereg = func_reg + 1;
   }
 
+  apply_decorators_inline(ls, &v, &b);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);  /* definition "happens" in the first line */
 }
@@ -10292,6 +10364,7 @@ static void class_method(LexState *ls, int class_reg, int is_static, int access_
   /* 生成方法体 */
   /* 非静态方法自动添加 self 参数 */
   body(ls, &method_exp, !is_static, line);
+  apply_decorators_inline(ls, NULL, &method_exp);
   
   /* 将方法存储到类表中 */
   int methods_reg = fs->freereg;
@@ -10403,6 +10476,7 @@ static void class_getter(LexState *ls, int class_reg, int access_level) {
   
   /* 生成getter函数体 */
   body(ls, &method_exp, 1, line);
+  apply_decorators_inline(ls, NULL, &method_exp);
   
   /* 根据访问级别选择存储表 */
   const char *table_name;
@@ -10458,6 +10532,7 @@ static void class_setter(LexState *ls, int class_reg, int access_level) {
   
   /* 生成setter函数体 */
   body(ls, &method_exp, 1, line);
+  apply_decorators_inline(ls, NULL, &method_exp);
   
   /* 根据访问级别选择存储表 */
   const char *table_name;
@@ -10718,6 +10793,12 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
       break;
     }
     
+    if (ls->t.token == '@') {
+      int num_decs = parse_decorators(ls);
+      push_decorators(ls, num_decs, fs->freereg - num_decs);
+    }
+
+
     /* 解析修饰符（支持任意顺序组合） */
     int access_level = ACCESS_PUBLIC;  /* 默认公开 */
     int is_static = 0;
@@ -10851,6 +10932,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
      buildglobal(ls, classname, &v);
   }
   init_exp(&class_exp, VNONRELOC, class_reg);
+  apply_decorators_inline(ls, &v, &class_exp);
   luaK_storevar(fs, &v, &class_exp);
   
   luaK_fixline(fs, line);
@@ -12554,7 +12636,8 @@ static void declaration_stat (LexState *ls, int line) {
      codeclosure(ls, &b);
      close_func(ls);
 
-     luaK_storevar(ls->fs, &v, &b);
+     apply_decorators_inline(ls, &v, &b);
+  luaK_storevar(ls->fs, &v, &b);
      luaK_fixline(ls->fs, line);
 
   } else {
@@ -12734,6 +12817,20 @@ static void statement (LexState *ls) {
   int line = ls->linenumber;  /* may be needed for error messages */
   enterlevel(ls);
   switch (ls->t.token) {
+        case '@': {
+      int num_decs = parse_decorators(ls);
+      push_decorators(ls, num_decs, ls->fs->freereg - num_decs);
+
+      statement(ls);
+
+      /* If decorators were not consumed, clean up */
+      int unused_num, unused_regs;
+      pop_decorators(ls, &unused_num, &unused_regs);
+      if (unused_num > 0) {
+          ls->fs->freereg -= unused_num;
+      }
+      break;
+    }
     case ';': {  /* stat -> ';' (empty statement) */
       luaX_next(ls);  /* skip ';' */
       break;
@@ -13146,3 +13243,18 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
 
 
 
+
+
+/* Decorator implementation */
+static int parse_decorators(LexState *ls) {
+  FuncState *fs = ls->fs;
+  int num = 0;
+  while (ls->t.token == '@') {
+      luaX_next(ls); /* skip '@' */
+      expdesc dec_exp;
+      expr(ls, &dec_exp);
+      luaK_exp2nextreg(fs, &dec_exp);
+      num++;
+  }
+  return num;
+}
