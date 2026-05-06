@@ -5,6 +5,8 @@
 #include "../../core/lstate.h"
 #include "../../core/lcode.h"
 #include "../../core/lopcodes.h"
+#include "../../core/lauxlib.h"
+#include "../../core/lualib.h"
 
 int XCLUA_JIT_ENABLED = 1;
 
@@ -49,4 +51,39 @@ void luaJIT_free_trace (lua_State *L, void *trace) {
     if (trace) {
         sljit_free_code(trace, NULL);
     }
+}
+
+void luaJIT_enable (void) {
+    XCLUA_JIT_ENABLED = 1;
+}
+
+void luaJIT_disable (void) {
+    XCLUA_JIT_ENABLED = 0;
+}
+
+static int ljit_enable (lua_State *L) {
+    luaJIT_enable();
+    return 0;
+}
+
+static int ljit_disable (lua_State *L) {
+    luaJIT_disable();
+    return 0;
+}
+
+static int ljit_status (lua_State *L) {
+    lua_pushboolean(L, XCLUA_JIT_ENABLED);
+    return 1;
+}
+
+static const luaL_Reg ljit_funcs[] = {
+    {"on", ljit_enable},
+    {"off", ljit_disable},
+    {"status", ljit_status},
+    {NULL, NULL}
+};
+
+LUAMOD_API int luaopen_jit (lua_State *L) {
+    luaL_newlib(L, ljit_funcs);
+    return 1;
 }

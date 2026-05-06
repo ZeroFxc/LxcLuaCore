@@ -9,5 +9,7 @@ LUAI_FUNC void luaJIT_init (lua_State *L);
 LUAI_FUNC void luaJIT_free (lua_State *L);
 LUAI_FUNC int luaJIT_compile (lua_State *L, Proto *p);
 LUAI_FUNC void luaJIT_free_trace (lua_State *L, void *trace);
+LUAI_FUNC void luaJIT_enable (void);
+LUAI_FUNC void luaJIT_disable (void);
 
 #endif
