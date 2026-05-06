@@ -2105,40 +2105,68 @@ static void constructor (LexState *ls, expdesc *t) {
     if (ls->t.token == '}') break;
 
     if (ls->t.token == TK_DOTS) {
-        /*
-         * Spread Operator inside constructor: {...expr}
-         * Wait, standard vararg dots: {...}
-         * For both varargs and custom spread, `expr(ls, &cc.v)` correctly parses `TK_DOTS`.
-         * `expr` natively distinguishes between standard varargs and spread by looking ahead.
-         * Therefore, we just let `expr` handle it directly.
-         */
         closelistfield(fs, &cc);
-        expr(ls, &cc.v);
 
-        /* Because `...` or `...expr` generates a VCALL or VVARARG returning multiple items,
-           we flag it so subsequent elements trigger dynamic appending (`OP_LEN` + `OP_ADDI`).
-           Wait, I need to restore the dynamic appending bytecode here!
-         */
-        if (cc.has_spread) {
-            /* We are ALREADY in a spread state (from a previous element).
-               Actually, dynamic appending needs to happen *here* if `cc.has_spread` is set!
-             */
-            luaK_exp2nextreg(fs, &cc.v);
-            int len_reg = fs->freereg;
-            luaK_reserveregs(fs, 1);
-            luaK_codeABC(fs, OP_LEN, len_reg, cc.t->u.info, 0);
-            luaK_codeABCk(fs, OP_ADDI, len_reg, len_reg, int2sC(1), 0);
-            expdesc tab, key;
-            tab = *cc.t;
-            init_exp(&key, VNONRELOC, len_reg);
-            luaK_indexed(fs, &tab, &key);
-            luaK_storevar(fs, &tab, &cc.v);
-            fs->freereg = len_reg;
+        int la = luaX_lookahead(ls);
+        if ((la == TK_NAME || la == '(' || la == '{' || la == TK_STRING
+             || la == TK_RAWSTRING || la == TK_INTERPSTRING
+             || la == TK_INT || la == TK_FLT
+             || la == TK_TRUE || la == TK_FALSE || la == TK_NIL
+             || la == '-' || la == TK_NOT || la == '#' || la == '~'
+             || la == TK_FUNCTION || la == TK_LAMBDA)) {
+
+            luaX_next(ls);
+
+            expdesc table_mod, mkey;
+            singlevaraux(fs, luaS_newliteral(ls->L, "table"), &table_mod, 1);
+            if (table_mod.k == VVOID) {
+                expdesc envkey;
+                singlevaraux(fs, ls->envn, &table_mod, 1);
+                codestring(&envkey, luaS_newliteral(ls->L, "table"));
+                luaK_indexed(fs, &table_mod, &envkey);
+            }
+            luaK_exp2anyregup(fs, &table_mod);
+            codestring(&mkey, luaS_newliteral(ls->L, "merge"));
+            luaK_indexed(fs, &table_mod, &mkey);
+
+            luaK_exp2nextreg(fs, &table_mod);
+            int func_reg = table_mod.u.info;
+
+            luaK_reserveregs(fs, 2);
+
+            luaK_codeABC(fs, OP_MOVE, func_reg + 1, cc.t->u.info, 0);
+
+            expdesc src_tab;
+            expr(ls, &src_tab);
+            luaK_exp2reg(fs, &src_tab, func_reg + 2);
+
+            luaK_codeABC(fs, OP_CALL, func_reg, 3, 1);
+            fs->freereg = func_reg;
+
             cc.v.k = VVOID;
+            cc.tostore = 0;
+            cc.has_spread = 1;
         } else {
-            cc.tostore++;
+            expr(ls, &cc.v);
+
+            if (cc.has_spread) {
+                luaK_exp2nextreg(fs, &cc.v);
+                int len_reg = fs->freereg;
+                luaK_reserveregs(fs, 1);
+                luaK_codeABC(fs, OP_LEN, len_reg, cc.t->u.info, 0);
+                luaK_codeABCk(fs, OP_ADDI, len_reg, len_reg, int2sC(1), 0);
+                expdesc tab, key;
+                tab = *cc.t;
+                init_exp(&key, VNONRELOC, len_reg);
+                luaK_indexed(fs, &tab, &key);
+                luaK_storevar(fs, &tab, &cc.v);
+                fs->freereg = len_reg;
+                cc.v.k = VVOID;
+            } else {
+                cc.tostore++;
+            }
+            cc.has_spread = 1;
         }
-        cc.has_spread = 1; /* Mark that we have encountered a spread */
     } else {
         closelistfield(fs, &cc);
         field(ls, &cc);
@@ -5461,6 +5489,46 @@ static void restassign (LexState *ls, struct LHS_assign *lh, int nvars) {
   else {  /* restassign -> '=' explist */
     int nexps;
     checknext(ls, '=');
+
+    /* 多元连等赋值: a = b = c = 10 */
+    if (ls->t.token == TK_NAME && luaX_lookahead(ls) == '=') {
+      expdesc chain[64];
+      int nchain = 0;
+      chain[nchain] = lh->v;
+      nchain++;
+
+      for (;;) {
+        if (ls->t.token != TK_NAME) break;
+        suffixedexp(ls, &chain[nchain]);
+        check_condition(ls, vkisvar(chain[nchain].k), "syntax error");
+        check_readonly(ls, &chain[nchain]);
+        nchain++;
+        if (ls->t.token != '=') break;
+        luaX_next(ls);
+        if (nchain >= 64) break;
+      }
+
+      nexps = explist(ls, &e);
+      if (nexps != 1)
+        adjust_assign(ls, 1, nexps, &e);
+      else
+        luaK_setoneret(ls->fs, &e);
+
+      luaK_exp2anyreg(ls->fs, &e);
+      int rhs_reg = e.u.info;
+
+      for (int i = nchain - 1; i >= 0; i--) {
+        int new_reg = ls->fs->freereg;
+        luaK_reserveregs(ls->fs, 1);
+        luaK_codeABC(ls->fs, OP_MOVE, new_reg, rhs_reg, 0);
+        expdesc copy;
+        init_exp(&copy, VNONRELOC, new_reg);
+        luaK_storevar(ls->fs, &chain[i], &copy);
+      }
+      ls->fs->freereg = rhs_reg;
+      return;
+    }
+
     nexps = explist(ls, &e);
     if (nexps != nvars)
       adjust_assign(ls, nvars, nexps, &e);
