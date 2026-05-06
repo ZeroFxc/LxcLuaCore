@@ -769,6 +769,23 @@ static int t_share (lua_State *L) {
   return 1;
 }
 
+/*
+** 将源表的所有键值对（数组部分+哈希部分）合并到目标表
+** table.merge(target, source) -> target
+*/
+static int tmerge (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  lua_pushnil(L);
+  while (lua_next(L, 2) != 0) {
+    lua_pushvalue(L, -2);
+    lua_pushvalue(L, -2);
+    lua_rawset(L, 1);
+    lua_pop(L, 1);
+  }
+  return 0;
+}
+
 static const luaL_Reg tab_funcs[] = {
 	{"share", t_share},
 	{"concat", tconcat},
@@ -795,7 +812,8 @@ static const luaL_Reg tab_funcs[] = {
 	{"unpack", tunpack},
 	{"remove", tremove},
 	{"move", tmove},
-	{"sort", sort},
+  {"merge", tmerge},
+  {"sort", sort},
 	{NULL, NULL}
 };
 
