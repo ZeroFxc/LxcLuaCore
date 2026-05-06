@@ -28,10 +28,8 @@
 #include <string.h>
 
 #include "cutils.h"
-#undef pstrcpy
-#undef pstrcat
 
-void qjs_pstrcpy(char *buf, int buf_size, const char *str)
+void pstrcpy(char *buf, int buf_size, const char *str)
 {
     int c;
     char *q = buf;
@@ -49,12 +47,12 @@ void qjs_pstrcpy(char *buf, int buf_size, const char *str)
 }
 
 /* strcat and truncate. */
-char *qjs_pstrcat(char *buf, int buf_size, const char *s)
+char *pstrcat(char *buf, int buf_size, const char *s)
 {
     int len;
     len = strlen(buf);
     if (len < buf_size)
-        qjs_pstrcpy(buf + len, buf_size - len, s);
+        pstrcpy(buf + len, buf_size - len, s);
     return buf;
 }
 

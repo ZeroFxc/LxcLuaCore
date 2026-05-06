@@ -282,6 +282,7 @@ static void f_luaopen (lua_State *L, void *ud) {
   g->gcstp = 0;  /* allow gc */
   setnilvalue(&g->nilvalue);  /* now state is complete */
   luai_userstateopen(L);
+  luaJIT_init(L);
 }
 
 
@@ -326,6 +327,7 @@ static void close_state (lua_State *L) {
     luaD_closeprotected(L, 1, LUA_OK);  /* close all upvalues */
     L->top.p = L->stack.p + 1;  /* empty the stack to run finalizers */
     luaC_freeallobjects(L);  /* collect all objects */
+  luaJIT_free(L);
     luai_userstateclose(L);
   }
   luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size);

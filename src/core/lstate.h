@@ -323,6 +323,7 @@ typedef struct global_State {
   lu_byte genminormul;  /**< Control for minor generational collections. */
   lu_byte genmajormul;  /**< Control for major generational collections. */
   lu_byte gcstp;  /**< Control whether GC is running. */
+  void *jit_ctx;  /**< JIT context */
   lu_byte gcemergency;  /**< True if this is an emergency collection. */
   lu_byte gcpause;  /**< Size of pause between successive GCs. */
   lu_byte gcstepmul;  /**< GC "speed". */
