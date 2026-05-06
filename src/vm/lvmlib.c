@@ -18,7 +18,7 @@
 #include "lstate.h"
 #include "lobject.h"
 #include "ldo.h"
-#include "jit/ljit.h"
+#include "jit/core/ljit.h"
 
 
 static int vm_execute (lua_State *L) {

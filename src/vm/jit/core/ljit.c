@@ -1,12 +1,17 @@
 #include "lprefix.h"
 #include "ljit.h"
-#include "../../jit/sljitLir.h"
-#include "../../core/lobject.h"
-#include "../../core/lstate.h"
-#include "../../core/lcode.h"
-#include "../../core/lopcodes.h"
-#include "../../core/lauxlib.h"
-#include "../../core/lualib.h"
+#include "../ir/ljit_ir.h"
+#include "../frontend/ljit_analyze.h"
+#include "../optimize/ljit_opt.h"
+#include "../regalloc/ljit_regalloc.h"
+#include "../codegen/ljit_codegen.h"
+#include "../../../jit/sljitLir.h"
+#include "../../../core/lobject.h"
+#include "../../../core/lstate.h"
+#include "../../../core/lcode.h"
+#include "../../../core/lopcodes.h"
+#include "../../../core/lauxlib.h"
+#include "../../../core/lualib.h"
 
 int XCLUA_JIT_ENABLED = 1;
 
@@ -27,8 +32,20 @@ int luaJIT_compile (lua_State *L, Proto *p) {
     if (!XCLUA_JIT_ENABLED) return 0;
     if (p->jit_trace) return 1;
     
+    void *ctx = ljit_context_create(L, p);
+    if (!ctx) return 0;
+
+    ljit_analyze(p);
+    ljit_translate(p);
+    ljit_optimize(ctx);
+    ljit_regalloc(ctx);
+    ljit_codegen(ctx);
+
     struct sljit_compiler *compiler = sljit_create_compiler(NULL);
-    if (!compiler) return 0;
+    if (!compiler) {
+        ljit_context_destroy(ctx);
+        return 0;
+    }
     
     // We emit enter for a standard function taking (lua_State*, CallInfo*) as context.
     sljit_emit_enter(compiler, 0, SLJIT_ARGS2V(W, W), 3, 3, 0);
@@ -39,6 +56,8 @@ int luaJIT_compile (lua_State *L, Proto *p) {
     void *code = sljit_generate_code(compiler, 0, NULL);
     sljit_free_compiler(compiler);
     
+    ljit_context_destroy(ctx);
+
     if (code) {
         p->jit_trace = code;
         return 1;
