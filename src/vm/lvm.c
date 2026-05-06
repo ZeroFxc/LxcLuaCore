@@ -59,6 +59,7 @@
 #include "lsuper.h"
 #include "lbigint.h"
 #include "lauxlib.h"
+#include "jit/ljit.h"
 
 __attribute__((noinline))
 void lvm_vmp_hook_point(void) {
@@ -2278,6 +2279,24 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   cl = ci_func(ci);
 
   /** VM protection detection: If the function enables VM protection, use a custom VM interpreter */
+  extern int XCLUA_JIT_ENABLED;
+  if (XCLUA_JIT_ENABLED && !cl->p->jit_trace) {
+    luaJIT_compile(L, cl->p);
+  }
+  if (XCLUA_JIT_ENABLED && cl->p->jit_trace) {
+    typedef void (*jit_func_t)(lua_State*, CallInfo*);
+    jit_func_t func = (jit_func_t)cl->p->jit_trace;
+    func(L, ci);
+  }
+  extern int XCLUA_JIT_ENABLED;
+  if (XCLUA_JIT_ENABLED && !cl->p->jit_trace) {
+    luaJIT_compile(L, cl->p);
+  }
+  if (XCLUA_JIT_ENABLED && cl->p->jit_trace) {
+    typedef void (*jit_func_t)(lua_State*, CallInfo*);
+    jit_func_t func = (jit_func_t)cl->p->jit_trace;
+    func(L, ci);
+  }
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {
     int vm_result = luaO_executeVM(L, cl->p);
     if (vm_result == 0) {

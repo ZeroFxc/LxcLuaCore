@@ -18,6 +18,7 @@
 #include "lstate.h"
 #include "lobject.h"
 #include "ldo.h"
+#include "jit/ljit.h"
 
 
 static int vm_execute (lua_State *L) {
@@ -445,6 +446,17 @@ static int vm_assert (lua_State *L) {
 }
 
 
+static int vm_enable_jit (lua_State *L) {
+  luaJIT_enable();
+  return 0;
+}
+
+static int vm_disable_jit (lua_State *L) {
+  luaJIT_disable();
+  return 0;
+}
+
+
 static int vm_traceback (lua_State *L) {
   /* 获取回溯信息 */
   int level = luaL_optinteger(L, 1, 1);
@@ -501,6 +513,8 @@ static const luaL_Reg vm_funcs[] = {
   {"setmetatable", vm_setmetatable},
   {"error", vm_error},
   {"assert", vm_assert},
+  {"onjit", vm_enable_jit},
+  {"offjit", vm_disable_jit},
   {"traceback", vm_traceback},
   {NULL, NULL}
 };
