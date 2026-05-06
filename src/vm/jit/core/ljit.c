@@ -35,8 +35,8 @@ int luaJIT_compile (lua_State *L, Proto *p) {
     void *ctx = ljit_context_create(L, p);
     if (!ctx) return 0;
 
-    ljit_analyze(p);
-    ljit_translate(p);
+    ljit_analyze(ctx);
+    ljit_translate(ctx);
     ljit_optimize(ctx);
     ljit_regalloc(ctx);
     ljit_codegen(ctx);
