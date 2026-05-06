@@ -39,22 +39,8 @@ int luaJIT_compile (lua_State *L, Proto *p) {
     ljit_translate(ctx);
     ljit_optimize(ctx);
     ljit_regalloc(ctx);
-    ljit_codegen(ctx);
 
-    struct sljit_compiler *compiler = sljit_create_compiler(NULL);
-    if (!compiler) {
-        ljit_context_destroy(ctx);
-        return 0;
-    }
-    
-    // We emit enter for a standard function taking (lua_State*, CallInfo*) as context.
-    sljit_emit_enter(compiler, 0, SLJIT_ARGS2V(W, W), 3, 3, 0);
-    // Real implementation would translate opcodes here
-    // For now it is just an empty stub
-    sljit_emit_return_void(compiler);
-    
-    void *code = sljit_generate_code(compiler, 0, NULL);
-    sljit_free_compiler(compiler);
+    void *code = ljit_codegen(ctx);
     
     ljit_context_destroy(ctx);
 
