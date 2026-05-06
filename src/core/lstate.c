@@ -27,7 +27,7 @@
 #include "lstring.h"
 #include "ltable.h"
 #include "ltm.h"
-#include "../vm/jit/ljit.h"
+#include "../vm/jit/core/ljit.h"
 
 
 

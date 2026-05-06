@@ -19,7 +19,7 @@
 #include "ldebug.h"
 #include "ldo.h"
 #include "lfunc.h"
-#include "../vm/jit/ljit.h"
+#include "../vm/jit/core/ljit.h"
 #include "lgc.h"
 #include "lmem.h"
 #include "lobject.h"
