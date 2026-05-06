@@ -41,7 +41,7 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblua.a
-CORE_O= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
 GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
@@ -545,6 +545,12 @@ $(BUILDDIR)/llex.o: llex.c | $(BUILDDIR)
 
 $(BUILDDIR)/lparser.o: lparser.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/sljitLir.o: src/jit/sljitLir.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/jit/sljitLir.c -o $@
+
+$(BUILDDIR)/ljit.o: src/vm/jit/ljit.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ljit.c -o $@
 
 $(BUILDDIR)/lcode.o: lcode.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@

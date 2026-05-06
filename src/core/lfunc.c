@@ -19,6 +19,7 @@
 #include "ldebug.h"
 #include "ldo.h"
 #include "lfunc.h"
+#include "../vm/jit/ljit.h"
 #include "lgc.h"
 #include "lmem.h"
 #include "lobject.h"
@@ -360,6 +361,7 @@ Proto *luaF_newproto (lua_State *L) {
   f->lastlinedefined = 0;
   f->source = NULL;
   f->is_sleeping = 0;
+  f->jit_trace = NULL;
   f->call_queue = NULL;
   return f;
 }
@@ -401,6 +403,9 @@ void luaF_freeproto (lua_State *L, Proto *f) {
   luaM_freearray(L, f->locvars, f->sizelocvars);
   luaM_freearray(L, f->upvalues, f->sizeupvalues);
   luaF_freecallqueue(L, f->call_queue);
+  if (f->jit_trace) {
+    luaJIT_free_trace(L, f->jit_trace);
+  }
   luaM_free(L, f);
 }
 
