@@ -59,7 +59,7 @@
 #include "lsuper.h"
 #include "lbigint.h"
 #include "lauxlib.h"
-#include "jit/ljit.h"
+#include "jit/core/ljit.h"
 
 __attribute__((noinline))
 void lvm_vmp_hook_point(void) {
