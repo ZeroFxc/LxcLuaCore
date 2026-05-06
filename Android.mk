@@ -99,6 +99,8 @@ LOCAL_SRC_FILES := \
 	src/wasm/m3_info.c \
 	src/wasm/m3_module.c \
 	src/wasm/m3_parse.c \
+	src/jit/sljitLir.c \
+	src/vm/jit/ljit.c \
 	quickjs/quickjs.c \
 	quickjs/libregexp.c \
 	quickjs/libunicode.c \
@@ -106,7 +108,7 @@ LOCAL_SRC_FILES := \
 	quickjs/quickjs-libc.c \
 	quickjs/dtoa.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 
 # QuickJS 配置
