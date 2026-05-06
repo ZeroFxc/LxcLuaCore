@@ -41,7 +41,7 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblua.a
-CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_sljit.o ljit_codegen.o ljit_regalloc.o ljit_opt.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
 GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
@@ -549,8 +549,8 @@ $(BUILDDIR)/lparser.o: lparser.c | $(BUILDDIR)
 $(BUILDDIR)/sljitLir.o: src/jit/sljitLir.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/jit/sljitLir.c -o $@
 
-$(BUILDDIR)/ljit.o: src/vm/jit/ljit.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ljit.c -o $@
+$(BUILDDIR)/ljit.o: src/vm/jit/core/ljit.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/core/ljit.c -o $@
 
 $(BUILDDIR)/lcode.o: lcode.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
@@ -632,3 +632,25 @@ lzio.o: lzio.c lprefix.h lua.h luaconf.h lapi.h llimits.h lstate.h \
  lobject.h ltm.h lzio.h lmem.h
 
 # (end of Makefile)
+$(BUILDDIR)/ljit_ir.o: src/vm/jit/ir/ljit_ir.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir.c -o $@
+
+$(BUILDDIR)/ljit_ir_list.o: src/vm/jit/ir/ljit_ir_list.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir_list.c -o $@
+
+$(BUILDDIR)/ljit_ir_label.o: src/vm/jit/ir/ljit_ir_label.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir_label.c -o $@
+
+$(BUILDDIR)/ljit_sljit.o: src/vm/jit/sljit/ljit_sljit.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/sljit/ljit_sljit.c -o $@
+
+$(BUILDDIR)/ljit_analyze.o: src/vm/jit/frontend/ljit_analyze.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/frontend/ljit_analyze.c -o $@
+$(BUILDDIR)/ljit_translate.o: src/vm/jit/frontend/ljit_translate.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/frontend/ljit_translate.c -o $@
+$(BUILDDIR)/ljit_opt.o: src/vm/jit/optimize/ljit_opt.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt.c -o $@
+$(BUILDDIR)/ljit_regalloc.o: src/vm/jit/regalloc/ljit_regalloc.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_regalloc.c -o $@
+$(BUILDDIR)/ljit_codegen.o: src/vm/jit/codegen/ljit_codegen.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_codegen.c -o $@
