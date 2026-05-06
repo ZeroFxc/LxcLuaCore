@@ -126,10 +126,11 @@ void ljit_translate(ljit_ctx_t *ctx) {
             case OP_ERRNNIL:
             case OP_NOP:
                 // Translate all opcodes
-                // Here we call ljit_ir_create() and ljit_ir_append() as place holders
-                // for the actual IR generation logic
-                ljit_ir_create();
-                ljit_ir_append();
+                // Placeholder logic updated to use new IR API
+                {
+                    ljit_ir_node_t *node = ljit_ir_new(IR_NOP, pc);
+                    ljit_ir_append(ctx, node);
+                }
                 break;
             default:
                 // Handle unknown opcodes
