@@ -26,6 +26,11 @@ typedef struct {
         lua_Number n;
         int label_id;
     } v;
+
+    /* Physical mapping fields for CodeGen */
+    int is_spilled; /* 1 if mapped to stack, 0 if mapped to physical register */
+    int phys_reg;   /* SLJIT physical register id (if not spilled) */
+    int stack_ofs;  /* Stack offset in bytes (if spilled, relative to base pointer) */
 } ljit_ir_val_t;
 
 /* IR Opcodes */
