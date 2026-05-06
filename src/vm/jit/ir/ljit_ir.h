@@ -78,6 +78,8 @@ typedef struct ljit_ctx {
     ljit_ir_node_t *ir_head;
     ljit_ir_node_t *ir_tail;
     int next_label_id;
+    void *compiler;
+    struct sljit_label **labels;
 } ljit_ctx_t;
 
 void *ljit_context_create(lua_State *L, Proto *proto);

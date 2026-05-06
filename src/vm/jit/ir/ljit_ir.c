@@ -10,6 +10,8 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
         ctx->ir_head = NULL;
         ctx->ir_tail = NULL;
         ctx->next_label_id = 0;
+        ctx->compiler = NULL;
+        ctx->labels = NULL;
     }
     return (void *)ctx;
 }
@@ -29,6 +31,11 @@ void ljit_context_destroy(void *ctx_ptr) {
             ljit_bb_t *next = bb->next;
             free(bb);
             bb = next;
+        }
+
+        if (ctx->labels) {
+            free(ctx->labels);
+            ctx->labels = NULL;
         }
 
         free(ctx);
