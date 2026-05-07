@@ -29,8 +29,6 @@ void luaJIT_free (lua_State *L) {
 }
 
 int luaJIT_compile (lua_State *L, Proto *p) {
-    return 0; // Disable entirely until implemented fully to fix segfaults
-
     if (p->jit_trace) return 1;
     
     void *ctx = ljit_context_create(L, p);
