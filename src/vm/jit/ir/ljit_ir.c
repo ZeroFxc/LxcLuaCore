@@ -58,7 +58,7 @@ void ljit_context_destroy(void *ctx_ptr) {
 }
 
 ljit_ir_node_t *ljit_ir_new(ljit_ir_op_t op, int pc) {
-    ljit_ir_node_t *node = (ljit_ir_node_t *)malloc(sizeof(ljit_ir_node_t));
+    ljit_ir_node_t *node = (ljit_ir_node_t *)calloc(1, sizeof(ljit_ir_node_t));
     if (node) {
         node->op = op;
         node->dest.type = IR_VAL_NONE;
