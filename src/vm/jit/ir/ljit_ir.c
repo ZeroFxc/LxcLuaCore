@@ -1,4 +1,5 @@
 #include "ljit_ir.h"
+#include "../frontend/ljit_analyze.h"
 #include <stdlib.h>
 
 void *ljit_context_create(lua_State *L, Proto *proto) {
@@ -15,6 +16,7 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
         ctx->num_jumps = 0;
         ctx->jumps = NULL;
         ctx->jump_targets = NULL;
+        ctx->analyze_info = NULL;
     }
     return (void *)ctx;
 }
@@ -48,6 +50,8 @@ void ljit_context_destroy(void *ctx_ptr) {
             free(ctx->jump_targets);
             ctx->jump_targets = NULL;
         }
+
+        ljit_analyze_destroy(ctx);
 
         free(ctx);
     }
