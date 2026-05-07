@@ -2286,16 +2286,8 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   if (XCLUA_JIT_ENABLED && cl->p->jit_trace) {
     typedef void (*jit_func_t)(lua_State*, CallInfo*);
     jit_func_t func = (jit_func_t)cl->p->jit_trace;
-    func(L, ci);
-  }
-  extern int XCLUA_JIT_ENABLED;
-  if (XCLUA_JIT_ENABLED && !cl->p->jit_trace) {
-    luaJIT_compile(L, cl->p);
-  }
-  if (XCLUA_JIT_ENABLED && cl->p->jit_trace) {
-    typedef void (*jit_func_t)(lua_State*, CallInfo*);
-    jit_func_t func = (jit_func_t)cl->p->jit_trace;
-    func(L, ci);
+    // func(L, ci);
+
   }
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {
     int vm_result = luaO_executeVM(L, cl->p);
