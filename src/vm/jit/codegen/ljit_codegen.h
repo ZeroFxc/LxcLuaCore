@@ -5,6 +5,12 @@ void *ljit_codegen(void *ctx);
 
 void ljit_cg_emit_add(void *node, void *ctx);
 void ljit_cg_emit_sub(void *node, void *ctx);
+void ljit_cg_emit_mul(void *node, void *ctx);
+void ljit_cg_emit_div(void *node, void *ctx);
+void ljit_cg_emit_mod(void *node, void *ctx);
+
+void ljit_cg_emit_mov(void *node, void *ctx);
+void ljit_cg_emit_loadi(void *node, void *ctx);
 
 void ljit_cg_emit_jmp(void *node, void *ctx);
 void ljit_cg_emit_ret(void *node, void *ctx);
