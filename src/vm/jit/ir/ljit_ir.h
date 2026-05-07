@@ -80,6 +80,9 @@ typedef struct ljit_ctx {
     int next_label_id;
     void *compiler;
     struct sljit_label **labels;
+    int num_jumps;
+    struct sljit_jump **jumps;
+    int *jump_targets;
 } ljit_ctx_t;
 
 void *ljit_context_create(lua_State *L, Proto *proto);

@@ -12,7 +12,13 @@ void *ljit_codegen(void *ctx_ptr) {
     if (!compiler) return NULL;
 
     ctx->compiler = compiler;
-    ctx->labels = (struct sljit_label **)calloc(ctx->next_label_id + 1, sizeof(struct sljit_label *));
+    int max_labels = ctx->proto->sizecode + ctx->next_label_id + 1;
+    ctx->labels = (struct sljit_label **)calloc(max_labels, sizeof(struct sljit_label *));
+
+    // Allocate space for up to max_labels jumps (worst case)
+    ctx->jumps = (struct sljit_jump **)calloc(max_labels, sizeof(struct sljit_jump *));
+    ctx->jump_targets = (int *)calloc(max_labels, sizeof(int));
+    ctx->num_jumps = 0;
 
     /*
      * Enter function arguments mapping:
@@ -23,6 +29,12 @@ void *ljit_codegen(void *ctx_ptr) {
 
     ljit_ir_node_t *node = ctx->ir_head;
     while (node) {
+        if (node->original_pc >= 0 && node->original_pc < max_labels) {
+            if (!ctx->labels[node->original_pc]) {
+                ctx->labels[node->original_pc] = sljit_emit_label(compiler);
+            }
+        }
+
         switch (node->op) {
             case IR_ADD: ljit_cg_emit_add(node, ctx); break;
             case IR_SUB: ljit_cg_emit_sub(node, ctx); break;
@@ -40,6 +52,16 @@ void *ljit_codegen(void *ctx_ptr) {
             default: break;
         }
         node = node->next;
+    }
+
+    /* Bind jumps to labels */
+    for (int i = 0; i < ctx->num_jumps; i++) {
+        if (ctx->jumps[i]) {
+            int target = ctx->jump_targets[i];
+            if (target >= 0 && target < max_labels && ctx->labels[target]) {
+                sljit_set_label(ctx->jumps[i], ctx->labels[target]);
+            }
+        }
     }
 
     sljit_emit_return_void(compiler);

@@ -12,6 +12,9 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
         ctx->next_label_id = 0;
         ctx->compiler = NULL;
         ctx->labels = NULL;
+        ctx->num_jumps = 0;
+        ctx->jumps = NULL;
+        ctx->jump_targets = NULL;
     }
     return (void *)ctx;
 }
@@ -36,6 +39,14 @@ void ljit_context_destroy(void *ctx_ptr) {
         if (ctx->labels) {
             free(ctx->labels);
             ctx->labels = NULL;
+        }
+        if (ctx->jumps) {
+            free(ctx->jumps);
+            ctx->jumps = NULL;
+        }
+        if (ctx->jump_targets) {
+            free(ctx->jump_targets);
+            ctx->jump_targets = NULL;
         }
 
         free(ctx);
