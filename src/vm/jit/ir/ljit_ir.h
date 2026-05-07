@@ -83,6 +83,7 @@ typedef struct ljit_ctx {
     int num_jumps;
     struct sljit_jump **jumps;
     int *jump_targets;
+    void *analyze_info; /* Pointer to ljit_analyze_info_t */
 } ljit_ctx_t;
 
 void *ljit_context_create(lua_State *L, Proto *proto);
