@@ -14,7 +14,12 @@ void *ljit_codegen(void *ctx_ptr) {
     ctx->compiler = compiler;
     ctx->labels = (struct sljit_label **)calloc(ctx->next_label_id + 1, sizeof(struct sljit_label *));
 
-    sljit_emit_enter(compiler, 0, SLJIT_ARGS2V(W, W), 3, 3, 0);
+    /*
+     * Enter function arguments mapping:
+     * jit_func_t(StkId base) -> SLJIT_ARGS1V(W) -> base in SLJIT_S0.
+     * SLJIT_S0 will hold the Lua virtual register base address.
+     */
+    sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 3, 3, 0);
 
     ljit_ir_node_t *node = ctx->ir_head;
     while (node) {
