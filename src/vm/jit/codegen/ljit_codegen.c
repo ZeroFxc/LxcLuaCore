@@ -68,7 +68,64 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
             case IR_CALL: ljit_cg_emit_call(node, ctx); break;
 
-            /* Fallback for newly added IR nodes */
+/* Fallback for newly added IR nodes */
+            case IR_ADDK:
+            case IR_ADDMETHOD:
+            case IR_ASYNCWRAP:
+            case IR_BANDK:
+            case IR_BORK:
+            case IR_BXORK:
+            case IR_CASE:
+            case IR_CHECKTYPE:
+            case IR_CLOSE:
+            case IR_DIVK:
+            case IR_EQK:
+            case IR_ERRNNIL:
+            case IR_EXTRAARG:
+            case IR_GENERICWRAP:
+            case IR_GETCMDS:
+            case IR_GETOPS:
+            case IR_GETPROP:
+            case IR_GETSUPER:
+            case IR_GETVARG:
+            case IR_IDIVK:
+            case IR_IMPLEMENT:
+            case IR_IN:
+            case IR_INHERIT:
+            case IR_INSTANCEOF:
+            case IR_IS:
+            case IR_LEN:
+            case IR_LINKNAMESPACE:
+            case IR_LOADKX:
+            case IR_MODK:
+            case IR_MULK:
+            case IR_NEWCONCEPT:
+            case IR_NEWNAMESPACE:
+            case IR_NEWSUPER:
+            case IR_POWK:
+            case IR_SELF:
+            case IR_SETIFACEFLAG:
+            case IR_SETLIST:
+            case IR_SETMETHOD:
+            case IR_SETPROP:
+            case IR_SETSTATIC:
+            case IR_SETSUPER:
+            case IR_SLICE:
+            case IR_SPACESHIP:
+            case IR_SUBK:
+            case IR_TBC:
+            case IR_TEST:
+            case IR_TESTNIL:
+            case IR_TESTSET:
+            case IR_TFORPREP:
+            case IR_GETUPVAL:
+            case IR_SETUPVAL:
+            case IR_GETTABUP:
+            case IR_SETTABUP:
+            case IR_GETI:
+            case IR_SETI:
+            case IR_GETFIELD:
+            case IR_SETFIELD:
             case IR_CONCAT:
             case IR_TFORCALL:
             case IR_TFORLOOP:

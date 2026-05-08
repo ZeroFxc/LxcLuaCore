@@ -69,9 +69,6 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 }
                 break;
             }
-            case OP_GETUPVAL:
-            case OP_SETUPVAL:
-            case OP_GETTABUP:
             case OP_GETTABLE: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_GETTABLE, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
@@ -80,9 +77,6 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
-            case OP_GETI:
-            case OP_GETFIELD:
-            case OP_SETTABUP:
             case OP_SETTABLE: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_SETTABLE, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
@@ -91,8 +85,6 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
-            case OP_SETI:
-            case OP_SETFIELD:
             case OP_NEWTABLE: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_NEWTABLE, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
@@ -318,6 +310,296 @@ void ljit_translate(ljit_ctx_t *ctx) {
                     node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_A(i);
                     node->src2.type = IR_VAL_INT; node->src2.v.i = 1;
                 }
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_ADDK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_ADDK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_ADDMETHOD: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_ADDMETHOD, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_ASYNCWRAP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_ASYNCWRAP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_BANDK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_BANDK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_BORK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_BORK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_BXORK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_BXORK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_CASE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_CASE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_CHECKTYPE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_CHECKTYPE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_CLOSE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_CLOSE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_DIVK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_DIVK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_EQK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_EQK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_ERRNNIL: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_ERRNNIL, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_EXTRAARG: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_EXTRAARG, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GENERICWRAP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GENERICWRAP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETCMDS: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETCMDS, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETOPS: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETOPS, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETPROP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETPROP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETSUPER: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETSUPER, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETVARG: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETVARG, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_IDIVK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_IDIVK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_IMPLEMENT: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_IMPLEMENT, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_IN: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_IN, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_INHERIT: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_INHERIT, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_INSTANCEOF: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_INSTANCEOF, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_IS: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_IS, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_LEN: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_LEN, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_LINKNAMESPACE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_LINKNAMESPACE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_LOADKX: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_LOADKX, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_MODK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_MODK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_MULK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_MULK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NEWCONCEPT: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWCONCEPT, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NEWNAMESPACE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWNAMESPACE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NEWSUPER: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWSUPER, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NOP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NOP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_POWK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_POWK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SELF: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SELF, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETIFACEFLAG: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETIFACEFLAG, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETLIST: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETLIST, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETMETHOD: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETMETHOD, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETPROP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETPROP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETSTATIC: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETSTATIC, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETSUPER: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETSUPER, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SLICE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SLICE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SPACESHIP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SPACESHIP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SUBK: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SUBK, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TBC: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TBC, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TEST: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TEST, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TESTNIL: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TESTNIL, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TESTSET: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TESTSET, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TFORPREP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TFORPREP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETUPVAL: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETUPVAL, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETUPVAL: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETUPVAL, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETTABUP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETTABUP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETTABUP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETTABUP, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETI: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETI, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETI: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETI, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_GETFIELD: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETFIELD, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETFIELD: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETFIELD, pc);
                 ljit_ir_append(ctx, node);
                 break;
             }
