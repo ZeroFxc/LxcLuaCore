@@ -53,7 +53,15 @@ typedef enum {
     IR_RET,
     /* Tables/Calls (simplified) */
     IR_NEWTABLE, IR_GETTABLE, IR_SETTABLE,
-    IR_CALL
+    IR_CALL,
+
+    /* Missing Opcodes for M6 Full Coverage */
+    IR_CONCAT,
+    IR_TFORCALL, IR_TFORLOOP,
+    IR_FORPREP, IR_FORLOOP,
+    IR_VARARG, IR_VARARGPREP,
+    IR_NEWCLASS, IR_NEWOBJ,
+    IR_CLOSURE
 } ljit_ir_op_t;
 
 /* IR Node Structure (Doubly-linked list) */
