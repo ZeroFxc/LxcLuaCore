@@ -153,11 +153,56 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
+            case OP_ADDI: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_ADD, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_sC(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_LT:
+            case OP_LE:
+            case OP_EQ: {
+                ljit_ir_op_t ir_op = (op == OP_LT) ? IR_CMP_LT : ((op == OP_LE) ? IR_CMP_LE : IR_CMP_EQ);
+                ljit_ir_node_t *node = ljit_ir_new(ir_op, pc);
+                node->dest.type = IR_VAL_INT; node->dest.v.i = GETARG_k(i); // k bit
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_A(i);
+                node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_B(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_LTI:
+            case OP_LEI:
+            case OP_GTI:
+            case OP_GEI:
+            case OP_EQI: {
+                ljit_ir_op_t ir_op;
+                if (op == OP_LTI) ir_op = IR_CMP_LT;
+                else if (op == OP_LEI) ir_op = IR_CMP_LE;
+                else if (op == OP_GTI) ir_op = IR_CMP_GT;
+                else if (op == OP_GEI) ir_op = IR_CMP_GE;
+                else ir_op = IR_CMP_EQ;
+
+                ljit_ir_node_t *node = ljit_ir_new(ir_op, pc);
+                node->dest.type = IR_VAL_INT; node->dest.v.i = GETARG_k(i); // k bit
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_A(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_sB(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
             case OP_JMP: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_JMP, pc);
                 node->dest.type = IR_VAL_LABEL;
                 node->dest.v.label_id = pc + 1 + GETARG_sJ(i);
                 ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_VARARGPREP:
+            case OP_MMBINI:
+            case OP_MMBINK:
+            case OP_MMBIN: {
+                /* Ignore metamethod fallbacks and vararg prep for JIT MVP */
                 break;
             }
             case OP_CALL:

@@ -44,6 +44,11 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_MOV: ljit_cg_emit_mov(node, ctx); break;
             case IR_LOADI: ljit_cg_emit_loadi(node, ctx); break;
             case IR_JMP: ljit_cg_emit_jmp(node, ctx); break;
+            case IR_CMP_LT:
+            case IR_CMP_LE:
+            case IR_CMP_EQ:
+            case IR_CMP_GT:
+            case IR_CMP_GE: ljit_cg_emit_cmp(node, ctx); break;
             case IR_RET: ljit_cg_emit_ret(node, ctx); break;
             case IR_GETTABLE: ljit_cg_emit_gettable(node, ctx); break;
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
