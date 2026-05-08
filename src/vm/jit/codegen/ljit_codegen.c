@@ -24,8 +24,9 @@ void *ljit_codegen(void *ctx_ptr) {
      * Enter function arguments mapping:
      * jit_func_t(StkId base) -> SLJIT_ARGS1V(W) -> base in SLJIT_S0.
      * SLJIT_S0 will hold the Lua virtual register base address.
+     * Requesting 3 args, 7 scratch, 0 fregs to accommodate S1, S2, R0-R3.
      */
-    sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 3, 3, 0);
+    sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 4, 3, 0);
 
     ljit_ir_node_t *node = ctx->ir_head;
     while (node) {
