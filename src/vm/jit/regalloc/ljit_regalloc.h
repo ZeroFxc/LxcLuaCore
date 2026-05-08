@@ -13,6 +13,7 @@ typedef struct {
     char *interference_graph;        /* Adjacency matrix: maxstacksize * maxstacksize */
     int *reg_mapping;                /* Array of physical registers assigned to vregs */
     int *is_spilled;                 /* Array of booleans */
+    int *stack_offsets;              /* Array of stack offsets for spilled vregs */
 } ljit_regalloc_info_t;
 
 void ljit_regalloc(ljit_ctx_t *ctx);
