@@ -86,6 +86,23 @@ void ljit_cg_emit_div(void *node_ptr, void *ctx_ptr) {
     }
 }
 
+void ljit_cg_emit_idiv(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled && node->src2.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+
+        sljit_emit_op0(compiler, SLJIT_DIV_SW);
+
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
 void ljit_cg_emit_mod(void *node_ptr, void *ctx_ptr) {
     ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
@@ -129,6 +146,49 @@ void ljit_cg_emit_sub(void *node_ptr, void *ctx_ptr) {
 
         /* Set type tag to LUA_VNUMINT (3) at offset 8 */
         sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_unm(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        sljit_emit_op2(compiler, SLJIT_SUB, SLJIT_R0, 0, SLJIT_IMM, 0, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        /* Keep type tag same as src1. MVP assumes src1 is int for now */
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs + 8);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_R0, 0);
+    }
+}
+
+void ljit_cg_emit_not(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        /* Load tt_ of src1 */
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs + 8);
+
+        /* Check if tag is LUA_VNIL (0) or LUA_VFALSE (1) */
+        /* If tag <= 1, it's falsy, so NOT is true. Else it's truthy, so NOT is false. */
+
+        struct sljit_jump *cmp_falsy = sljit_emit_cmp(compiler, SLJIT_LESS_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 1);
+
+        /* Truthy case -> result is FALSE (1) */
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 1);
+        struct sljit_jump *end = sljit_emit_jump(compiler, SLJIT_JUMP);
+
+        /* Falsy case -> result is TRUE (17) */
+        sljit_set_label(cmp_falsy, sljit_emit_label(compiler));
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 17);
+
+        sljit_set_label(end, sljit_emit_label(compiler));
     }
 }
 
