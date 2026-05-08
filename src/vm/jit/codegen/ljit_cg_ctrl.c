@@ -22,15 +22,8 @@ void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
-    if (node->src1.is_spilled) {
-        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
-    }
-
-    if (node->src2.type == IR_VAL_INT) {
-        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
-    } else if (node->src2.is_spilled) {
-        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
-    }
+    ljit_cg_emit_load_operand(compiler, SLJIT_R0, &node->src1);
+    ljit_cg_emit_load_operand(compiler, SLJIT_R1, &node->src2);
 
     sljit_s32 type;
     switch (node->op) {
