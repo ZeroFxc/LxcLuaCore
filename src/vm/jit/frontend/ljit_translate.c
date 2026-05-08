@@ -161,6 +161,24 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
+            case OP_SHLI: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SHL, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_sC(i);
+                node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_B(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SHRI: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_SHR, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                /* For OP_SHRI, setivalue(s2v(ra), luaV_shiftl(ib, -ic))
+                   So value to shift is ib (src1), shift amount is -ic (src2) */
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_sC(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
             case OP_LT:
             case OP_LE:
             case OP_EQ: {

@@ -9,6 +9,13 @@ void ljit_cg_emit_mul(void *node, void *ctx);
 void ljit_cg_emit_div(void *node, void *ctx);
 void ljit_cg_emit_mod(void *node, void *ctx);
 
+void ljit_cg_emit_band(void *node, void *ctx);
+void ljit_cg_emit_bor(void *node, void *ctx);
+void ljit_cg_emit_bxor(void *node, void *ctx);
+void ljit_cg_emit_shl(void *node, void *ctx);
+void ljit_cg_emit_shr(void *node, void *ctx);
+void ljit_cg_emit_bnot(void *node, void *ctx);
+
 void ljit_cg_emit_mov(void *node, void *ctx);
 void ljit_cg_emit_loadi(void *node, void *ctx);
 
