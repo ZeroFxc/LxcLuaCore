@@ -323,7 +323,7 @@ src/vm/jit/
 | 任务 | 模块 | 文件 | 完成标准 |
 |------|------|------|---------|
 | 生成器入口 | codegen/ | `ljit_codegen.c` | 代码生成流程 |
-| 算术指令生成 | codegen/ | `ljit_cg_arith.c` | ADD/SUB/MUL/DIV 等 |
+| 算术指令生成 | codegen/ | `ljit_cg_arith.c` | ADD/SUB/MUL/DIV 等（含位运算） |
 | 控制流生成 | codegen/ | `ljit_cg_ctrl.c` | JMP/CALL/RET |
 | 表操作生成 | codegen/ | `ljit_cg_table.c` | GETTABLE/SETTABLE |
 | 函数调用生成 | codegen/ | `ljit_cg_call.c` | 调用约定处理 |

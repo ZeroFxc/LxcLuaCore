@@ -131,3 +131,130 @@ void ljit_cg_emit_sub(void *node_ptr, void *ctx_ptr) {
         sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
     }
 }
+
+void ljit_cg_emit_band(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        if (node->src2.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+        } else if (node->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+        } else {
+            return;
+        }
+        sljit_emit_op2(compiler, SLJIT_AND, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_bor(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        if (node->src2.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+        } else if (node->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+        } else {
+            return;
+        }
+        sljit_emit_op2(compiler, SLJIT_OR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_bxor(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        if (node->src2.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+        } else if (node->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+        } else {
+            return;
+        }
+        sljit_emit_op2(compiler, SLJIT_XOR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_shl(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled) {
+        if (node->src1.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, node->src1.v.i);
+        } else if (node->src1.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        } else {
+            return;
+        }
+
+        if (node->src2.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+        } else if (node->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+        } else {
+            return;
+        }
+        sljit_emit_op2(compiler, SLJIT_SHL, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_shr(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        if (node->src2.type == IR_VAL_INT) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+        } else if (node->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+        } else {
+            return;
+        }
+        sljit_emit_op2(compiler, SLJIT_LSHR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
+
+void ljit_cg_emit_bnot(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->dest.is_spilled && node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+        sljit_emit_op2(compiler, SLJIT_XOR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_IMM, -1);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R0, 0);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
+    }
+}
