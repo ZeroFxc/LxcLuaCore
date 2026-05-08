@@ -43,3 +43,9 @@ void ljit_cg_emit_load_operand(void *compiler, int target_reg, void *val);
 void ljit_cg_emit_store_operand(void *compiler, void *val, int src_reg);
 
 #endif
+
+#include "../../../core/lobject.h"
+#include "../../../core/lstate.h"
+#include "../sljit/ljit_sljit.h"
+void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc);
+void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue *rc);
