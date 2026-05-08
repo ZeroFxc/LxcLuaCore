@@ -14,32 +14,111 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
 
     if (!info->reg_mapping || !info->is_spilled) return;
 
-    // We will utilize SLJIT_S1, SLJIT_S2, SLJIT_R2, and SLJIT_R3
+    // Available registers for allocation
     int available_regs[] = {SLJIT_S1, SLJIT_S2, SLJIT_R2, SLJIT_R3};
     int num_available_regs = sizeof(available_regs) / sizeof(available_regs[0]);
 
-    // Initialize all as unmapped (-1)
+    // Initialize mappings
     for (int i = 0; i < max_vregs; i++) {
         info->reg_mapping[i] = -1;
         info->is_spilled[i] = 1; // Default to spilled
     }
 
-    // Array to track used colors (registers) for neighbors of the current node
+    // Stack for Chaitin-Briggs graph coloring
+    int *stack = (int *)calloc(max_vregs, sizeof(int));
+    int *degrees = (int *)calloc(max_vregs, sizeof(int));
+    int *status = (int *)calloc(max_vregs, sizeof(int));
     int *used_colors = (int *)calloc(num_available_regs, sizeof(int));
-    if (!used_colors) return;
 
-    // Greedy graph coloring
+    if (!stack || !degrees || !status || !used_colors) {
+        if (stack) free(stack);
+        if (degrees) free(degrees);
+        if (status) free(status);
+        if (used_colors) free(used_colors);
+        return;
+    }
+
+    int stack_top = 0;
+
+    // Calculate initial degrees
     for (int i = 0; i < max_vregs; i++) {
-        // Skip unused virtual registers
-        if (info->intervals[i].start == -1) continue;
+        if (info->intervals[i].start == -1) {
+            status[i] = 3; // Ignore unused vregs
+            continue;
+        }
+        for (int j = 0; j < max_vregs; j++) {
+            if (i != j && info->interference_graph[i * max_vregs + j]) {
+                degrees[i]++;
+            }
+        }
+    }
+
+    int remaining = 0;
+    for (int i = 0; i < max_vregs; i++) {
+        if (status[i] == 0) remaining++;
+    }
+
+    // Simplify and Spill phases
+    while (remaining > 0) {
+        int found = 0;
+
+        // Simplify phase: find a node with degree < K
+        for (int i = 0; i < max_vregs; i++) {
+            if (status[i] == 0 && degrees[i] < num_available_regs) {
+                // Remove node from graph
+                status[i] = 1;
+                stack[stack_top++] = i;
+                remaining--;
+                found = 1;
+
+                // Decrease degree of neighbors
+                for (int j = 0; j < max_vregs; j++) {
+                    if (status[j] == 0 && info->interference_graph[i * max_vregs + j]) {
+                        degrees[j]--;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Spill phase: if no node < K found, pick a node to spill
+        if (!found) {
+            int spill_node = -1;
+            int max_degree = -1;
+
+            // Pick node with highest degree to spill (heuristic)
+            for (int i = 0; i < max_vregs; i++) {
+                if (status[i] == 0 && degrees[i] > max_degree) {
+                    spill_node = i;
+                    max_degree = degrees[i];
+                }
+            }
+
+            if (spill_node != -1) {
+                status[spill_node] = 2; // Mark as spilled
+                stack[stack_top++] = spill_node;
+                remaining--;
+
+                // Decrease degree of neighbors
+                for (int j = 0; j < max_vregs; j++) {
+                    if (status[j] == 0 && info->interference_graph[spill_node * max_vregs + j]) {
+                        degrees[j]--;
+                    }
+                }
+            }
+        }
+    }
+
+    // Select phase: pop nodes from stack and assign colors
+    while (stack_top > 0) {
+        int node = stack[--stack_top];
 
         memset(used_colors, 0, num_available_regs * sizeof(int));
 
-        // Mark colors used by neighbors
+        // Mark colors used by already colored neighbors
         for (int j = 0; j < max_vregs; j++) {
-            if (i != j && info->interference_graph[i * max_vregs + j]) {
-                if (info->reg_mapping[j] != -1) {
-                    // Find which available register it is mapped to
+            if (node != j && info->interference_graph[node * max_vregs + j]) {
+                if (status[j] == 3 && info->reg_mapping[j] != -1) {
                     for (int k = 0; k < num_available_regs; k++) {
                         if (available_regs[k] == info->reg_mapping[j]) {
                             used_colors[k] = 1;
@@ -50,7 +129,7 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
             }
         }
 
-        // Find the first unused color
+        // Find available color
         int assigned_color = -1;
         for (int k = 0; k < num_available_regs; k++) {
             if (used_colors[k] == 0) {
@@ -60,14 +139,19 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
         }
 
         if (assigned_color != -1) {
-            info->reg_mapping[i] = assigned_color;
-            info->is_spilled[i] = 0;
+            info->reg_mapping[node] = assigned_color;
+            info->is_spilled[node] = 0;
+            status[node] = 3; // Colored
         } else {
-            // Spilled to stack
-            info->reg_mapping[i] = -1;
-            info->is_spilled[i] = 1;
+            // Actual spill
+            info->reg_mapping[node] = -1;
+            info->is_spilled[node] = 1;
+            status[node] = 3; // Processed (spilled)
         }
     }
 
     free(used_colors);
+    free(stack);
+    free(degrees);
+    free(status);
 }
