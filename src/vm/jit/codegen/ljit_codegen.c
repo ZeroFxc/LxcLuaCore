@@ -67,6 +67,22 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_GETTABLE: ljit_cg_emit_gettable(node, ctx); break;
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
             case IR_CALL: ljit_cg_emit_call(node, ctx); break;
+
+            /* Fallback for newly added IR nodes */
+            case IR_CONCAT:
+            case IR_TFORCALL:
+            case IR_TFORLOOP:
+            case IR_FORPREP:
+            case IR_FORLOOP:
+            case IR_VARARG:
+            case IR_VARARGPREP:
+            case IR_NEWCLASS:
+            case IR_NEWOBJ:
+            case IR_CLOSURE:
+                /* Explicit early exit (interpreter fallback) for unsupported complex ops */
+                sljit_emit_return_void((struct sljit_compiler *)ctx->compiler);
+                break;
+
             // Additional instructions can be mapped here as they are implemented
             default: break;
         }
