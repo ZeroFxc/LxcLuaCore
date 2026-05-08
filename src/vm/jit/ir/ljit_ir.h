@@ -46,6 +46,8 @@ typedef enum {
     IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_IDIV, IR_MOD, IR_POW,
     IR_BAND, IR_BOR, IR_BXOR, IR_SHL, IR_SHR,
     IR_UNM, IR_BNOT, IR_NOT,
+    /* Compare */
+    IR_CMP_LT, IR_CMP_LE, IR_CMP_EQ, IR_CMP_GT, IR_CMP_GE,
     /* Control Flow */
     IR_JMP, IR_CJMP,  /* CJMP: Conditional Jump (jump if true/false) */
     IR_RET,

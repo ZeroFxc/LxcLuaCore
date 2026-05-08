@@ -16,6 +16,65 @@ void ljit_cg_emit_jmp(void *node_ptr, void *ctx_ptr) {
     }
 }
 
+void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->src1.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), node->src1.stack_ofs);
+    }
+
+    if (node->src2.type == IR_VAL_INT) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src2.v.i);
+    } else if (node->src2.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0), node->src2.stack_ofs);
+    }
+
+    sljit_s32 type;
+    switch (node->op) {
+        case IR_CMP_LT: type = SLJIT_LESS; break;
+        case IR_CMP_LE: type = SLJIT_LESS_EQUAL; break;
+        case IR_CMP_EQ: type = SLJIT_EQUAL; break;
+        case IR_CMP_GT: type = SLJIT_GREATER; break;
+        case IR_CMP_GE: type = SLJIT_GREATER_EQUAL; break;
+        default: type = SLJIT_EQUAL; break;
+    }
+
+    /* In Lua, `if ((R[A] < sB) ~= k) then pc++`. This means if condition matches k, we don't jump,
+       but if condition matches `~k`, we jump over the next instruction.
+       Wait, let's read lopcodes.c: `if (cond != GETARG_k(i)) pc++;`. So if the condition DOES NOT match k,
+       we skip the next instruction.
+       If condition is true, and k=0: true != 0 is true, we skip (jump to pc+2).
+       If condition is false, and k=0: false != 0 is false, we don't skip (execute pc+1).
+
+       So we emit a jump if (condition ^ k) == true.
+       Actually, `k` is typically 0 or 1.
+       If `k=0`, we jump to pc+2 if condition is TRUE.
+       If `k=1`, we jump to pc+2 if condition is FALSE.
+    */
+    int k = node->dest.v.i;
+    if (k == 1) {
+        /* Invert the condition */
+        switch (type) {
+            case SLJIT_LESS: type = SLJIT_GREATER_EQUAL; break;
+            case SLJIT_LESS_EQUAL: type = SLJIT_GREATER; break;
+            case SLJIT_EQUAL: type = SLJIT_NOT_EQUAL; break;
+            case SLJIT_GREATER: type = SLJIT_LESS_EQUAL; break;
+            case SLJIT_GREATER_EQUAL: type = SLJIT_LESS; break;
+        }
+    }
+
+    struct sljit_jump *jmp = sljit_emit_cmp(compiler, type, SLJIT_R0, 0, SLJIT_R1, 0);
+    if (jmp) {
+        int idx = ctx->num_jumps++;
+        ctx->jumps[idx] = jmp;
+        /* Jump to original_pc + 2, skipping the next instruction (which is usually a JMP) */
+        ctx->jump_targets[idx] = node->original_pc + 2;
+    }
+}
+
 void ljit_cg_emit_ret(void *node_ptr, void *ctx_ptr) {
     ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;

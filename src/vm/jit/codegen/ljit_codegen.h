@@ -13,6 +13,7 @@ void ljit_cg_emit_mov(void *node, void *ctx);
 void ljit_cg_emit_loadi(void *node, void *ctx);
 
 void ljit_cg_emit_jmp(void *node, void *ctx);
+void ljit_cg_emit_cmp(void *node, void *ctx);
 void ljit_cg_emit_ret(void *node, void *ctx);
 
 void ljit_cg_emit_gettable(void *node, void *ctx);
