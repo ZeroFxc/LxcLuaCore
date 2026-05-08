@@ -4,6 +4,49 @@
 #include "../sljit/ljit_sljit.h"
 #include <stdlib.h>
 
+#include "../../../core/lstate.h"
+#include "../../../core/ltable.h"
+#include "../../../vm/lvm.h"
+#include "../../../core/lobject.h"
+#include "../../../core/lgc.h"
+
+void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
+    if (ttistable(rb)) {
+       Table *h = hvalue(rb);
+       if (h->is_shared) l_rwlock_rdlock(&h->lock);
+       const TValue *res = luaH_get_optimized(h, rc);
+       if (!isempty(res)) {
+          setobj2s(L, ra, res);
+          if (h->is_shared) l_rwlock_unlock(&h->lock);
+       } else {
+          if (h->is_shared) l_rwlock_unlock(&h->lock);
+          luaV_finishget(L, rb, rc, ra, NULL);
+       }
+    }
+    else {
+      luaV_finishget(L, rb, rc, ra, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue *rc) {
+    if (ttistable(ra)) {
+       Table *h = hvalue(ra);
+       if (h->is_shared) l_rwlock_wrlock(&h->lock);
+       const TValue *res = luaH_get_optimized(h, rb);
+       if (!isempty(res) && !isabstkey(res)) {
+          setobj2t(L, cast(TValue *, res), rc);
+          luaC_barrierback(L, obj2gco(h), rc);
+          if (h->is_shared) l_rwlock_unlock(&h->lock);
+       } else {
+          if (h->is_shared) l_rwlock_unlock(&h->lock);
+          luaV_finishset(L, ra, rb, rc, NULL);
+       }
+    }
+    else {
+      luaV_finishset(L, ra, rb, rc, NULL);
+    }
+}
+
 void *ljit_codegen(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (!ctx) return NULL;
