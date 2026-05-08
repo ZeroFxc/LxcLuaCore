@@ -43,6 +43,8 @@ void ljit_analyze_dataflow(ljit_ctx_t *ctx) {
             case OP_BXOR:
             case OP_SHL:
             case OP_SHR:
+            case OP_SHLI:
+            case OP_SHRI:
             case OP_UNM:
             case OP_BNOT:
             case OP_NOT:
@@ -123,7 +125,9 @@ void ljit_analyze_type_inference(ljit_ctx_t *ctx) {
             case OP_BXOR:
             case OP_SHL:
             case OP_SHR:
-            case OP_BNOT: {
+            case OP_BNOT:
+            case OP_SHLI:
+            case OP_SHRI: {
                 int a = GETARG_A(i);
                 if (a < info->max_regs) info->reg_types[a] = JIT_TYPE_INT;
                 break;
