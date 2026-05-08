@@ -216,11 +216,83 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
-            case OP_VARARGPREP:
             case OP_MMBINI:
             case OP_MMBINK:
             case OP_MMBIN: {
-                /* Ignore metamethod fallbacks and vararg prep for JIT MVP */
+                /* Ignore metamethod fallbacks for JIT MVP */
+                break;
+            }
+            case OP_CONCAT: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_CONCAT, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TFORCALL: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TFORCALL, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_TFORLOOP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_TFORLOOP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_FORPREP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_FORPREP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_FORLOOP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_FORLOOP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_VARARG: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_VARARG, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_VARARGPREP: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_VARARGPREP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NEWCLASS: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWCLASS, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_NEWOBJ: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWOBJ, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_CLOSURE: {
+                ljit_ir_node_t *node = ljit_ir_new(IR_CLOSURE, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                ljit_ir_append(ctx, node);
                 break;
             }
             case OP_CALL:
