@@ -16,16 +16,11 @@
 int XCLUA_JIT_ENABLED = 1;
 
 void luaJIT_init (lua_State *L) {
-    if (!G(L)->jit_ctx) {
-        G(L)->jit_ctx = sljit_create_compiler(NULL);
-    }
+    /* No persistent sljit compiler needed globally */
 }
 
 void luaJIT_free (lua_State *L) {
-    if (G(L)->jit_ctx) {
-        sljit_free_compiler((struct sljit_compiler*)G(L)->jit_ctx);
-        G(L)->jit_ctx = NULL;
-    }
+    /* No persistent sljit compiler needed globally */
 }
 
 int luaJIT_compile (lua_State *L, Proto *p) {

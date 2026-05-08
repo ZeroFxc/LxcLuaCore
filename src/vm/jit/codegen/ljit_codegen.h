@@ -37,4 +37,9 @@ void ljit_cg_emit_call(void *node, void *ctx);
 
 void ljit_cg_emit_conv(void *node, void *ctx);
 
+/* Emitter Helpers */
+struct ljit_ir_val_t;
+void ljit_cg_emit_load_operand(void *compiler, int target_reg, void *val);
+void ljit_cg_emit_store_operand(void *compiler, void *val, int src_reg);
+
 #endif

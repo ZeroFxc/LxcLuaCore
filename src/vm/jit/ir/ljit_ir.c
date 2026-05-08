@@ -17,6 +17,7 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
         ctx->jumps = NULL;
         ctx->jump_targets = NULL;
         ctx->analyze_info = NULL;
+        ctx->regalloc_info = NULL;
     }
     return (void *)ctx;
 }
