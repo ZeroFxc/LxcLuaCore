@@ -47,6 +47,34 @@ void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue
     }
 }
 
+void SLJIT_FUNC ljit_icall_concat(lua_State *L, int total, StkId ra) {
+    L->top.p = ra + total;
+    luaV_concat(L, total);
+}
+
+sljit_sw SLJIT_FUNC ljit_icall_forprep(lua_State *L, StkId ra) {
+    return luaV_forprep(L, ra);
+}
+
+sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra) {
+    /* Same logic as lvm.c OP_FORLOOP */
+    if (ttisinteger(s2v(ra + 2))) {
+        lua_Unsigned count = l_castS2U(ivalue(s2v(ra + 1)));
+        if (count > 0) {
+            lua_Integer step = ivalue(s2v(ra + 2));
+            lua_Integer idx = ivalue(s2v(ra));
+            chgivalue(s2v(ra + 1), count - 1);
+            idx = intop(+, idx, step);
+            chgivalue(s2v(ra), idx);
+            setivalue(s2v(ra + 3), idx);
+            return 1; /* Jump back */
+        }
+        return 0; /* Finish loop */
+    } else {
+        return luaV_floatforloop(ra);
+    }
+}
+
 void *ljit_codegen(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (!ctx) return NULL;
@@ -169,11 +197,8 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_SETI:
             case IR_GETFIELD:
             case IR_SETFIELD:
-            case IR_CONCAT:
             case IR_TFORCALL:
             case IR_TFORLOOP:
-            case IR_FORPREP:
-            case IR_FORLOOP:
             case IR_VARARG:
             case IR_VARARGPREP:
             case IR_NEWCLASS:
@@ -182,6 +207,10 @@ void *ljit_codegen(void *ctx_ptr) {
                 /* Explicit early exit (interpreter fallback) for unsupported complex ops */
                 sljit_emit_return_void((struct sljit_compiler *)ctx->compiler);
                 break;
+
+            case IR_CONCAT: ljit_cg_emit_concat(node, ctx); break;
+            case IR_FORPREP: ljit_cg_emit_forprep(node, ctx); break;
+            case IR_FORLOOP: ljit_cg_emit_forloop(node, ctx); break;
 
             // Additional instructions can be mapped here as they are implemented
             default: break;
