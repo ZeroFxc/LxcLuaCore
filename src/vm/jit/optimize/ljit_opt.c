@@ -7,4 +7,5 @@ void ljit_optimize(ljit_ctx_t *ctx) {
     ljit_opt_cse(ctx);
     ljit_opt_peep(ctx);
     ljit_opt_dce(ctx);
+    ljit_opt_inline(ctx);
 }
