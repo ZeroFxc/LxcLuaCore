@@ -95,6 +95,29 @@ sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra) {
     }
 }
 
+
+void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb) {
+    luaV_objlen(L, ra, rb);
+}
+
+
+
+#include "../../../core/lopcodes.h"
+
+
+
+void ljit_cg_emit_len(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->original_pc);
+
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_len);
+}
+
 void *ljit_codegen(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (!ctx) return NULL;
@@ -180,7 +203,6 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_IN:
             case IR_INSTANCEOF:
             case IR_IS:
-            case IR_LEN:
             case IR_LINKNAMESPACE:
             case IR_LOADKX:
             case IR_NEWCONCEPT:
@@ -198,6 +220,7 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_TBC:
             case IR_TEST:
             case IR_TESTNIL:
+            case IR_LEN: ljit_cg_emit_len(node, ctx); break;
             case IR_TESTSET:
             case IR_TFORPREP:
             case IR_GETUPVAL:
