@@ -140,16 +140,12 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_CALL: ljit_cg_emit_call(node, ctx); break;
 
 /* Fallback for newly added IR nodes */
-            case IR_ADDK:
+            case IR_POW:
             case IR_ADDMETHOD:
             case IR_ASYNCWRAP:
-            case IR_BANDK:
-            case IR_BORK:
-            case IR_BXORK:
             case IR_CASE:
             case IR_CHECKTYPE:
             case IR_CLOSE:
-            case IR_DIVK:
             case IR_EQK:
             case IR_ERRNNIL:
             case IR_EXTRAARG:
@@ -159,7 +155,6 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_GETPROP:
             case IR_GETSUPER:
             case IR_GETVARG:
-            case IR_IDIVK:
             case IR_IMPLEMENT:
             case IR_IN:
             case IR_INHERIT:
@@ -168,12 +163,9 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_LEN:
             case IR_LINKNAMESPACE:
             case IR_LOADKX:
-            case IR_MODK:
-            case IR_MULK:
             case IR_NEWCONCEPT:
             case IR_NEWNAMESPACE:
             case IR_NEWSUPER:
-            case IR_POWK:
             case IR_SELF:
             case IR_SETIFACEFLAG:
             case IR_SETLIST:
@@ -183,7 +175,6 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_SETSUPER:
             case IR_SLICE:
             case IR_SPACESHIP:
-            case IR_SUBK:
             case IR_TBC:
             case IR_TEST:
             case IR_TESTNIL:
