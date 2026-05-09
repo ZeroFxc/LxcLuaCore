@@ -147,3 +147,4 @@ LUAI_FUNC void luaV_objlen (lua_State *L, StkId ra, const TValue *rb);
 LUAI_FUNC Instruction luaV_getinst(const Proto *p, int pc);
 
 #endif
+LUAI_FUNC void luaV_pushclosure(lua_State *L, Proto *p, UpVal **encup, StkId base, StkId ra);

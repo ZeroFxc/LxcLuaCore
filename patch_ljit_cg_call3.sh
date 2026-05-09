@@ -1,5 +1,5 @@
+cat << 'INNER_EOF' > src/vm/jit/codegen/ljit_cg_call.c
 #include "ljit_codegen.h"
-#include "../../../core/ldo.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
 
@@ -33,3 +33,4 @@ void ljit_cg_emit_call(void *node_ptr, void *ctx_ptr) {
     /* Call ljit_icall_call */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_call);
 }
+INNER_EOF
