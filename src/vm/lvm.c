@@ -592,7 +592,7 @@ static int forlimit (lua_State *L, lua_Integer init, const TValue *lim,
  * @param ra The register base.
  * @return 1 to skip the loop, 0 otherwise.
  */
-static int forprep (lua_State *L, StkId ra) {
+int luaV_forprep (lua_State *L, StkId ra) {
   TValue *pinit = s2v(ra);
   TValue *plimit = s2v(ra + 1);
   TValue *pstep = s2v(ra + 2);
@@ -656,7 +656,7 @@ static int forprep (lua_State *L, StkId ra) {
  * @param ra The register base.
  * @return 1 if the loop must continue, 0 otherwise.
  */
-static int floatforloop (StkId ra) {
+int luaV_floatforloop (StkId ra) {
   lua_Number step = fltvalue(s2v(ra + 2));
   lua_Number limit = fltvalue(s2v(ra + 1));
   lua_Number idx = fltvalue(s2v(ra));  /* internal index */
@@ -3191,7 +3191,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
             pc -= GETARG_Bx(i);  /* jump back */
           }
         }
-        else if (floatforloop(ra))  /* float loop */
+        else if (luaV_floatforloop(ra))  /* float loop */
           pc -= GETARG_Bx(i);  /* jump back */
         updatetrap(ci);  /* allows a signal to break the loop */
         vmbreak;
@@ -3199,7 +3199,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
       vmcase(OP_FORPREP) {
         StkId ra = RA(i);
         savestate(L, ci);  /* in case of errors */
-        if (forprep(L, ra))
+        if (luaV_forprep(L, ra))
           pc += GETARG_Bx(i) + 1;  /* skip the loop */
         vmbreak;
       }
