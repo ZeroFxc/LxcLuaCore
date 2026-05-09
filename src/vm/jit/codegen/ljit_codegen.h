@@ -32,12 +32,15 @@ void ljit_cg_emit_ret(void *node, void *ctx);
 
 void ljit_cg_emit_gettable(void *node, void *ctx);
 void ljit_cg_emit_settable(void *node, void *ctx);
+void ljit_cg_emit_newtable(void *node, void *ctx);
 
 void ljit_cg_emit_call(void *node, void *ctx);
 
 void ljit_cg_emit_concat(void *node, void *ctx);
 void ljit_cg_emit_forprep(void *node, void *ctx);
 void ljit_cg_emit_forloop(void *node, void *ctx);
+void ljit_cg_emit_pow(void *node, void *ctx);
+void ljit_cg_emit_nop(void *node, void *ctx);
 
 void ljit_cg_emit_conv(void *node, void *ctx);
 
@@ -54,6 +57,8 @@ void ljit_cg_emit_store_operand(struct ljit_ctx *ctx, void *val, int src_reg);
 #include "../sljit/ljit_sljit.h"
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue *rc);
+void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra);
+void SLJIT_FUNC ljit_icall_pow(lua_State *L, TValue *ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_concat(lua_State *L, int total, StkId ra);
 sljit_sw SLJIT_FUNC ljit_icall_forprep(lua_State *L, StkId ra);
 sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra);
