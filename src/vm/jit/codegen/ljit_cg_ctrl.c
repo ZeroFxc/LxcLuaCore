@@ -22,8 +22,8 @@ void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
-    ljit_cg_emit_load_operand(compiler, SLJIT_R0, &node->src1);
-    ljit_cg_emit_load_operand(compiler, SLJIT_R1, &node->src2);
+    ljit_cg_emit_load_operand((struct ljit_ctx *)ctx, SLJIT_R0, &node->src1);
+    ljit_cg_emit_load_operand((struct ljit_ctx *)ctx, SLJIT_R1, &node->src2);
 
     sljit_s32 type;
     switch (node->op) {

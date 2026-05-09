@@ -41,10 +41,11 @@ void ljit_cg_emit_forloop(void *node, void *ctx);
 
 void ljit_cg_emit_conv(void *node, void *ctx);
 
+struct ljit_ctx;
 /* Emitter Helpers */
 struct ljit_ir_val_t;
-void ljit_cg_emit_load_operand(void *compiler, int target_reg, void *val);
-void ljit_cg_emit_store_operand(void *compiler, void *val, int src_reg);
+void ljit_cg_emit_load_operand(struct ljit_ctx *ctx, int target_reg, void *val);
+void ljit_cg_emit_store_operand(struct ljit_ctx *ctx, void *val, int src_reg);
 
 #endif
 
