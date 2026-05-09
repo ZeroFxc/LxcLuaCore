@@ -9,6 +9,7 @@
 #include "../../../vm/lvm.h"
 #include "../../../core/lobject.h"
 #include "../../../core/lgc.h"
+#include "../../../core/ltm.h"
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
     if (ttistable(rb)) {
@@ -44,6 +45,25 @@ void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue
     }
     else {
       luaV_finishset(L, ra, rb, rc, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra) {
+    Table *t = luaH_new(L);
+    sethvalue2s(L, ra, t);
+    if (b != 0 || c != 0)
+        luaH_resize(L, t, c, b);
+    luaC_checkGC(L);
+}
+
+#include <math.h>
+
+void SLJIT_FUNC ljit_icall_pow(lua_State *L, TValue *ra, TValue *rb, TValue *rc) {
+    lua_Number nb, nc;
+    if (tonumberns(rb, nb) && tonumberns(rc, nc)) {
+        setfltvalue(ra, luai_numpow(L, nb, nc));
+    } else {
+        luaT_trybinTM(L, rb, rc, cast(StkId, ra), TM_POW);
     }
 }
 
@@ -138,9 +158,11 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_GETTABLE: ljit_cg_emit_gettable(node, ctx); break;
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
             case IR_CALL: ljit_cg_emit_call(node, ctx); break;
+            case IR_NEWTABLE: ljit_cg_emit_newtable(node, ctx); break;
+            case IR_POW: ljit_cg_emit_pow(node, ctx); break;
+            case IR_NOP: ljit_cg_emit_nop(node, ctx); break;
 
 /* Fallback for newly added IR nodes */
-            case IR_POW:
             case IR_ADDMETHOD:
             case IR_ASYNCWRAP:
             case IR_CASE:
