@@ -62,3 +62,8 @@ void SLJIT_FUNC ljit_icall_pow(lua_State *L, TValue *ra, TValue *rb, TValue *rc)
 void SLJIT_FUNC ljit_icall_concat(lua_State *L, int total, StkId ra);
 sljit_sw SLJIT_FUNC ljit_icall_forprep(lua_State *L, StkId ra);
 sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra);
+void ljit_cg_emit_closure(void *node, void *ctx);
+void ljit_cg_emit_newclass(void *node, void *ctx);
+void ljit_cg_emit_newobj(void *node, void *ctx);
+void ljit_cg_emit_inherit(void *node, void *ctx);
+void ljit_cg_emit_getsuper(void *node, void *ctx);
