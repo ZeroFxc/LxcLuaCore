@@ -1772,7 +1772,7 @@ lua_Integer luaV_shiftl (lua_Integer x, lua_Integer y) {
  * @param base The stack base.
  * @param ra The register to store the closure.
  */
-static void pushclosure (lua_State *L, Proto *p, UpVal **encup, StkId base,
+void luaV_pushclosure (lua_State *L, Proto *p, UpVal **encup, StkId base,
                          StkId ra) {
   int nup = p->sizeupvalues;
   Upvaldesc *uv = p->upvalues;
@@ -3272,7 +3272,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
       vmcase(OP_CLOSURE) {
         StkId ra = RA(i);
         Proto *p = cl->p->p[GETARG_Bx(i)];
-        halfProtect(pushclosure(L, p, cl->upvals, base, ra));
+        halfProtect(luaV_pushclosure(L, p, cl->upvals, base, ra));
         checkGC(L, ra + 1);
         vmbreak;
       }

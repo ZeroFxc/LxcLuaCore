@@ -53,7 +53,7 @@ void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra) {
     sethvalue2s(L, ra, t);
     if (b != 0 || c != 0)
         luaH_resize(L, t, c, b);
-    luaC_checkGC(L);
+    luaC_step(L);
 }
 
 #include <math.h>
@@ -175,11 +175,9 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_GETCMDS:
             case IR_GETOPS:
             case IR_GETPROP:
-            case IR_GETSUPER:
             case IR_GETVARG:
             case IR_IMPLEMENT:
             case IR_IN:
-            case IR_INHERIT:
             case IR_INSTANCEOF:
             case IR_IS:
             case IR_LEN:
@@ -214,12 +212,13 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_TFORLOOP:
             case IR_VARARG:
             case IR_VARARGPREP:
-            case IR_NEWCLASS:
-            case IR_NEWOBJ:
-            case IR_CLOSURE:
-                /* Explicit early exit (interpreter fallback) for unsupported complex ops */
                 sljit_emit_return_void((struct sljit_compiler *)ctx->compiler);
                 break;
+            case IR_GETSUPER: ljit_cg_emit_getsuper(node, ctx); break;
+            case IR_INHERIT: ljit_cg_emit_inherit(node, ctx); break;
+            case IR_NEWCLASS: ljit_cg_emit_newclass(node, ctx); break;
+            case IR_NEWOBJ: ljit_cg_emit_newobj(node, ctx); break;
+            case IR_CLOSURE: ljit_cg_emit_closure(node, ctx); break;
 
             case IR_CONCAT: ljit_cg_emit_concat(node, ctx); break;
             case IR_FORPREP: ljit_cg_emit_forprep(node, ctx); break;
@@ -249,4 +248,45 @@ void *ljit_codegen(void *ctx_ptr) {
     ctx->compiler = NULL;
 
     return code;
+}
+
+void SLJIT_FUNC ljit_icall_closure(lua_State *L, Proto *p, StkId base, StkId ra) {
+    if (!ttisLclosure(s2v(L->ci->func.p))) { /* handle error */ }
+    LClosure *cl = clLvalue(s2v(L->ci->func.p));
+    luaV_pushclosure(L, p, cl->upvals, base, ra);
+    luaC_step(L);
+}
+
+#include "../../../stdlib/lclass.h"
+void SLJIT_FUNC ljit_icall_newclass(lua_State *L, TString *classname) {
+    luaC_newclass(L, classname);
+}
+
+void SLJIT_FUNC ljit_icall_newobj(lua_State *L, int nargs, StkId rb, StkId ra) {
+        setobj2s(L, L->top.p, s2v(rb));
+    L->top.p++;
+    for (int j = 0; j < nargs; j++) {
+        setobj2s(L, L->top.p, s2v(ra + 1 + j));
+        L->top.p++;
+    }
+    luaC_newobject(L, -(nargs + 1), nargs);
+    setobj2s(L, ra, s2v(L->top.p - 1));
+    L->top.p -= 1;
+}
+
+void SLJIT_FUNC ljit_icall_inherit(lua_State *L, StkId rb, StkId ra) {
+        setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    setobj2s(L, L->top.p, s2v(rb));
+    L->top.p++;
+    luaC_inherit(L, -2, -1);
+    L->top.p -= 2;
+}
+
+void SLJIT_FUNC ljit_icall_getsuper(lua_State *L, TString *key, StkId rb, StkId ra) {
+        setobj2s(L, L->top.p, s2v(rb));
+    L->top.p++;
+    luaC_super(L, -1, key);
+    setobj2s(L, ra, s2v(L->top.p - 1));
+    L->top.p -= 2;
 }
