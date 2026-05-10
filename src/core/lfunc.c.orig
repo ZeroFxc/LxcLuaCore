@@ -211,16 +211,16 @@ static void prepcallclosemth (lua_State *L, StkId level, TStatus status,
   level = restorestack(L, levelrel);
   TValue *uv = s2v(level);  /* value being closed */
   TValue *errobj;
-  
+
   switch (status){
-  	case CLOSEKTOP:
-  	errobj = &G(L)->nilvalue;  /* error object is nil */
-  	break;
-  	
+	case CLOSEKTOP:
+	errobj = &G(L)->nilvalue;  /* error object is nil */
+	break;
+
     case LUA_OK:
           L->top.p = level + 1;  /* call will be at this level */
       /* FALLTHROUGH */
-    
+
         break;
   default:  /* 'luaD_seterrorobj' will set top to level + 2 */
     errobj = s2v(level + 1);  /* error object goes after 'uv' */
@@ -363,7 +363,6 @@ Proto *luaF_newproto (lua_State *L) {
   f->is_sleeping = 0;
   f->jit_trace = NULL;
   f->call_queue = NULL;
-  f->jit_failed = 0;
   return f;
 }
 
@@ -480,12 +479,12 @@ void luaF_callqueuepush (lua_State *L, CallQueue *q, int nargs) {
   CallNode *node = (CallNode *)luaM_new(L, CallNode);
   node->nargs = nargs;
   node->next = NULL;
-  
+
   StkId base = L->top.p - nargs;
   for (int i = 0; i < nargs; i++) {
     setobj(L, &node->args[i], s2v(base + i));
   }
-  
+
   if (q->tail == NULL) {
     q->head = q->tail = node;
   } else {
@@ -508,20 +507,20 @@ int luaF_callqueuepop (lua_State *L, CallQueue *q, int *nargs, TValue *args) {
   if (q->head == NULL) {
     return 0;
   }
-  
+
   CallNode *node = q->head;
   *nargs = node->nargs;
-  
+
   for (int i = 0; i < node->nargs; i++) {
     setobj(L, &args[i], &node->args[i]);
   }
-  
+
   q->head = node->next;
   if (q->head == NULL) {
     q->tail = NULL;
   }
   q->size--;
-  
+
   luaM_free(L, node);
   return 1;
 }

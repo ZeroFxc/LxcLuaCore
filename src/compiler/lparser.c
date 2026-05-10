@@ -8320,10 +8320,10 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
       return 0;
     }
   }
-  else if (ls->t.token == TK_OR) {
-    /* @ (TK_OR) 或 @label - PC 位置或标签引用 */
-    /* 注意: '@' 在词法分析器中被映射为 TK_OR */
-    luaX_next(ls);  /* 跳过 '@' (TK_OR) */
+  else if (ls->t.token == '@') {
+    /* @ 或 @label - PC 位置或标签引用 */
+    /* 注意: '@' 并不一定被映射为 TK_OR */
+    luaX_next(ls);  /* 跳过 '@' */
     /* 检查是否是标签引用（必须是纯名称，不能是关键字） */
     if (ls->t.token == TK_NAME && ctx != NULL) {
       /* @label - 引用标签 */

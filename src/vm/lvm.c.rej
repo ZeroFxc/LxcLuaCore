@@ -1,0 +1,11 @@
+--- lvm.c	2024-05-15 12:00:00.000000000 +0000
++++ lvm.c	2024-05-15 12:00:00.000000000 +0000
+@@ -2300,7 +2300,7 @@
+        For the MVP, since `RET` and `CALL` are stubs that just `return` to C, let's let interpreter run over it anyway to finish the side-effects.
+        To avoid running interpreter twice over JIT-ted instructions, ideally JIT would update the PC.
+        But for MVP, we just run `func(base)` and then let the interpreter continue. */
+-    /* We don't return here. */
++    /* We DO NOT skip interpreter. */
+   }
+
+   if (cl->p->vm_code_table) {
