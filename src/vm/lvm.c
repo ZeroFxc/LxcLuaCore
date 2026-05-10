@@ -2976,31 +2976,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         dojump(ci, i, 0);
         vmbreak;
       }
-      vmcase(OP_JMPI) {
-        StkId ra = RA(i);
-        if (ttisinteger(s2v(ra))) {
-          lua_Integer packed = ivalue(s2v(ra));
-          int offset = (int)(packed & 0xFFFFFFFF);
-          int target_nactvar = (int)((packed >> 32) & 0xFFFFFFFF);
-          int current_nactvar = GETARG_B(i);
-
-          /* check if it's within bounds to avoid segfaults */
-          if (offset >= 0 && offset < cl->p->sizecode) {
-             /* close upvalues if we are leaving a block */
-             if (current_nactvar > target_nactvar) {
-                halfProtect(luaF_close(L, base + target_nactvar, LUA_OK, 1));
-             }
-             /* Note: loop iterates by pc++, so we must set pc to offset - 1 */
-             pc = cl->p->code + offset - 1;
-             updatetrap(ci);
-          } else {
-             luaG_runerror(L, "invalid jump target");
-          }
-        } else {
-          luaG_runerror(L, "attempt to jump to non-integer label");
-        }
-        vmbreak;
-      }
       vmcase(OP_EQ) {
         StkId ra = RA(i);
         int cond;
