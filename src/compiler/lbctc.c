@@ -866,27 +866,6 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             break;
         }
 
-        case OP_JMPI: {
-            int b = GETARG_B(i);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_Integer packed = R(%s).i;\n", obf_int(a, &obf_seed, obfuscate));
-            add_fmt(B, "        int offset = (int)(packed & 0xFFFFFFFF);\n");
-            add_fmt(B, "        int target_nactvar = (int)((packed >> 32) & 0xFFFFFFFF);\n");
-            add_fmt(B, "        int current_nactvar = %s;\n", obf_int(b, &obf_seed, obfuscate));
-            add_fmt(B, "        if (offset >= 0 && offset < cl->p->sizecode) {\n");
-            add_fmt(B, "            if (current_nactvar > target_nactvar) {\n");
-            add_fmt(B, "                Protect(luaF_close(L, base + target_nactvar, LUA_OK, 1));\n");
-            add_fmt(B, "            }\n");
-            add_fmt(B, "            pc = cl->p->code + offset - 1;\n");
-            add_fmt(B, "            updatetrap(ci);\n");
-            add_fmt(B, "            goto decode_loop;\n");
-            add_fmt(B, "        } else {\n");
-            add_fmt(B, "            luaG_runerror(L, \"invalid jump target\");\n");
-            add_fmt(B, "        }\n");
-            add_fmt(B, "    }\n");
-            break;
-        }
-
         case OP_EQ: { // if ((R[A] == R[B]) ~= k) then pc++
             int b = GETARG_B(i);
             int k = GETARG_k(i);

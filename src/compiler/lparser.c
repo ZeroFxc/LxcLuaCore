@@ -3867,26 +3867,6 @@ static void simpleexp (LexState *ls, expdesc *v) {
       luaX_next(ls);
       break;
     }
-    case TK_DBCOLON: { /* ::name:: as expression */
-      int line = ls->linenumber;
-      luaX_next(ls); /* skip double colon */
-      TString *name = str_checkname(ls);
-      checknext(ls, TK_DBCOLON); /* skip double colon */
-
-      Labeldesc *lb = findlabel(ls, name);
-      if (lb == NULL) {
-         /* For first-class label expression, label must be defined before */
-         luaX_syntaxerror(ls, "label must be defined before being used as an expression");
-      } else {
-         /* Push the PC address of the label onto the stack */
-         /* A computed label needs its PC and its nactvar. We can pack them into a 64-bit integer
-            (pc in lower 32 bits, nactvar in upper 32 bits) */
-         init_exp(v, VKINT, 0);
-         lua_Integer packed = ((lua_Integer)lb->nactvar << 32) | (lua_Integer)(unsigned int)lb->pc;
-         v->u.ival = packed;
-      }
-      return;
-    }
     case TK_DOTS: {  /* vararg or spread operator */
       FuncState *fs = ls->fs;
       int dots_line = ls->linenumber;  /* 记录 '...' 所在行号 */
@@ -5269,24 +5249,6 @@ static void cond_simpleexp (LexState *ls, expdesc *v) {
       luaX_next(ls);
       break;
     }
-    case TK_DBCOLON: { /* ::name:: as expression */
-      int line = ls->linenumber;
-      luaX_next(ls); /* skip double colon */
-      TString *name = str_checkname(ls);
-      checknext(ls, TK_DBCOLON); /* skip double colon */
-
-      Labeldesc *lb = findlabel(ls, name);
-      if (lb == NULL) {
-         /* For first-class label expression, label must be defined before */
-         luaX_syntaxerror(ls, "label must be defined before being used as an expression");
-      } else {
-         /* Push the PC address of the label onto the stack */
-         init_exp(v, VKINT, 0);
-         lua_Integer packed = ((lua_Integer)lb->nactvar << 32) | (lua_Integer)(unsigned int)lb->pc;
-         v->u.ival = packed;
-      }
-      return;
-    }
     case TK_DOTS: {  /* vararg or spread operator */
       FuncState *fs = ls->fs;
       int dots_line = ls->linenumber;  /* 记录 '...' 所在行号 */
@@ -5602,82 +5564,19 @@ static void gotostat (LexState *ls) {
     newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(fs));
     return;
   }
-
-  if (ls->t.token == TK_NAME) {
-    /* Labels and local variables are in different namespaces. In Lua, a standard `goto name`
-       jumps to a label. A computed goto requires `goto var` where var evaluates to a label value.
-       We prioritize the standard goto label. If there's an active label with this name,
-       we statically jump to it. If there isn't, but there's a variable with this name,
-       we treat it as a computed goto. */
-    TString *name = ls->t.seminfo.ts;
-    int is_static_label = 0;
-
-    /* Determine if we treat this as a static label name.
-       First, if there's no variable with this name, it must be a static label (or undeclared static label).
-       Second, if it's just `goto name` with no trailing brackets or operator, and it exists as a label. */
-    expdesc v;
-    singlevaraux(fs, name, &v, 0);
-    int is_variable = (v.k != VVOID);
-
-    /* Before looking ahead or checking variables, just try to resolve as a static label name directly.
-       If it succeeds, it's a static label. If it doesn't, we'll try evaluating it as an expression.
-       This avoids the lexer crash by not calling luaX_lookahead incorrectly. */
-    Labeldesc *lb = findlabel(ls, name);
-
-    /* However, if it's a backward jump (label already defined), lb != NULL.
-       If it's a forward jump, we have to assume it's a static label UNLESS it's an expression.
-       To disambiguate `goto name` (static) vs `goto var` (dynamic), we can just check if `name` is a valid variable. */
-    if (!is_variable) {
-        is_static_label = 1;
-    } else if (lb != NULL) {
-        /* If both exist, we prioritize static label to not break standard Lua semantics. */
-        is_static_label = 1;
-    } else {
-        /* If a variable exists and there's no defined label, we treat it as an expression
-           rather than a forward static goto, giving precedence to computed goto in case of ambiguity. */
-        is_static_label = 0;
-    }
-
-    if (is_static_label) {
-      luaX_next(ls); /* skip name */
-      /* we might have skipped the name, now handle forward/backward jump */
-      if (lb == NULL)  /* no label? */
-        /* forward jump; will be resolved when the label is declared */
-        newgotoentry(ls, name, line, luaK_jump(fs));
-      else {  /* found a label */
-        /* backward jump; will be resolved here */
-        int lblevel = reglevel(fs, lb->nactvar);  /* label level */
-        if (luaY_nvarstack(fs) > lblevel)  /* leaving the scope of a variable? */
-          luaK_codeABC(fs, OP_CLOSE, lblevel, 0, 0);
-        /* create jump and link it to the label */
-        luaK_patchlist(fs, luaK_jump(fs), lb->pc);
-      }
-      return;
-    }
+  TString *name = str_checkname(ls);  /* label's name */
+  Labeldesc *lb = findlabel(ls, name);
+  if (lb == NULL)  /* no label? */
+    /* forward jump; will be resolved when the label is declared */
+    newgotoentry(ls, name, line, luaK_jump(fs));
+  else {  /* found a label */
+    /* backward jump; will be resolved here */
+    int lblevel = reglevel(fs, lb->nactvar);  /* label level */
+    if (luaY_nvarstack(fs) > lblevel)  /* leaving the scope of a variable? */
+      luaK_codeABC(fs, OP_CLOSE, lblevel, 0, 0);
+    /* create jump and link it to the label */
+    luaK_patchlist(fs, luaK_jump(fs), lb->pc);
   }
-
-  /* computed goto: goto expr */
-  expdesc v;
-  expr(ls, &v);
-
-  if (v.k == VLOCAL && v.u.var.ridx < fs->nactvar) {
-      /* If computed goto targets a local variable, we don't want to close it!
-         Closing would invalidate the variable we are just about to use.
-         But in Lua, computed goto should only jump to PC locations.
-         Actually, `OP_JMPI` itself doesn't use the variable's value as a register,
-         it assumes the value IN the register contains the packed PC/nactvar.
-         So closing the scope is OK *after* loading the value.
-         But `OP_JMPI` does the scope closing *internally* during runtime.
-         Wait, `OP_JMPI` reads the value at runtime. If we `luaF_close` at runtime BEFORE jumping,
-         it closes upvalues correctly. It does not destroy local registers.
-      */
-  }
-
-  /* OP_JMPI requires a register. We first store the current nactvar level in the instruction,
-     so that the VM can close upvalues up to the target label's level at runtime.
-     We need to pass the current block's active variables. */
-  luaK_exp2anyreg(fs, &v);
-  luaK_codeABC(fs, OP_JMPI, v.u.info, fs->nactvar, 0);
 }
 
 
@@ -6310,7 +6209,7 @@ static void matchstat (LexState *ls, int line) {
 
   enterblock(fs, &bl, 1); /* isloop=1 to support break */
 
-  cond_expr(ls, &ctrl); /* parse control expression */
+  expr(ls, &ctrl); /* parse control expression */
 
   /* Save control value to a local variable to ensure register safety */
   luaK_exp2nextreg(fs, &ctrl);
@@ -6404,7 +6303,7 @@ static void switchstat (LexState *ls, int line) {
 
   enterblock(fs, &bl, 1); /* isloop=1 to support break */
 
-  cond_expr(ls, &ctrl); /* parse control expression */
+  expr(ls, &ctrl); /* parse control expression */
 
   /* Save control value to a local variable to ensure register safety */
   luaK_exp2nextreg(fs, &ctrl);
@@ -6483,9 +6382,7 @@ static void switchstat (LexState *ls, int line) {
          testnext(ls, TK_THEN);
          /* checknext(ls, '{');  optional brace? */
 
-         while (ls->t.token != TK_CASE && ls->t.token != TK_DEFAULT && ls->t.token != TK_END && ls->t.token != TK_EOS && ls->t.token != '}') {
-             statement(ls);
-         }
+         statlist(ls);
          previous_body_active = 1;
       }
 
@@ -6517,9 +6414,7 @@ static void switchstat (LexState *ls, int line) {
          testnext(ls, ':');
          testnext(ls, TK_DO);
          testnext(ls, TK_THEN);
-         while (ls->t.token != TK_CASE && ls->t.token != TK_DEFAULT && ls->t.token != TK_END && ls->t.token != TK_EOS && ls->t.token != '}') {
-             statement(ls);
-         }
+         statlist(ls);
          previous_body_active = 1;
       }
     } else {
