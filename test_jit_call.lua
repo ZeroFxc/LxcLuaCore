@@ -1,1 +1,1 @@
-local function f() return 10 end; print(f())
+jit.on() local function f() return 10 end; print(f())

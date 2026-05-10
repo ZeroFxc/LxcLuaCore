@@ -45,6 +45,9 @@ void ljit_cg_emit_call(void *node, void *ctx);
 void ljit_cg_emit_concat(void *node, void *ctx);
 void ljit_cg_emit_forprep(void *node, void *ctx);
 void ljit_cg_emit_forloop(void *node, void *ctx);
+void ljit_cg_emit_tforprep(void *node, void *ctx);
+void ljit_cg_emit_tforcall(void *node, void *ctx);
+void ljit_cg_emit_tforloop(void *node, void *ctx);
 void ljit_cg_emit_pow(void *node, void *ctx);
 void ljit_cg_emit_nop(void *node, void *ctx);
 

@@ -165,3 +165,58 @@ void ljit_cg_emit_forloop(void *node_ptr, void *ctx_ptr) {
         ctx->jump_targets[idx] = node->original_pc - node->src1.v.i;
     }
 }
+
+extern sljit_sw SLJIT_FUNC ljit_icall_tforprep(lua_State *L, StkId ra);
+extern void SLJIT_FUNC ljit_icall_tforcall(lua_State *L, StkId ra, int c);
+extern sljit_sw SLJIT_FUNC ljit_icall_tforloop(lua_State *L, StkId ra);
+
+void ljit_cg_emit_tforprep(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    int tvalue_size = sizeof(TValue);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforprep);
+
+    struct sljit_jump *jmp = sljit_emit_jump(compiler, SLJIT_JUMP);
+    if (jmp) {
+        int idx = ctx->num_jumps++;
+        ctx->jumps[idx] = jmp;
+        ctx->jump_targets[idx] = node->original_pc + node->src1.v.i + 1;
+    }
+}
+
+void ljit_cg_emit_tforcall(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    int tvalue_size = sizeof(TValue);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->src1.v.i);
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforcall);
+}
+
+void ljit_cg_emit_tforloop(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    int tvalue_size = sizeof(TValue);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforloop);
+
+    struct sljit_jump *jmp = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
+    if (jmp) {
+        int idx = ctx->num_jumps++;
+        ctx->jumps[idx] = jmp;
+        ctx->jump_targets[idx] = node->original_pc - node->src1.v.i;
+    }
+}

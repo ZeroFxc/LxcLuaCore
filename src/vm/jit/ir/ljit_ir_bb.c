@@ -40,10 +40,6 @@ ljit_bb_t *ljit_ir_bb_build(Proto *proto) {
             case OP_GEI:
             case OP_TEST:
             case OP_TESTSET:
-            case OP_TFORCALL:
-            case OP_TFORLOOP:
-            case OP_FORLOOP:
-            case OP_FORPREP:
             case OP_IS:
             case OP_TESTNIL:
             case OP_INSTANCEOF: {
@@ -58,6 +54,34 @@ ljit_bb_t *ljit_ir_bb_build(Proto *proto) {
                     if (dest >= 0 && dest < proto->sizecode) {
                         is_leader[dest] = 1;
                     }
+                }
+                break;
+            }
+            case OP_FORPREP:
+            case OP_TFORPREP: {
+                int dest = pc + 1 + GETARG_Bx(i);
+                if (dest >= 0 && dest < proto->sizecode) {
+                    is_leader[dest] = 1;
+                }
+                if (pc + 1 < proto->sizecode) {
+                    is_leader[pc + 1] = 1;
+                }
+                break;
+            }
+            case OP_FORLOOP:
+            case OP_TFORLOOP: {
+                int dest = pc + 1 - GETARG_Bx(i);
+                if (dest >= 0 && dest < proto->sizecode) {
+                    is_leader[dest] = 1;
+                }
+                if (pc + 1 < proto->sizecode) {
+                    is_leader[pc + 1] = 1;
+                }
+                break;
+            }
+            case OP_TFORCALL: {
+                if (pc + 1 < proto->sizecode) {
+                    is_leader[pc + 1] = 1;
                 }
                 break;
             }

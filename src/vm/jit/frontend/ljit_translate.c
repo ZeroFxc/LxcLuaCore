@@ -590,6 +590,8 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_TFORPREP: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_TFORPREP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
