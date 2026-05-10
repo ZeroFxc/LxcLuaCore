@@ -48,6 +48,133 @@ void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue
     }
 }
 
+void SLJIT_FUNC ljit_icall_geti(lua_State *L, StkId ra, TValue *rb, int c) {
+    if (!rb) return;
+    if (ttistable(rb)) {
+        Table *h = hvalue(rb);
+        if (h->is_shared) l_rwlock_rdlock(&h->lock);
+        const TValue *res = luaH_getint(h, c);
+        if (!isempty(res)) {
+            setobj2s(L, ra, res);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            TValue key;
+            setivalue(&key, c);
+            luaV_finishget(L, rb, &key, ra, NULL);
+        }
+    } else {
+        TValue key;
+        setivalue(&key, c);
+        luaV_finishget(L, rb, &key, ra, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_seti(lua_State *L, StkId ra, int c, TValue *rc) {
+    if (!rc || !ra) return;
+    if (ttistable(s2v(ra))) {
+        Table *h = hvalue(s2v(ra));
+        if (h->is_shared) l_rwlock_wrlock(&h->lock);
+        const TValue *res = luaH_getint(h, c);
+        if (!isempty(res) && !isabstkey(res)) {
+            setobj2t(L, cast(TValue *, res), rc);
+            luaC_barrierback(L, obj2gco(h), rc);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            TValue key;
+            setivalue(&key, c);
+            luaV_finishset(L, s2v(ra), &key, rc, NULL);
+        }
+    } else {
+        TValue key;
+        setivalue(&key, c);
+        luaV_finishset(L, s2v(ra), &key, rc, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_getfield(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
+    if (!rb || !rc) return;
+    TString *key = tsvalue(rc);
+    if (ttistable(rb)) {
+        Table *h = hvalue(rb);
+        if (h->is_shared) l_rwlock_rdlock(&h->lock);
+        const TValue *res = luaH_getshortstr(h, key);
+        if (!isempty(res)) {
+            setobj2s(L, ra, res);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            luaV_finishget(L, rb, rc, ra, NULL);
+        }
+    } else {
+        luaV_finishget(L, rb, rc, ra, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_setfield(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
+    if (!ra || !rb || !rc) return;
+    TString *key = tsvalue(rb);
+    if (ttistable(s2v(ra))) {
+        Table *h = hvalue(s2v(ra));
+        if (h->is_shared) l_rwlock_wrlock(&h->lock);
+        const TValue *res = luaH_getshortstr(h, key);
+        if (!isempty(res) && !isabstkey(res)) {
+            setobj2t(L, cast(TValue *, res), rc);
+            luaC_barrierback(L, obj2gco(h), rc);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            luaV_finishset(L, s2v(ra), rb, rc, NULL);
+        }
+    } else {
+        luaV_finishset(L, s2v(ra), rb, rc, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_gettabup(lua_State *L, StkId ra, int upval_idx, TValue *rc) {
+    if (!rc) return;
+    LClosure *cl = clLvalue(s2v(L->ci->func.p));
+    TValue *upval = cl->upvals[upval_idx]->v.p;
+    TString *key = tsvalue(rc);
+    if (ttistable(upval)) {
+        Table *h = hvalue(upval);
+        if (h->is_shared) l_rwlock_rdlock(&h->lock);
+        const TValue *res = luaH_getshortstr(h, key);
+        if (!isempty(res)) {
+            setobj2s(L, ra, res);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            luaV_finishget(L, upval, rc, ra, NULL);
+        }
+    } else {
+        luaV_finishget(L, upval, rc, ra, NULL);
+    }
+}
+
+void SLJIT_FUNC ljit_icall_settabup(lua_State *L, int upval_idx, TValue *rb, TValue *rc) {
+    if (!rb || !rc) return;
+    LClosure *cl = clLvalue(s2v(L->ci->func.p));
+    TValue *upval = cl->upvals[upval_idx]->v.p;
+    TString *key = tsvalue(rb);
+    if (ttistable(upval)) {
+        Table *h = hvalue(upval);
+        if (h->is_shared) l_rwlock_wrlock(&h->lock);
+        const TValue *res = luaH_getshortstr(h, key);
+        if (!isempty(res) && !isabstkey(res)) {
+            setobj2t(L, cast(TValue *, res), rc);
+            luaC_barrierback(L, obj2gco(h), rc);
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+        } else {
+            if (h->is_shared) l_rwlock_unlock(&h->lock);
+            luaV_finishset(L, upval, rb, rc, NULL);
+        }
+    } else {
+        luaV_finishset(L, upval, rb, rc, NULL);
+    }
+}
+
 void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra) {
     Table *t = luaH_new(L);
     sethvalue2s(L, ra, t);
@@ -226,12 +353,12 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_TFORPREP:
             case IR_GETUPVAL:
             case IR_SETUPVAL:
-            case IR_GETTABUP:
-            case IR_SETTABUP:
-            case IR_GETI:
-            case IR_SETI:
-            case IR_GETFIELD:
-            case IR_SETFIELD:
+            case IR_GETTABUP: ljit_cg_emit_gettabup(node, ctx); break;
+            case IR_SETTABUP: ljit_cg_emit_settabup(node, ctx); break;
+            case IR_GETI: ljit_cg_emit_geti(node, ctx); break;
+            case IR_SETI: ljit_cg_emit_seti(node, ctx); break;
+            case IR_GETFIELD: ljit_cg_emit_getfield(node, ctx); break;
+            case IR_SETFIELD: ljit_cg_emit_setfield(node, ctx); break;
             case IR_TFORCALL:
             case IR_TFORLOOP:
             case IR_VARARG:

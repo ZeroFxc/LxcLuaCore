@@ -1468,6 +1468,7 @@ static int block_follow (LexState *ls, int withuntil) {
     case TK_ELSE: case TK_ELSEIF:
     case TK_END: case TK_EOS:
     case TK_CASE: case TK_DEFAULT:
+    case '}':
       return 1;
     case TK_DOLLAR: {
        int la = luaX_lookahead(ls);
