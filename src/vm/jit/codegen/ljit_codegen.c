@@ -132,6 +132,18 @@ void SLJIT_FUNC ljit_icall_setfield(lua_State *L, StkId ra, TValue *rb, TValue *
     }
 }
 
+void SLJIT_FUNC ljit_icall_getupval(lua_State *L, StkId ra, int b) {
+    LClosure *cl = clLvalue(s2v(L->ci->func.p));
+    setobj2s(L, ra, cl->upvals[b]->v.p);
+}
+
+void SLJIT_FUNC ljit_icall_setupval(lua_State *L, StkId ra, int b) {
+    LClosure *cl = clLvalue(s2v(L->ci->func.p));
+    UpVal *uv = cl->upvals[b];
+    setobj(L, uv->v.p, s2v(ra));
+    luaC_barrier(L, uv, s2v(ra));
+}
+
 void SLJIT_FUNC ljit_icall_gettabup(lua_State *L, StkId ra, int upval_idx, TValue *rc) {
     if (!rc) return;
     LClosure *cl = clLvalue(s2v(L->ci->func.p));
@@ -351,8 +363,8 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_TESTNIL:
             case IR_TESTSET:
             case IR_TFORPREP:
-            case IR_GETUPVAL:
-            case IR_SETUPVAL:
+            case IR_GETUPVAL: ljit_cg_emit_getupval(node, ctx); break;
+            case IR_SETUPVAL: ljit_cg_emit_setupval(node, ctx); break;
             case IR_GETTABUP: ljit_cg_emit_gettabup(node, ctx); break;
             case IR_SETTABUP: ljit_cg_emit_settabup(node, ctx); break;
             case IR_GETI: ljit_cg_emit_geti(node, ctx); break;

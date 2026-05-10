@@ -84,3 +84,9 @@ void ljit_cg_emit_len(void *node, void *ctx);
 
 void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb);
 void ljit_cg_emit_len(void *node, void *ctx);
+
+void SLJIT_FUNC ljit_icall_getupval(lua_State *L, StkId ra, int b);
+void SLJIT_FUNC ljit_icall_setupval(lua_State *L, StkId ra, int b);
+
+void ljit_cg_emit_getupval(void *node, void *ctx);
+void ljit_cg_emit_setupval(void *node, void *ctx);
