@@ -79,6 +79,7 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_CLOSE */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_TBC */
  ,opmode(0, 0, 0, 0, 0, isJ)		/* OP_JMP */
+ ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_JMPI */
  ,opmode(0, 0, 0, 1, 0, iABC)		/* OP_EQ */
  ,opmode(0, 0, 0, 1, 0, iABC)		/* OP_LT */
  ,opmode(0, 0, 0, 1, 0, iABC)		/* OP_LE */

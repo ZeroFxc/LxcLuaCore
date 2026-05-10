@@ -315,6 +315,7 @@ OP_CONCAT,/*	A B	R[A] := R[A].. ... ..R[A + B - 1]		*/
 OP_CLOSE,/*	A	close all upvalues >= R[A]			*/
 OP_TBC,/*	A	mark variable A "to be close"			*/
 OP_JMP,/*	sJ	pc += sJ					*/
+OP_JMPI,/*	A	pc = R[A]					*/
 OP_EQ,/*	A B k	if ((R[A] == R[B]) ~= k) then pc++		*/
 OP_LT,/*	A B k	if ((R[A] <  R[B]) ~= k) then pc++		*/
 OP_LE,/*	A B k	if ((R[A] <= R[B]) ~= k) then pc++		*/
