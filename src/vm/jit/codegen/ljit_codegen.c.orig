@@ -237,7 +237,7 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_VARARG:
             case IR_VARARGPREP:
                 // Instead of sljit_emit_return_void, abort the whole JIT compilation.
-                sljit_free_compiler((struct sljit_compiler *)ctx->compiler);
+                sljit_free_compiler(compiler);
                 ctx->compiler = NULL;
                 return NULL;
             case IR_GETSUPER: ljit_cg_emit_getsuper(node, ctx); break;

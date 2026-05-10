@@ -1,0 +1,8 @@
+--- lobject.h	2024-05-15 12:00:00.000000000 +0000
++++ lobject.h	2024-05-15 12:00:00.000000000 +0000
+@@ -642,6 +642,7 @@
+   struct LClosure *cache;  /* last-created closure with this prototype */
+   void *jit_trace;         /* ptr to JIT compiled trace */
+   int jit_status;          /* compilation status */
++  int jit_failed;
+ } Proto;
