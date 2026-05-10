@@ -761,7 +761,6 @@ typedef struct Proto {
   CallQueue *call_queue; /**< Call queue for sleep/wake. */
   struct VMCodeTable *vm_code_table;  /**< VM protection code table pointer. */
   void *jit_trace;  /**< JIT compiled trace */
-  int jit_failed;
 } Proto;
 
 /* }======================================================= */
