@@ -13,7 +13,7 @@
 #include "../../../core/lauxlib.h"
 #include "../../../core/lualib.h"
 
-int XCLUA_JIT_ENABLED = 1;
+int XCLUA_JIT_ENABLED = 0;
 
 void luaJIT_init (lua_State *L) {
     /* No persistent sljit compiler needed globally */
