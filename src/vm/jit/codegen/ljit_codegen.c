@@ -10,6 +10,8 @@
 #include "../../../core/lobject.h"
 #include "../../../core/lgc.h"
 #include "../../../core/ltm.h"
+#include "../../../core/lfunc.h"
+#include <string.h>
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
     if (ttistable(rb)) {
@@ -234,6 +236,29 @@ sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra) {
     }
 }
 
+sljit_sw SLJIT_FUNC ljit_icall_tforprep(lua_State *L, StkId ra) {
+    if (ttistable(s2v(ra)) && l_likely(!fasttm(L, hvalue(s2v(ra))->metatable, TM_CALL))) {
+        setobjs2s(L, ra + 1, ra);
+        setfvalue(s2v(ra), luaB_next);
+    }
+    luaF_newtbcupval(L, ra + 3);
+    return 1;
+}
+
+void SLJIT_FUNC ljit_icall_tforcall(lua_State *L, StkId ra, int c) {
+    memcpy(ra + 4, ra, 3 * sizeof(*ra));
+    L->top.p = ra + 4 + 3;
+    luaD_call(L, ra + 4, c);
+}
+
+sljit_sw SLJIT_FUNC ljit_icall_tforloop(lua_State *L, StkId ra) {
+    if (!ttisnil(s2v(ra + 4))) {
+        setobjs2s(L, ra + 2, ra + 4);
+        return 1;
+    }
+    return 0;
+}
+
 
 void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb) {
     luaV_objlen(L, ra, rb);
@@ -362,7 +387,6 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_TEST:
             case IR_TESTNIL:
             case IR_TESTSET:
-            case IR_TFORPREP:
             case IR_GETUPVAL: ljit_cg_emit_getupval(node, ctx); break;
             case IR_SETUPVAL: ljit_cg_emit_setupval(node, ctx); break;
             case IR_GETTABUP: ljit_cg_emit_gettabup(node, ctx); break;
@@ -371,8 +395,9 @@ void *ljit_codegen(void *ctx_ptr) {
             case IR_SETI: ljit_cg_emit_seti(node, ctx); break;
             case IR_GETFIELD: ljit_cg_emit_getfield(node, ctx); break;
             case IR_SETFIELD: ljit_cg_emit_setfield(node, ctx); break;
-            case IR_TFORCALL:
-            case IR_TFORLOOP:
+            case IR_TFORPREP: ljit_cg_emit_tforprep(node, ctx); break;
+            case IR_TFORCALL: ljit_cg_emit_tforcall(node, ctx); break;
+            case IR_TFORLOOP: ljit_cg_emit_tforloop(node, ctx); break;
             case IR_VARARG:
             case IR_VARARGPREP:
                 // Instead of sljit_emit_return_void, abort the whole JIT compilation.
