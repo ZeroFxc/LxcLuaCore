@@ -29,6 +29,16 @@ ljit_bb_t *ljit_ir_bb_build(Proto *proto) {
                 }
                 break;
             }
+            case OP_JMPI: {
+                /* Computed goto destination is unknown at compile time.
+                   We must treat ALL potential target PCs (or at least the next instruction) as leaders.
+                   However, JIT compiling computed gotos perfectly requires tracing or dynamic aborts.
+                   For basic block analysis, just mark the next instruction as a leader since control flow leaves this block. */
+                if (pc + 1 < proto->sizecode) {
+                    is_leader[pc + 1] = 1;
+                }
+                break;
+            }
             case OP_EQ:
             case OP_LT:
             case OP_LE:
