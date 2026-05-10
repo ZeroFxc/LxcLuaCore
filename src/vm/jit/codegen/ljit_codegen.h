@@ -67,3 +67,8 @@ void ljit_cg_emit_newclass(void *node, void *ctx);
 void ljit_cg_emit_newobj(void *node, void *ctx);
 void ljit_cg_emit_inherit(void *node, void *ctx);
 void ljit_cg_emit_getsuper(void *node, void *ctx);
+
+void ljit_cg_emit_len(void *node, void *ctx);
+
+void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb);
+void ljit_cg_emit_len(void *node, void *ctx);
