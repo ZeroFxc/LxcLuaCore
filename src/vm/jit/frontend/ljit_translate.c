@@ -208,6 +208,12 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
+            case OP_JMPI: {
+                /* Computed goto. JIT doesn't currently support dynamic branching natively easily.
+                   We'll abort tracing for this instruction for now to let the interpreter handle it safely. */
+                ljit_ir_append(ctx, ljit_ir_new(IR_NOP, pc));
+                break;
+            }
             case OP_MMBINI:
             case OP_MMBINK:
             case OP_MMBIN: {
