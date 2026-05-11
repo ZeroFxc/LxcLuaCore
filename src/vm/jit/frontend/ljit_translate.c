@@ -86,15 +86,11 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 break;
             }
             case OP_NEWTABLE: {
+                /* R[A] := {} (ivABC format: uses GETARG_vB, GETARG_vC) */
                 ljit_ir_node_t *node = ljit_ir_new(IR_NEWTABLE, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
-                // Fix: OP_NEWTABLE uses GETARG_B and GETARG_C in older/some Lua versions.
-                // Looking at lopcodes.c, NEWTABLE uses ivABC, meaning vB and vC.
-                // Which maps to GETARG_B and GETARG_C on most forks, but here lopcodes.h
-                // defines GETARG_vB, GETARG_vC.
-                // I checked: GETARG_vB / GETARG_vC exist in src/core/lopcodes.h
-                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i); // fallback if vB fails, but I saw vB in grep
-                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_vB(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_vC(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -367,6 +363,7 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_CLOSE: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_CLOSE, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -380,6 +377,9 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_EQK: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_EQK, pc);
+                node->dest.type = IR_VAL_INT; node->dest.v.i = GETARG_k(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_A(i);
+                node->src2.type = IR_VAL_CONST; node->src2.v.k = GETARG_B(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -458,6 +458,8 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_LEN: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_LEN, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -467,7 +469,10 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 break;
             }
             case OP_LOADKX: {
+                int kx = (pc + 1 < proto->sizecode) ? GETARG_Ax(proto->code[pc + 1]) : 0;
                 ljit_ir_node_t *node = ljit_ir_new(IR_LOADKX, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_CONST; node->src1.v.k = kx;
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -517,6 +522,9 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_SELF: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_SELF, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_CONST; node->src2.v.k = GETARG_C(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -526,8 +534,20 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 break;
             }
             case OP_SETLIST: {
-                ljit_ir_node_t *node = ljit_ir_new(IR_SETLIST, pc);
-                ljit_ir_append(ctx, node);
+                /* R[A][vC+i] := R[A+i], 1 <= i <= vB */
+                int last = GETARG_vC(i);
+                /* Skip EXTRAARG support for now; interpreter handles it */
+                if (TESTARG_k(i)) {
+                    ljit_ir_node_t *node = ljit_ir_new(IR_SETLIST, pc);
+                    node->src1.type = IR_VAL_INT; node->src1.v.i = -1; /* signal: has EXTRAARG */
+                    ljit_ir_append(ctx, node);
+                } else {
+                    ljit_ir_node_t *node = ljit_ir_new(IR_SETLIST, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_vB(i);
+                    node->src2.type = IR_VAL_INT; node->src2.v.i = last;
+                    ljit_ir_append(ctx, node);
+                }
                 break;
             }
             case OP_SETMETHOD: {
@@ -570,11 +590,14 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_TBC: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_TBC, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
             case OP_TEST: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_TEST, pc);
+                node->dest.type = IR_VAL_INT; node->dest.v.i = GETARG_k(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_A(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -585,6 +608,9 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_TESTSET: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_TESTSET, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_k(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -636,22 +662,46 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 break;
             }
             case OP_GETI: {
+                /* R[A] := R[B][C] */
                 ljit_ir_node_t *node = ljit_ir_new(IR_GETI, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
             case OP_SETI: {
+                /* R[A][B] := RK(C) */
                 ljit_ir_node_t *node = ljit_ir_new(IR_SETI, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i);
+                if (TESTARG_k(i)) {
+                    node->src2.type = IR_VAL_CONST; node->src2.v.k = GETARG_C(i);
+                } else {
+                    node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                }
                 ljit_ir_append(ctx, node);
                 break;
             }
             case OP_GETFIELD: {
+                /* R[A] := R[B][K[C]:shortstring] */
                 ljit_ir_node_t *node = ljit_ir_new(IR_GETFIELD, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_CONST; node->src2.v.k = GETARG_C(i);
                 ljit_ir_append(ctx, node);
                 break;
             }
             case OP_SETFIELD: {
+                /* R[A][K[B]:shortstring] := RK(C) */
                 ljit_ir_node_t *node = ljit_ir_new(IR_SETFIELD, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_CONST; node->src1.v.k = GETARG_B(i);
+                if (TESTARG_k(i)) {
+                    node->src2.type = IR_VAL_CONST; node->src2.v.k = GETARG_C(i);
+                } else {
+                    node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                }
                 ljit_ir_append(ctx, node);
                 break;
             }

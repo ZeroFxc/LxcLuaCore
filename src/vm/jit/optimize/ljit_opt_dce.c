@@ -35,14 +35,25 @@ void ljit_opt_dce(ljit_ctx_t *ctx) {
                             break;
                         }
 
-                        // 如果遇到了对同一寄存器的重新赋值，说明之前的值已经被覆盖了，不再向后查找
-                        if (curr->dest.type == IR_VAL_REG && curr->dest.v.reg == dest_reg) {
+                        // 遇到控制流分支时停止搜索并假设被使用（保守策略）
+                        // FORPREP/FORLOOP/TFORPREP等隐式使用ra/ra+1/ra+2寄存器，必须标记为已使用
+                        // 此检查必须在"重新赋值"检查之前，因为FORPREP等指令同时读写目标寄存器
+                        if (curr->op == IR_JMP || curr->op == IR_CJMP || curr->op == IR_RET ||
+                            curr->op == IR_FORPREP || curr->op == IR_FORLOOP ||
+                            curr->op == IR_TFORPREP || curr->op == IR_TFORCALL || curr->op == IR_TFORLOOP ||
+                            curr->op == IR_CALL) {
+                            is_used = 1;
                             break;
                         }
 
-                        // 为了简化，遇到控制流分支时停止搜索并假设被使用（保守策略）
-                        if (curr->op == IR_JMP || curr->op == IR_CJMP || curr->op == IR_RET) {
-                            is_used = 1;
+                        // 如果遇到了对同一寄存器的重新赋值，说明之前的值已经被覆盖了，不再向后查找
+                        // 例外：表变异操作(SETI/SETTABLE/SETFIELD/SETTABUP)需要先读取dest寄存器中的表指针
+                        // 因此它们应该被视为"使用"了该寄存器，而不是"覆盖"
+                        if (curr->dest.type == IR_VAL_REG && curr->dest.v.reg == dest_reg) {
+                            if (curr->op == IR_SETI || curr->op == IR_SETTABLE ||
+                                curr->op == IR_SETFIELD || curr->op == IR_SETTABUP) {
+                                is_used = 1;
+                            }
                             break;
                         }
 

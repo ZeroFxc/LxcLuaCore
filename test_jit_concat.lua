@@ -1,4 +1,0 @@
-local a = "hello "
-local b = "world"
-local c = a .. b
-print(c)

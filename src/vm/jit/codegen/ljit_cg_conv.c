@@ -44,12 +44,12 @@ void ljit_cg_emit_loadi(void *node_ptr, void *ctx_ptr) {
     if (!node || !ctx || !compiler) return;
 
     if (node->src1.type == IR_VAL_INT) {
-        if (node->dest.is_spilled) {
-            /* Load immediate integer into dest value_ */
-            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_IMM, node->src1.v.i);
-            /* Set type tag to LUA_VNUMINT (3) at offset 8 */
-            sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 3);
-        } else {
+        int tvalue_size = sizeof(TValue);
+        sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, node->src1.v.i);
+        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_set_integer);
+
+        if (!node->dest.is_spilled) {
             sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_IMM, node->src1.v.i);
         }
     }
@@ -62,19 +62,13 @@ void ljit_cg_emit_loadf(void *node_ptr, void *ctx_ptr) {
     if (!node || !ctx || !compiler) return;
 
     if (node->src1.type == IR_VAL_NUM) {
-        union {
-            lua_Number n;
-            sljit_sw i;
-        } u;
-        u.n = node->src1.v.n;
+        int tvalue_size = sizeof(TValue);
+        sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+        union { lua_Number n; sljit_sw i; } u; u.n = node->src1.v.n;
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, u.i);
+        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_set_number);
 
-        if (node->dest.is_spilled) {
-            /* Load floating point immediate into dest value_ */
-            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_IMM, u.i);
-
-            /* Set type tag to LUA_VNUMFLT (19) at offset 8 */
-            sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 19);
-        } else {
+        if (!node->dest.is_spilled) {
             sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_IMM, u.i);
         }
     }
@@ -86,10 +80,11 @@ void ljit_cg_emit_loadnil(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
-    if (node->dest.is_spilled) {
-        /* Set type tag to LUA_VNIL (0) at offset 8 */
-        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, 0);
-    } else {
+    int tvalue_size = sizeof(TValue);
+    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS1V(W), SLJIT_IMM, (sljit_sw)ljit_icall_set_nil);
+
+    if (!node->dest.is_spilled) {
         sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_IMM, 0);
     }
 }
@@ -102,11 +97,12 @@ void ljit_cg_emit_loadbool(void *node_ptr, void *ctx_ptr) {
 
     if (node->src1.type == IR_VAL_INT) {
         int is_true = node->src1.v.i;
-        if (node->dest.is_spilled) {
-            /* LUA_VTRUE (17) or LUA_VFALSE (1) */
-            sljit_sw tag = is_true ? 17 : 1;
-            sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_IMM, tag);
-        } else {
+        int tvalue_size = sizeof(TValue);
+        sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, is_true ? 1 : 0);
+        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_set_bool);
+
+        if (!node->dest.is_spilled) {
             sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_IMM, is_true ? 1 : 0);
         }
     }
@@ -126,14 +122,18 @@ void ljit_cg_emit_loadk(void *node_ptr, void *ctx_ptr) {
 
         /* Copy value_ (offset 0) */
         sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R0), 0);
-        if (node->dest.is_spilled) {
-            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R1, 0);
 
-            /* Copy tt_ (offset 8) */
-            sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R0), 8);
-            sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_R1, 0);
-        } else {
-            sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_R1, 0);
+        /* Always write to stack (required for icall-based ops like LEN, GETTABLE, etc.) */
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs, SLJIT_R1, 0);
+
+        /* Copy tt_ (offset 8) */
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R0), 8);
+        sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs + 8, SLJIT_R1, 0);
+
+        if (!node->dest.is_spilled) {
+            /* Also load value_ into the assigned register */
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, k_ptr);
+            sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_R0), 0);
         }
     }
 }

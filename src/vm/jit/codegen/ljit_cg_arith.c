@@ -32,15 +32,15 @@ void ljit_cg_emit_store_operand(struct ljit_ctx *ctx, void *val_ptr, int src_reg
         struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     ljit_ir_val_t *val = (ljit_ir_val_t *)val_ptr;
     if (val->type == IR_VAL_REG) {
-        if (val->is_spilled) {
-            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), val->stack_ofs, src_reg, 0);
-            /* Tag setting for number type */
-            sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_MEM1(SLJIT_S0), val->stack_ofs + 8, SLJIT_IMM, LUA_VNUMINT);
-        } else {
+        int tvalue_size = sizeof(TValue);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, src_reg, 0);
+        sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, val->v.reg * tvalue_size);
+        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_set_integer);
+
+        if (!val->is_spilled) {
             if (val->phys_reg != src_reg) {
                 sljit_emit_op1(compiler, SLJIT_MOV, val->phys_reg, 0, src_reg, 0);
             }
-            /* Since physical registers don't store tags, tag handling is bypassed here for MVP */
         }
     }
 }

@@ -39,6 +39,7 @@ void ljit_cg_emit_getfield(void *node, void *ctx);
 void ljit_cg_emit_setfield(void *node, void *ctx);
 void ljit_cg_emit_gettabup(void *node, void *ctx);
 void ljit_cg_emit_settabup(void *node, void *ctx);
+void ljit_cg_emit_setlist(void *node, void *ctx);
 
 void ljit_cg_emit_call(void *node, void *ctx);
 
@@ -64,6 +65,7 @@ void ljit_cg_emit_store_operand(struct ljit_ctx *ctx, void *val, int src_reg);
 #include "../../../core/lobject.h"
 #include "../../../core/lstate.h"
 #include "../sljit/ljit_sljit.h"
+/* table operations */
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_settable(lua_State *L, TValue *ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra);
@@ -73,6 +75,8 @@ void SLJIT_FUNC ljit_icall_getfield(lua_State *L, StkId ra, TValue *rb, TValue *
 void SLJIT_FUNC ljit_icall_setfield(lua_State *L, StkId ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_gettabup(lua_State *L, StkId ra, int upval_idx, TValue *rc);
 void SLJIT_FUNC ljit_icall_settabup(lua_State *L, int upval_idx, TValue *rb, TValue *rc);
+void SLJIT_FUNC ljit_icall_setlist(lua_State *L, StkId ra, int n, int last);
+int SLJIT_FUNC ljit_icall_testset(lua_State *L, StkId ra, TValue *rb, int k);
 void SLJIT_FUNC ljit_icall_pow(lua_State *L, TValue *ra, TValue *rb, TValue *rc);
 void SLJIT_FUNC ljit_icall_concat(lua_State *L, int total, StkId ra);
 sljit_sw SLJIT_FUNC ljit_icall_forprep(lua_State *L, StkId ra);
@@ -93,3 +97,15 @@ void SLJIT_FUNC ljit_icall_setupval(lua_State *L, StkId ra, int b);
 
 void ljit_cg_emit_getupval(void *node, void *ctx);
 void ljit_cg_emit_setupval(void *node, void *ctx);
+
+void SLJIT_FUNC ljit_icall_set_integer(StkId ra, lua_Integer v);
+void SLJIT_FUNC ljit_icall_set_number(StkId ra, lua_Number v);
+void SLJIT_FUNC ljit_icall_set_nil(StkId ra);
+void SLJIT_FUNC ljit_icall_set_bool(StkId ra, int v);
+
+void SLJIT_FUNC ljit_icall_self(lua_State *L, StkId ra, TValue *rb, TValue *rc);
+void SLJIT_FUNC ljit_icall_close(lua_State *L, StkId ra);
+void SLJIT_FUNC ljit_icall_tbc(lua_State *L, StkId ra);
+int SLJIT_FUNC ljit_icall_eqk(lua_State *L, StkId ra, TValue *rb, int k);
+int SLJIT_FUNC ljit_icall_test(lua_State *L, StkId ra, int k);
+int SLJIT_FUNC ljit_icall_compare(lua_State *L, TValue *a, TValue *b, int op_k);

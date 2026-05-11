@@ -54,7 +54,9 @@ typedef enum {
 /* convert an object to a float (without string coercion) */
 #define tonumberns(o,n) \
 	(ttisfloat(o) ? ((n) = fltvalue(o), 1) : \
-	(ttisinteger(o) ? ((n) = cast_num(ivalue(o)), 1) : 0))
+	(ttisinteger(o) ? ((n) = cast_num(ivalue(o)), 1) : \
+	(ttisbigint(o) ? ((n) = luaB_bigtonumber(o), 1) : 0)))
+
 
 
 /* convert an object to an integer (including string coercion) */
