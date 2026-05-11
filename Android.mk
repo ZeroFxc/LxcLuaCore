@@ -100,7 +100,34 @@ LOCAL_SRC_FILES := \
 	src/wasm/m3_module.c \
 	src/wasm/m3_parse.c \
 	src/jit/sljitLir.c \
-	src/vm/jit/ljit.c \
+	src/vm/jit/core/ljit.c \
+	src/vm/jit/ir/ljit_ir.c \
+	src/vm/jit/ir/ljit_ir_list.c \
+	src/vm/jit/ir/ljit_ir_label.c \
+	src/vm/jit/ir/ljit_ir_bb.c \
+	src/vm/jit/sljit/ljit_sljit.c \
+	src/vm/jit/codegen/ljit_codegen.c \
+	src/vm/jit/codegen/ljit_cg_arith.c \
+	src/vm/jit/codegen/ljit_cg_ctrl.c \
+	src/vm/jit/codegen/ljit_cg_table.c \
+	src/vm/jit/codegen/ljit_cg_call.c \
+	src/vm/jit/codegen/ljit_cg_conv.c \
+	src/vm/jit/codegen/ljit_cg_closure.c \
+	src/vm/jit/codegen/ljit_cg_oop.c \
+	src/vm/jit/regalloc/ljit_regalloc.c \
+	src/vm/jit/regalloc/ljit_reg_live.c \
+	src/vm/jit/regalloc/ljit_reg_graph.c \
+	src/vm/jit/regalloc/ljit_reg_color.c \
+	src/vm/jit/regalloc/ljit_reg_spill.c \
+	src/vm/jit/regalloc/ljit_reg_alloc.c \
+	src/vm/jit/optimize/ljit_opt.c \
+	src/vm/jit/optimize/ljit_opt_const.c \
+	src/vm/jit/optimize/ljit_opt_dce.c \
+	src/vm/jit/optimize/ljit_opt_peep.c \
+	src/vm/jit/optimize/ljit_opt_cse.c \
+	src/vm/jit/optimize/ljit_opt_inline.c \
+	src/vm/jit/frontend/ljit_translate.c \
+	src/vm/jit/frontend/ljit_analyze.c \
 	quickjs/quickjs.c \
 	quickjs/libregexp.c \
 	quickjs/libunicode.c \
