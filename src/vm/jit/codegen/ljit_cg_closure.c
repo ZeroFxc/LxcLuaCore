@@ -48,6 +48,10 @@ void ljit_cg_emit_getupval(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_getupval */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_getupval);
+
+    if (!node->dest.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs);
+    }
 }
 
 void ljit_cg_emit_setupval(void *node_ptr, void *ctx_ptr) {

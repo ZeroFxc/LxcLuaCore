@@ -11,10 +11,6 @@ void ljit_reg_spill(ljit_ctx_t *ctx) {
     if (!info->stack_offsets) return;
 
     for (int i = 0; i < max_vregs; i++) {
-        if (info->is_spilled[i]) {
-            info->stack_offsets[i] = i * sizeof(TValue);
-        } else {
-            info->stack_offsets[i] = -1; // Not spilled
-        }
+        info->stack_offsets[i] = i * sizeof(TValue);
     }
 }

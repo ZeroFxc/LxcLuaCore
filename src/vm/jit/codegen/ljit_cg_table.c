@@ -24,6 +24,10 @@ void ljit_cg_emit_gettable(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_gettable */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_gettable);
+
+    if (!node->dest.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs);
+    }
 }
 
 void ljit_cg_emit_settable(void *node_ptr, void *ctx_ptr) {
@@ -70,8 +74,12 @@ void ljit_cg_emit_geti(void *node_ptr, void *ctx_ptr) {
     /* R3 = c (integer) */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, node->src2.v.i);
 
-    /* Call ljit_icall_geti */
-    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_geti);
+    /* Call ljit_icall_geti(L, ra, rb, c) */
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, 32), SLJIT_IMM, (sljit_sw)ljit_icall_geti);
+
+    if (!node->dest.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs);
+    }
 }
 
 void ljit_cg_emit_seti(void *node_ptr, void *ctx_ptr) {
@@ -100,8 +108,8 @@ void ljit_cg_emit_seti(void *node_ptr, void *ctx_ptr) {
         sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R3, 0, SLJIT_S0, 0, SLJIT_IMM, node->src2.v.reg * tvalue_size);
     }
 
-    /* Call ljit_icall_seti */
-    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_seti);
+    /* Call ljit_icall_seti(L, ra, c, rc) */
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W), SLJIT_IMM, (sljit_sw)ljit_icall_seti);
 }
 
 void ljit_cg_emit_getfield(void *node_ptr, void *ctx_ptr) {
@@ -128,6 +136,10 @@ void ljit_cg_emit_getfield(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_getfield */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_getfield);
+
+    if (!node->dest.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs);
+    }
 }
 
 void ljit_cg_emit_setfield(void *node_ptr, void *ctx_ptr) {
@@ -186,6 +198,10 @@ void ljit_cg_emit_gettabup(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_gettabup */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_gettabup);
+
+    if (!node->dest.is_spilled) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0, SLJIT_MEM1(SLJIT_S0), node->dest.stack_ofs);
+    }
 }
 
 void ljit_cg_emit_settabup(void *node_ptr, void *ctx_ptr) {
@@ -244,4 +260,25 @@ void ljit_cg_emit_newtable(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_newtable */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, 32, 32, W), SLJIT_IMM, (sljit_sw)ljit_icall_newtable);
+}
+
+void ljit_cg_emit_setlist(void *node_ptr, void *ctx_ptr) {
+    ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
+    if (!node || !ctx || !compiler) return;
+
+    if (node->src1.v.i == -1) return;
+
+    int tvalue_size = sizeof(TValue);
+
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+
+    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->src1.v.i);
+
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, node->src2.v.i);
+
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, 32), SLJIT_IMM, (sljit_sw)ljit_icall_setlist);
 }

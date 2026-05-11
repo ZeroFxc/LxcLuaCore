@@ -1,6 +1,0 @@
-1. Implement ljit_icall_geti, ljit_icall_seti, ljit_icall_getfield, ljit_icall_setfield, ljit_icall_gettabup, ljit_icall_settabup in src/vm/jit/codegen/ljit_codegen.c. These will closely follow the fast-paths used in the VM, falling back to luaV_finishget/luaV_finishset on cache miss or non-table types.
-2. Implement ljit_cg_emit_geti, ljit_cg_emit_seti, ljit_cg_emit_getfield, ljit_cg_emit_setfield, ljit_cg_emit_gettabup, ljit_cg_emit_settabup in src/vm/jit/codegen/ljit_cg_table.c. These functions will set up the registers (ctx->L, ra, rb, rc) and use `sljit_emit_icall` to call the wrappers created in step 1.
-3. Update src/vm/jit/codegen/ljit_codegen.h with the new function prototypes.
-4. Hook up the new IR emitters in the switch statement in `ljit_codegen` inside src/vm/jit/codegen/ljit_codegen.c.
-5. Complete pre commit steps to ensure everything is correct and verified.
-6. Submit the change.

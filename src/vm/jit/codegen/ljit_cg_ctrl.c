@@ -26,36 +26,57 @@ void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
-    ljit_cg_emit_load_operand((struct ljit_ctx *)ctx, SLJIT_R0, &node->src1);
-    ljit_cg_emit_load_operand((struct ljit_ctx *)ctx, SLJIT_R1, &node->src2);
+    int need_semantic = (node->src1.type == IR_VAL_CONST || node->src2.type == IR_VAL_CONST ||
+                         node->src1.type == IR_VAL_NUM || node->src2.type == IR_VAL_NUM ||
+                         (node->src1.type == IR_VAL_REG && node->src2.type == IR_VAL_REG));
 
-    sljit_s32 type;
-    switch (node->op) {
-        case IR_CMP_LT: type = SLJIT_LESS; break;
-        case IR_CMP_LE: type = SLJIT_LESS_EQUAL; break;
-        case IR_CMP_EQ: type = SLJIT_EQUAL; break;
-        case IR_CMP_GT: type = SLJIT_GREATER; break;
-        case IR_CMP_GE: type = SLJIT_GREATER_EQUAL; break;
-        default: type = SLJIT_EQUAL; break;
-    }
-
-    int k = node->dest.v.i;
-    if (k == 1) {
-        /* Invert the condition */
-        switch (type) {
-            case SLJIT_LESS: type = SLJIT_GREATER_EQUAL; break;
-            case SLJIT_LESS_EQUAL: type = SLJIT_GREATER; break;
-            case SLJIT_EQUAL: type = SLJIT_NOT_EQUAL; break;
-            case SLJIT_GREATER: type = SLJIT_LESS_EQUAL; break;
-            case SLJIT_GREATER_EQUAL: type = SLJIT_LESS; break;
+    if (need_semantic) {
+        /* Get TValue address of src1 */
+        if (node->src1.type == IR_VAL_REG) {
+            sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->src1.stack_ofs);
+        } else if (node->src1.type == IR_VAL_CONST) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)&ctx->proto->k[node->src1.v.k]);
+        } else {
+            return;
         }
-    }
-
-    struct sljit_jump *jmp = sljit_emit_cmp(compiler, type, SLJIT_R0, 0, SLJIT_R1, 0);
-    if (jmp) {
-        int idx = ctx->num_jumps++;
-        ctx->jumps[idx] = jmp;
-        ctx->jump_targets[idx] = node->original_pc + 2;
+        /* Get TValue address of src2 */
+        if (node->src2.type == IR_VAL_REG) {
+            sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R2, 0, SLJIT_S0, 0, SLJIT_IMM, node->src2.stack_ofs);
+        } else if (node->src2.type == IR_VAL_CONST) {
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)&ctx->proto->k[node->src2.v.k]);
+        } else {
+            return;
+        }
+        /* Call ljit_icall_compare(L, a, b, opcode|k) */
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, ((sljit_sw)node->op << 1) | node->dest.v.i);
+        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4(W, W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_compare);
+        /* R0: 1 = should jump (cond != k), 0 = fall through */
+        struct sljit_jump *jmp = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
+        if (jmp) {
+            int idx = ctx->num_jumps++;
+            ctx->jumps[idx] = jmp;
+            ctx->jump_targets[idx] = node->original_pc + 2;
+        }
+    } else {
+        sljit_s32 k = node->dest.v.i;
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_s32 cond;
+        switch (node->op) {
+            case IR_CMP_EQ: cond = (k ? SLJIT_NOT_EQUAL : SLJIT_EQUAL); break;
+            case IR_CMP_LT: cond = (k ? SLJIT_GREATER_EQUAL : SLJIT_LESS); break;
+            case IR_CMP_LE: cond = (k ? SLJIT_GREATER : SLJIT_LESS_EQUAL); break;
+            case IR_CMP_GT: cond = (k ? SLJIT_LESS_EQUAL : SLJIT_GREATER); break;
+            case IR_CMP_GE: cond = (k ? SLJIT_LESS : SLJIT_GREATER_EQUAL); break;
+            default: return;
+        }
+        struct sljit_jump *jmp = sljit_emit_cmp(compiler, cond, SLJIT_R0, 0, SLJIT_R1, 0);
+        if (jmp) {
+            int idx = ctx->num_jumps++;
+            ctx->jumps[idx] = jmp;
+            ctx->jump_targets[idx] = node->original_pc + 2;
+        }
     }
 }
 
@@ -143,7 +164,7 @@ void ljit_cg_emit_forprep(void *node_ptr, void *ctx_ptr) {
     if (jmp) {
         int idx = ctx->num_jumps++;
         ctx->jumps[idx] = jmp;
-        ctx->jump_targets[idx] = node->original_pc + node->src1.v.i + 1;
+        ctx->jump_targets[idx] = node->original_pc + node->src1.v.i + 2;
     }
 }
 
@@ -162,7 +183,7 @@ void ljit_cg_emit_forloop(void *node_ptr, void *ctx_ptr) {
     if (jmp) {
         int idx = ctx->num_jumps++;
         ctx->jumps[idx] = jmp;
-        ctx->jump_targets[idx] = node->original_pc - node->src1.v.i;
+        ctx->jump_targets[idx] = node->original_pc + 1 - node->src1.v.i;
     }
 }
 
@@ -179,13 +200,21 @@ void ljit_cg_emit_tforprep(void *node_ptr, void *ctx_ptr) {
     int tvalue_size = sizeof(TValue);
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
-    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforprep);
 
+    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforprep);
+
+    // Jump by GETARG_Bx(i) instruction. But wait, IR_TFORPREP does not have a branch in JIT? 
+    // Actually, in lvm.c:
+    // pc += GETARG_Bx(i);
+    // i = *(pc++);
+    // goto l_tforcall;
+    // So the JIT should jump to the next instruction after the jump offset.
+    // Let's look at how OP_TFORPREP is translated.
     struct sljit_jump *jmp = sljit_emit_jump(compiler, SLJIT_JUMP);
     if (jmp) {
         int idx = ctx->num_jumps++;
         ctx->jumps[idx] = jmp;
-        ctx->jump_targets[idx] = node->original_pc + node->src1.v.i + 1;
+        ctx->jump_targets[idx] = node->original_pc + node->src1.v.i + 1; // It has a Bx argument! Let's check ljit_translate.c
     }
 }
 
@@ -198,7 +227,8 @@ void ljit_cg_emit_tforcall(void *node_ptr, void *ctx_ptr) {
     int tvalue_size = sizeof(TValue);
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
-    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->src1.v.i);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->src1.v.i); // C argument
+    
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforcall);
 }
 
@@ -211,12 +241,13 @@ void ljit_cg_emit_tforloop(void *node_ptr, void *ctx_ptr) {
     int tvalue_size = sizeof(TValue);
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->dest.v.reg * tvalue_size);
+
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_tforloop);
 
     struct sljit_jump *jmp = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
     if (jmp) {
         int idx = ctx->num_jumps++;
         ctx->jumps[idx] = jmp;
-        ctx->jump_targets[idx] = node->original_pc - node->src1.v.i;
+        ctx->jump_targets[idx] = node->original_pc + 1 - node->src1.v.i; // Backwards jump from the NEXT instruction
     }
 }

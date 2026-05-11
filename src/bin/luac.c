@@ -540,6 +540,9 @@ static void PrintCode(const Proto* f)
    case OP_SHR:
 	printf("%d %d %d",a,b,c);
 	break;
+   case OP_SPACESHIP:
+	printf("%d %d %d",a,b,c);
+	break;
    case OP_MMBIN:
 	printf("%d %d %d",a,b,c);
 	printf(COMMENT "%s",eventname(c));
@@ -675,6 +678,105 @@ static void PrintCode(const Proto* f)
 	break;
    case OP_VARARGPREP:
 	printf("%d",a);
+	break;
+   case OP_IS:
+	printf("%d %d %d",a,b,isk);
+	printf(COMMENT); PrintConstant(f,b);
+	break;
+   case OP_TESTNIL:
+	printf("%d %d %d",a,b,isk);
+	break;
+   case OP_NEWCLASS:
+	printf("%d %d",a,bx);
+	printf(COMMENT); PrintConstant(f,bx);
+	break;
+   case OP_INHERIT:
+	printf("%d %d",a,b);
+	break;
+   case OP_GETSUPER:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,c);
+	break;
+   case OP_SETMETHOD:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,b);
+	break;
+   case OP_SETSTATIC:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,b);
+	break;
+   case OP_NEWOBJ:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT "%d args",c);
+	break;
+   case OP_GETPROP:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,c);
+	break;
+   case OP_SETPROP:
+	printf("%d %d %d%s",a,b,c,ISK);
+	printf(COMMENT); PrintConstant(f,b);
+	if (isk) { printf(" "); PrintConstant(f,c); }
+	break;
+   case OP_INSTANCEOF:
+	printf("%d %d %d",a,b,isk);
+	break;
+   case OP_IMPLEMENT:
+	printf("%d %d",a,b);
+	break;
+   case OP_SETIFACEFLAG:
+	printf("%d",a);
+	break;
+   case OP_ADDMETHOD:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,b);
+	printf(" "); PrintConstant(f,c);
+	break;
+   case OP_IN:
+	printf("%d %d %d",a,b,c);
+	break;
+   case OP_SLICE:
+	printf("%d %d %d",a,b,c);
+	break;
+   case OP_NOP:
+	printf("%d %d %d",a,b,c);
+	break;
+   case OP_CASE:
+	printf("%d %d %d",a,b,c);
+	break;
+   case OP_NEWCONCEPT:
+	printf("%d %d",a,bx);
+	printf(COMMENT "%p",VOID(f->p[bx]));
+	break;
+   case OP_NEWNAMESPACE:
+	printf("%d %d",a,bx);
+	printf(COMMENT); PrintConstant(f,bx);
+	break;
+   case OP_LINKNAMESPACE:
+	printf("%d %d",a,b);
+	break;
+   case OP_NEWSUPER:
+	printf("%d %d",a,bx);
+	printf(COMMENT); PrintConstant(f,bx);
+	break;
+   case OP_SETSUPER:
+	printf("%d %d %d",a,b,c);
+	break;
+   case OP_GETCMDS:
+	printf("%d",a);
+	break;
+   case OP_GETOPS:
+	printf("%d",a);
+	break;
+   case OP_ASYNCWRAP:
+	printf("%d %d",a,b);
+	break;
+   case OP_GENERICWRAP:
+	printf("%d %d",a,b);
+	break;
+   case OP_CHECKTYPE:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,c);
 	break;
    case OP_EXTRAARG:
 	printf("%d",ax);

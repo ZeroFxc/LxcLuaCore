@@ -2288,21 +2288,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
     jit_func_t func = (jit_func_t)cl->p->jit_trace;
     base = ci->func.p + 1;
     func(base);
-    /* Instead of returning (which skips all execution including prints),
-       we'd want to fall back to interpreter for MVP to actually print things since print CALL is not implemented yet.
-       If JIT completes the whole trace, it should return normally,
-       but currently JIT just overrides the values in stack, then we let interpreter finish.
-       However, JIT `RET` instruction just calls `sljit_emit_return_void`, so control returns here.
-       We shouldn't `return;` out of `luaV_execute` if we want the rest of the script to work (or if the script hasn't properly finished).
-       Actually, `RET` in Lua bytecode means returning from the function.
-       If JIT executes the full trace and handles `RET` by returning from the C function `func(base)`,
-       we should probably check if it actually finished the Lua function.
-       For the MVP, since `RET` and `CALL` are stubs that just `return` to C, let's let interpreter run over it anyway to finish the side-effects.
-       We only want to observe that JIT executed ADD correctly.
-       Let's comment out `return;` to let interpreter re-run or continue?
-       Actually if JIT modifies stack, and interpreter re-runs, it will overwrite the JIT result with its own execution,
-       but that means it won't crash and will print correctly. We just want to ensure it doesn't SEGV.
-    */
     /* return; */
   }
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {
