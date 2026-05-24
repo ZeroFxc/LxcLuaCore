@@ -28,19 +28,38 @@ void ljit_cg_emit_load_operand(struct ljit_ctx *ctx, int target_reg, void *val_p
     }
 }
 
+/**
+ * @brief 内联存储整数值到 Lua 栈 TValue (不再通过 C 函数调用 ljit_icall_set_integer)
+ * @details TValue 布局: value_ (sizeof(Value)字节, 偏移0) + tt_ (偏移 sizeof(Value))
+ *          直接写入 value_.i = val, tt_ = LUA_VNUMINT, 省去 C 函数调用开销
+ * @param ctx JIT 编译上下文
+ * @param val_ptr 目标 IR 值指针 (IR_VAL_REG 类型)
+ * @param src_reg SLJIT 寄存器编号 (持有要写入的整数值)
+ */
 void ljit_cg_emit_store_operand(struct ljit_ctx *ctx, void *val_ptr, int src_reg) {
         struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     ljit_ir_val_t *val = (ljit_ir_val_t *)val_ptr;
     if (val->type == IR_VAL_REG) {
         int tvalue_size = sizeof(TValue);
-        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, src_reg, 0);
-        sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_S0, 0, SLJIT_IMM, val->v.reg * tvalue_size);
-        sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W), SLJIT_IMM, (sljit_sw)ljit_icall_set_integer);
+        int value_size = sizeof(Value);
 
+        /* 直接将整数值写入 Lua 栈 TValue 的 value_.i 字段 (偏移0) */
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(val->v.reg * tvalue_size), src_reg, 0);
+
+        /* 写入类型标记 LUA_VNUMINT 到 TValue 的 tt_ 字段 (偏移 sizeof(Value)) */
+        sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                       SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        sljit_emit_op1(compiler, SLJIT_MOV32,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(val->v.reg * tvalue_size + value_size),
+                       SLJIT_R2, 0);
+
+        /* 非 spilled: 将栈上的 TValue 值_ 字段重新加载到分配好的物理寄存器 */
         if (!val->is_spilled) {
-            if (val->phys_reg != src_reg) {
-                sljit_emit_op1(compiler, SLJIT_MOV, val->phys_reg, 0, src_reg, 0);
-            }
+            sljit_emit_op1(compiler, SLJIT_MOV, val->phys_reg, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(val->v.reg * tvalue_size));
         }
     }
 }

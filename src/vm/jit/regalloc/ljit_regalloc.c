@@ -15,6 +15,7 @@ void ljit_regalloc(ljit_ctx_t *ctx) {
     if (!info) return;
 
     // Cleanup info
+    if (info->is_livein) free(info->is_livein);
     if (info->intervals) free(info->intervals);
     if (info->interference_graph) free(info->interference_graph);
     if (info->reg_mapping) free(info->reg_mapping);

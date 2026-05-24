@@ -14,6 +14,7 @@ typedef struct {
     int *reg_mapping;                /* Array of physical registers assigned to vregs */
     int *is_spilled;                 /* Array of booleans */
     int *stack_offsets;              /* Array of stack offsets for spilled vregs */
+    int *is_livein;                  /* Array: 1 if vreg is used before first definition */
 } ljit_regalloc_info_t;
 
 void ljit_regalloc(ljit_ctx_t *ctx);

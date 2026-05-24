@@ -27,7 +27,9 @@
 #include "lstring.h"
 #include "ltable.h"
 #include "ltm.h"
+#ifndef LUA_NOJIT
 #include "../vm/jit/core/ljit.h"
+#endif
 
 
 
@@ -283,7 +285,9 @@ static void f_luaopen (lua_State *L, void *ud) {
   g->gcstp = 0;  /* allow gc */
   setnilvalue(&g->nilvalue);  /* now state is complete */
   luai_userstateopen(L);
+#ifndef LUA_NOJIT
   luaJIT_init(L);
+#endif
 }
 
 
@@ -328,8 +332,10 @@ static void close_state (lua_State *L) {
     luaD_closeprotected(L, 1, LUA_OK);  /* close all upvalues */
     L->top.p = L->stack.p + 1;  /* empty the stack to run finalizers */
     luaC_freeallobjects(L);  /* collect all objects */
+#ifndef LUA_NOJIT
   luaJIT_free(L);
-    luai_userstateclose(L);
+#endif
+  luai_userstateclose(L);
   }
   luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size);
   luaM_poolshutdown(L);  /* shutdown memory pool */

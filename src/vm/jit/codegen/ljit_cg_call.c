@@ -32,4 +32,10 @@ void ljit_cg_emit_call(void *node_ptr, void *ctx_ptr) {
 
     /* Call ljit_icall_call */
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_call);
+
+    /* 调用后从Lua栈重新加载返回值到目标物理寄存器 */
+    if (!node->dest.is_spilled && node->dest.phys_reg != 0) {
+        sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0,
+            SLJIT_MEM1(SLJIT_S0), node->dest.v.reg * tvalue_size);
+    }
 }
