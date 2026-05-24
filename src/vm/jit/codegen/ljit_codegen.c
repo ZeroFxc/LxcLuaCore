@@ -10,6 +10,7 @@
 #include "../../../core/lgc.h"
 #include "../../../core/ltm.h"
 #include "../../../core/lfunc.h"
+#include "../../../core/ldo.h"
 #include <string.h>
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
@@ -346,6 +347,23 @@ void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb) {
     luaV_objlen(L, ra, rb);
 }
 
+void SLJIT_FUNC ljit_icall_call(lua_State *L, StkId func, int nargs, int nresults) {
+    L->top.p = func + 1 + nargs;
+    luaD_call(L, func, nresults);
+}
+
+void SLJIT_FUNC ljit_icall_ret(lua_State *L, StkId ra, int nresults) {
+    CallInfo *ci = L->ci;
+    if (nresults < 0)
+        nresults = (int)(L->top.p - ra);
+    L->top.p = ra + nresults;
+    luaD_poscall(L, ci, nresults);
+}
+
+StkId SLJIT_FUNC ljit_icall_reload_base(lua_State *L) {
+    return L->ci->func.p + 1;
+}
+
 
 
 #include "../../../core/lopcodes.h"
@@ -390,33 +408,112 @@ void ljit_cg_emit_len(void *node_ptr, void *ctx_ptr) {
     }
 }
 
+/*
+ * 快速 JIT 调度: 绕过 luaD_call/ccall/luaD_precall/luaV_execute 四条链,
+ * 直接设置 CallInfo 并调用目标闭包的 jit_func.
+ * 仅当目标 Lua 闭包已被 JIT 编译 (p->jit_trace != NULL) 时走快速路径,
+ * 否则回退到标准 luaD_call.
+ */
+void SLJIT_FUNC ljit_fast_dispatch(lua_State *L, StkId func, int nresults) {
+    TValue *fv = s2v(func);
+
+    if (ttypetag(fv) == LUA_VLCL) {
+        LClosure *cl = clLvalue(fv);
+        Proto *p = cl->p;
+
+        if (XCLUA_JIT_ENABLED && p->jit_trace) {
+            int fsize = p->maxstacksize;
+            int narg = cast_int(L->top.p - func) - 1;
+            int nfixparams = p->numparams;
+
+            checkstackGCp(L, fsize, func);
+
+            L->nCcalls++;
+            if (l_unlikely(getCcalls(L) >= LUAI_MAXCCALLS)) {
+                checkstackp(L, 0, func);
+                luaE_checkcstack(L);
+            }
+
+            CallInfo *ci = L->ci->next ? L->ci->next : luaE_extendCI(L);
+            L->ci = ci;
+            ci->func.p = func;
+            ci->nresults = nresults;
+            ci->callstatus = CIST_FRESH;
+            ci->top.p = func + 1 + fsize;
+            ci->u.l.savedpc = p->code;
+
+            for (; narg < nfixparams; narg++)
+                setnilvalue(s2v(L->top.p++));
+
+            lua_assert(ci->top.p <= L->stack_last.p);
+
+            typedef int (*jit_func_t)(StkId);
+            jit_func_t jit = (jit_func_t)p->jit_trace;
+            StkId base = func + 1;
+
+            int jit_done = jit(base);
+
+            L->nCcalls--;
+
+            if (jit_done) {
+                return;
+            }
+
+            L->top.p = func + 1 + narg;
+            L->ci = ci->previous;
+        }
+    }
+
+    luaD_call(L, func, nresults);
+}
+
+void SLJIT_FUNC ljit_jitcall(lua_State *L, StkId func, int nresults, Proto *p) {
+    int fsize = p->maxstacksize;
+    int narg = cast_int(L->top.p - func) - 1;
+    int nfixparams = p->numparams;
+
+    checkstackGCp(L, fsize, func);
+
+    L->nCcalls++;
+    if (l_unlikely(getCcalls(L) >= LUAI_MAXCCALLS)) {
+        checkstackp(L, 0, func);
+        luaE_checkcstack(L);
+    }
+
+    CallInfo *ci = L->ci->next ? L->ci->next : luaE_extendCI(L);
+    L->ci = ci;
+    ci->func.p = func;
+    ci->nresults = nresults;
+    ci->callstatus = CIST_FRESH;
+    ci->top.p = func + 1 + fsize;
+    ci->u.l.savedpc = p->code;
+
+    for (; narg < nfixparams; narg++)
+        setnilvalue(s2v(L->top.p++));
+
+    lua_assert(ci->top.p <= L->stack_last.p);
+
+    typedef int (*jit_func_t)(StkId);
+    jit_func_t jit = (jit_func_t)p->jit_trace;
+    StkId base = func + 1;
+
+    int jit_done = jit(base);
+
+    L->nCcalls--;
+
+    if (jit_done) {
+        return;
+    }
+
+    L->top.p = func + 1 + narg;
+    L->ci = ci->previous;
+
+    luaD_call(L, func, nresults);
+}
+
 void *ljit_codegen(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (!ctx) return NULL;
-
-    /*
-     * Check for TESTSET + CALL pattern that JIT cannot handle.
-     * When TESTSET in an AND/OR expression guards a CALL,
-     * the IR_CALL is no-op in JIT but the subsequent IR_RET
-     * pops the call frame via luaD_poscall, losing the result.
-     * Fall back to interpreter for these functions.
-     */
-    {
-        ljit_ir_node_t *n = ctx->ir_head;
-        while (n) {
-            if (n->op == IR_TESTSET) {
-                ljit_ir_node_t *next = n->next;
-                if (next && next->op == IR_JMP) next = next->next;
-                ljit_ir_node_t *body = next;
-                while (body) {
-                    if (body->op == IR_CALL) return NULL;
-                    if (body->op == IR_RET) break;
-                    body = body->next;
-                }
-            }
-            n = n->next;
-        }
-    }
 
     struct sljit_compiler *compiler = sljit_create_compiler(NULL);
     if (!compiler) return NULL;
@@ -431,11 +528,93 @@ void *ljit_codegen(void *ctx_ptr) {
 
     /*
      * Enter function arguments mapping:
-     * jit_func_t(StkId base) -> SLJIT_ARGS1V(W) -> base in SLJIT_S0.
-     * SLJIT_S0 will hold the Lua virtual register base address.
-     * Requesting 4 saved regs (S0-S3), 4 scratch regs (R0-R3), 0 fregs.
+     * jit_func_t(StkId base) -> SLJIT_ARGS1(32, W) -> base in SLJIT_S0.
+     * Returns int: 1 = fully handled (CALL+RET executed), 0 = interpreter fallback.
+     * SLJIT_S0 holds the Lua virtual register base address.
+     * SLJIT_S1 serves as the return flag (0 = fallback, 1 = done).
+     * Requesting 6 saved regs (S0-S5), 5 scratch regs (R0-R4), 0 fregs.
      */
-sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 4, 4, 0);
+    sljit_emit_enter(compiler, 0, SLJIT_ARGS1(32, W), 5, 6, 0);
+sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
+
+    /*
+     * 加载live-in参数: 扫描IR, 找出作为src使用但从未作为dest定义过的虚拟寄存器,
+     * 将这些"活入"参数从Lua栈加载到分配的物理寄存器中.
+     * spilled寄存器不需要显式加载, 因为stack_ofs = reg*sizeof(TValue)直接指向Lua栈内存.
+     */
+    {
+        int num_vregs = ctx->proto->maxstacksize;
+        int tvalue_size = sizeof(TValue);
+
+        /*
+         * 第一遍: 记录每个寄存器的首次定义和首次使用的IR序列号.
+         * 序列号反映IR指令的执行顺序, 用于判断"先使用后定义"(需要live-in加载).
+         */
+        int sentinel = ctx->proto->sizecode + 1;
+        int *first_def = (int *)malloc(num_vregs * sizeof(int));
+        int *first_use = (int *)malloc(num_vregs * sizeof(int));
+        for (int i = 0; i < num_vregs; i++) {
+            first_def[i] = sentinel;
+            first_use[i] = sentinel;
+        }
+
+        int seq = 0;
+        ljit_ir_node_t *scan = ctx->ir_head;
+        while (scan) {
+            if (scan->dest.type == IR_VAL_REG) {
+                int r = scan->dest.v.reg;
+                if (r >= 0 && r < num_vregs && seq < first_def[r])
+                    first_def[r] = seq;
+            }
+            if (scan->src1.type == IR_VAL_REG) {
+                int r = scan->src1.v.reg;
+                if (r >= 0 && r < num_vregs && seq < first_use[r])
+                    first_use[r] = seq;
+            }
+            if (scan->src2.type == IR_VAL_REG) {
+                int r = scan->src2.v.reg;
+                if (r >= 0 && r < num_vregs && seq < first_use[r])
+                    first_use[r] = seq;
+            }
+            seq++;
+            scan = scan->next;
+        }
+
+        /*
+         * 第二遍: 加载live-in寄存器.
+         * first_use < first_def 表示该寄存器在首次定义前就被使用(或者从未被定义).
+         * spilled寄存器直接通过Lua栈访问(stack_ofs = reg*sizeof(TValue)), 无需显式加载.
+         */
+        int *loaded = (int *)calloc(num_vregs, sizeof(int));
+        scan = ctx->ir_head;
+        while (scan) {
+            if (scan->src1.type == IR_VAL_REG) {
+                int r = scan->src1.v.reg;
+                if (r >= 0 && r < num_vregs && first_use[r] < first_def[r] && !loaded[r]) {
+                    loaded[r] = 1;
+                    if (!scan->src1.is_spilled) {
+                        sljit_emit_op1(compiler, SLJIT_MOV, scan->src1.phys_reg, 0,
+                            SLJIT_MEM1(SLJIT_S0), r * tvalue_size);
+                    }
+                }
+            }
+            if (scan->src2.type == IR_VAL_REG) {
+                int r = scan->src2.v.reg;
+                if (r >= 0 && r < num_vregs && first_use[r] < first_def[r] && !loaded[r]) {
+                    loaded[r] = 1;
+                    if (!scan->src2.is_spilled) {
+                        sljit_emit_op1(compiler, SLJIT_MOV, scan->src2.phys_reg, 0,
+                            SLJIT_MEM1(SLJIT_S0), r * tvalue_size);
+                    }
+                }
+            }
+            scan = scan->next;
+        }
+
+        free(first_def);
+        free(first_use);
+        free(loaded);
+    }
 
     ljit_ir_node_t *node = ctx->ir_head;
     while (node) {
@@ -472,10 +651,173 @@ sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 4, 4, 0);
             case IR_CMP_EQ:
             case IR_CMP_GT:
             case IR_CMP_GE: ljit_cg_emit_cmp(node, ctx); break;
-            case IR_RET: /* JIT writes values to stack; interpreter handles actual return */ break;
+            case IR_RET: {
+                int tvalue_size = sizeof(TValue);
+                int nresults = node->src2.v.i;
+
+                /* R0 = L */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                /* R1 = ra = base + src1.v.reg * tvalue_size */
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(node->src1.v.reg * tvalue_size));
+
+                if (nresults >= 0) {
+                    /*
+                     * 内联返回路径: L->top.p = ra + nresults, 直接调 luaD_poscall.
+                     * 省去 ljit_icall_ret 的 C 函数包装调用.
+                     */
+                    int top_offset = nresults * tvalue_size;
+
+                    /* R2 = ci = L->ci */
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                                   SLJIT_MEM1(SLJIT_R0),
+                                   (sljit_sw)offsetof(lua_State, ci));
+
+                    /* L->top.p = ra + nresults */
+                    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R3, 0,
+                                   SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)top_offset);
+                    sljit_emit_op1(compiler, SLJIT_MOV,
+                                   SLJIT_MEM1(SLJIT_R0),
+                                   (sljit_sw)offsetof(lua_State, top), SLJIT_R3, 0);
+
+                    /* R1 = ci, R2 = nresults */
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_R2, 0);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                                   SLJIT_IMM, (sljit_sw)nresults);
+
+                    /* luaD_poscall(L, ci, nresults) */
+                    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                     SLJIT_IMM, (sljit_sw)luaD_poscall);
+                } else {
+                    /* nresults < 0 (LUA_MULTRET): 保留原包装调用 */
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                                   SLJIT_IMM, (sljit_sw)nresults);
+                    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                     SLJIT_IMM, (sljit_sw)ljit_icall_ret);
+                }
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
+                sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
+                break;
+            }
             case IR_GETTABLE: ljit_cg_emit_gettable(node, ctx); break;
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
-            case IR_CALL: /* JIT sets up args on stack; interpreter handles actual call */ break;
+            case IR_CALL: {
+                int tvalue_size = sizeof(TValue);
+                int nargs = node->src1.v.i;
+                int nresults = node->src2.v.i;
+
+                /* R0 = L */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                /* R1 = func = base + dest.v.reg * tvalue_size */
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(node->dest.v.reg * tvalue_size));
+
+                /* L->top.p = func + (nargs+1) * tvalue_size */
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R2, 0, SLJIT_R1, 0,
+                               SLJIT_IMM, (sljit_sw)((nargs + 1) * tvalue_size));
+                sljit_emit_op1(compiler, SLJIT_MOV,
+                               SLJIT_MEM1(SLJIT_R0),
+                               (sljit_sw)offsetof(lua_State, top), SLJIT_R2, 0);
+
+                /*
+                 * 内联类型/JIT检查: 在生成的机器码中直接检查
+                 * func->tt_ == LUA_VLCL 和 cl->p->jit_trace != NULL,
+                 * 减少 C 函数分派开销.
+                 * TValue.tt_ 偏移 = sizeof(Value) = 8.
+                 * LUA_VLCL = makevariant(LUA_TFUNCTION, 0) = 6.
+                 */
+                sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R3, 0,
+                               SLJIT_MEM1(SLJIT_R1), (sljit_sw)sizeof(Value));
+                struct sljit_jump *jmp_not_lcl = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
+                    SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)LUA_VLCL);
+
+                /* value_.gc 在 TValue 偏移 0 → LClosure* (GCObject==Closure union 起始) */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0,
+                               SLJIT_MEM1(SLJIT_R1), 0);
+                /* cl->p → Proto* */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0,
+                               SLJIT_MEM1(SLJIT_R3), (sljit_sw)offsetof(LClosure, p));
+                /* p->jit_trace 非空检查 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R4, 0,
+                               SLJIT_MEM1(SLJIT_R3), (sljit_sw)offsetof(Proto, jit_trace));
+                struct sljit_jump *jmp_no_jit = sljit_emit_cmp(compiler, SLJIT_EQUAL,
+                    SLJIT_R4, 0, SLJIT_IMM, 0);
+
+                /*
+                 * 快速路径: 目标已JIT编译.
+                 * ljit_jitcall(L, func, nresults, p): R0=L, R1=func, R2=nresults, R3=p.
+                 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_jitcall);
+
+                struct sljit_jump *jmp_after = sljit_emit_jump(compiler, SLJIT_JUMP);
+
+                /*
+                 * 慢速路径: 目标不是LCL或没有JIT代码, 回退到 luaD_call.
+                 */
+                struct sljit_label *slow_label = sljit_emit_label(compiler);
+                sljit_set_label(jmp_not_lcl, slow_label);
+                sljit_set_label(jmp_no_jit, slow_label);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)luaD_call);
+
+                /* 两条路径汇总 */
+                struct sljit_label *after_label = sljit_emit_label(compiler);
+                sljit_set_label(jmp_after, after_label);
+
+                /*
+                 * 内联 reload base: S0 = L->ci->func.p + 1
+                 * 直接从 L->ci 链读取, 省去 C 函数调用开销.
+                 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                               SLJIT_MEM1(SLJIT_R2), offsetof(lua_State, ci));
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S0, 0,
+                               SLJIT_MEM1(SLJIT_R2), offsetof(CallInfo, func));
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_S0, 0,
+                               SLJIT_S0, 0, SLJIT_IMM, sizeof(TValue));
+
+                /*
+                 * 调用后: Lua栈上的结果寄存器已被 luaD_poscall 更新,
+                 * 但物理寄存器中的值已过时. 扫描后续IR节点找到结果寄存器的映射信息,
+                 * 将非spilled的结果从Lua栈重新加载到物理寄存器.
+                 */
+                if (nresults > 0) {
+                    int base_reg = node->dest.v.reg;
+                    for (int res = 0; res < nresults; res++) {
+                        int vreg = base_reg + res;
+                        ljit_ir_node_t *next = node->next;
+                        int found = 0;
+                        while (next && !found) {
+                            if (next->dest.type == IR_VAL_REG && next->dest.v.reg == vreg) {
+                                if (!next->dest.is_spilled) {
+                                    sljit_emit_op1(compiler, SLJIT_MOV, next->dest.phys_reg, 0,
+                                        SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                }
+                                found = 1;
+                            } else if (next->src1.type == IR_VAL_REG && next->src1.v.reg == vreg) {
+                                if (!next->src1.is_spilled) {
+                                    sljit_emit_op1(compiler, SLJIT_MOV, next->src1.phys_reg, 0,
+                                        SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                }
+                                found = 1;
+                            } else if (next->src2.type == IR_VAL_REG && next->src2.v.reg == vreg) {
+                                if (!next->src2.is_spilled) {
+                                    sljit_emit_op1(compiler, SLJIT_MOV, next->src2.phys_reg, 0,
+                                        SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                }
+                                found = 1;
+                            }
+                            next = next->next;
+                        }
+                    }
+                }
+                break;
+            }
             case IR_NEWTABLE: ljit_cg_emit_newtable(node, ctx); break;
             case IR_POW: ljit_cg_emit_pow(node, ctx); break;
             case IR_NOP: ljit_cg_emit_nop(node, ctx); break;
@@ -634,7 +976,7 @@ sljit_emit_enter(compiler, 0, SLJIT_ARGS1V(W), 4, 4, 0);
         }
     }
 
-    sljit_emit_return_void(compiler);
+    sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
 
     void *code = sljit_generate_code(compiler, 0, NULL);
 

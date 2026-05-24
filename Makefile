@@ -42,6 +42,7 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblua.a
 CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_call.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
 GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
@@ -222,13 +223,14 @@ wasm:
 	$(MAKE) clean
 	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN" \
+	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
 	"SYSLIBS=" \
 	"AR=$(EMAR) rcu" \
 	"RANLIB=$(EMRANLIB)" \
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
+	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O=lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o" \
 	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0"
@@ -238,13 +240,14 @@ wasm-minimal:
 	$(MAKE) clean
 	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-Os -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN" \
+	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
 	"SYSLIBS=" \
 	"AR=$(EMAR) rcu" \
 	"RANLIB=$(EMRANLIB)" \
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
+	"CORE_O=$(CORE_O_NOJIT)" \
 	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINVOKE_RUN=0"
 
 # 将 C 文件编译为 WASM 模块（供 wasm3 使用）
@@ -299,9 +302,9 @@ wasm-c-wasi: wasm-c
 lxclua-wasm: lxclua_wasm.o
 	@echo "编译 lxclua -> lxclua.wasm (导出 Lua API)"
 	$(EMCC) -std=c23 -O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0 \
-		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN \
+		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT \
 		-o lxclua.wasm \
-		$(CORE_O) $(LIB_O) $(LIB_O_WASM) lxclua_wasm.o \
+		$(CORE_O_NOJIT) $(LIB_O) $(LIB_O_WASM) lxclua_wasm.o \
 		-sWASM=1 -sSTANDALONE_WASM=1 -sALLOW_MEMORY_GROWTH=1 \
 		-sEXPORTED_FUNCTIONS='$(LUA_WASM_EXPORTS)' \
 		--no-entry
@@ -319,7 +322,7 @@ lxclua-wasm: lxclua_wasm.o
 # 编译 WASM 包装器
 lxclua_wasm.o: lxclua_wasm.c lua.h lauxlib.h lualib.h
 	$(EMCC) -std=c23 -O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0 \
-		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN \
+		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT \
 		-c lxclua_wasm.c -o lxclua_wasm.o
 
 # Lua WASM 导出的 API 函数列表

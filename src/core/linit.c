@@ -78,7 +78,9 @@ int luaopen_quickjs(lua_State *L);
 int luaopen_asyncio(lua_State *L);
 
 /* 声明jit库的初始化函数 */
+#ifndef LUA_NOJIT
 int luaopen_jit(lua_State *L);
+#endif
 
 /* 声明GUI库的初始化函数（Windows/Linux桌面平台，排除Android） */
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
@@ -125,7 +127,9 @@ static const luaL_Reg stdlibs[] = {
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
+#ifndef LUA_NOJIT
   {"jit", luaopen_jit},
+#endif
 
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
   /* {"gui", luaopen_gui}, */
@@ -203,7 +207,9 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
+#ifndef LUA_NOJIT
   {"jit", luaopen_jit},
+#endif
 
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
   /* {"gui", luaopen_gui}, */

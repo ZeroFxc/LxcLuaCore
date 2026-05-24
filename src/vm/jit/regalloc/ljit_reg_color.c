@@ -14,8 +14,7 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
 
     if (!info->reg_mapping || !info->is_spilled) return;
 
-    // Available registers for allocation
-    int available_regs[] = {SLJIT_S1, SLJIT_S2, SLJIT_R2, SLJIT_R3};
+    int available_regs[] = {SLJIT_S2, SLJIT_S3, SLJIT_S4, SLJIT_S5};
     int num_available_regs = sizeof(available_regs) / sizeof(available_regs[0]);
 
     // Initialize mappings
