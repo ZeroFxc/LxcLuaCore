@@ -282,7 +282,7 @@ OP_BANDK,/*	A B C	R[A] := R[B] & K[C]:integer			*/
 OP_BORK,/*	A B C	R[A] := R[B] | K[C]:integer			*/
 OP_BXORK,/*	A B C	R[A] := R[B] ~ K[C]:integer			*/
 
-OP_SHLI,/*	A B sC	R[A] := sC << R[B]				*/
+OP_SHLI,/*	A B sC	R[A] := R[B] << sC				*/
 OP_SHRI,/*	A B sC	R[A] := R[B] >> sC				*/
 
 OP_ADD,/*	A B C	R[A] := R[B] + R[C]				*/

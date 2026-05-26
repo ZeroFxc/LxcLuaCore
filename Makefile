@@ -17,23 +17,31 @@ RANLIB= ranlib
 RM= rm -f
 UNAME= uname
 
+# wasmtime: 支持 WASM GC 提案的运行时（v45.0.0 预编译库，用于桌面对 Windows MinGW）
+WASMTIME_DIR = wasmtime/wasmtime-v45.0.0-x86_64-mingw-c-api
+WASMTIME_INC = -I$(WASMTIME_DIR)/include
+WASMTIME_LIB = $(WASMTIME_DIR)/lib/libwasmtime.a -lbcrypt -luserenv -lole32 -lntdll
+WASMTIME_DLL = $(WASMTIME_DIR)/lib/wasmtime.dll
+# wasmtime Android 预编译库（aarch64）
+WASMTIME_ANDROID_DIR = wasmtime/wasmtime-v45.0.0-aarch64-android-c-api
+
 SYSCFLAGS= -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm $(WASMTIME_INC)
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
 
 # Combine flags for linker
 LDFLAGS= $(SYSLDFLAGS) $(MYLDFLAGS)
-LIBS= -lm $(SYSLIBS) $(MYLIBS)
+LIBS= -lm $(SYSLIBS) $(MYLIBS) $(WASMTIME_LIB)
 
 # Special flags for compiler modules; -Os reduces code size.
-VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin
-CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin
+VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm
+CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/lua2wasm $(WASMTIME_INC)
 
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
@@ -44,11 +52,20 @@ LUA_A=	liblua.a
 CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_call.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
+# lua2wasm: Lua-to-WASM 编译器模块（编译进 liblua.a）
+# 核心编译管线：词法分析→语法分析→代码生成→WAT输出
+LUA2WASM_CORE_O= $(addprefix $(BUILDDIR)/,ast.o lexer_l2w.o parser_l2w.o wat_builder.o codegen_l2w.o builtins_l2w.o xalloc_l2w.o)
+# WAT→WASM 汇编器
+WAT2WASM_CORE_O= $(BUILDDIR)/wat2wasm_core.o
+# Lua 模块入口：luaopen_lua2wasm
+LUA2WASM_LIB_O= $(BUILDDIR)/lua2wasmlib.o
+# CLI 主程序（可选独立编译）
+LUA2WASM_CLI_O= $(BUILDDIR)/lua2wasm_main.o
+WAT2WASM_CLI_O= $(BUILDDIR)/wat2wasm_cli.o
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
-GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
-LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(WASM3_O)
-BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS)
+LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
+BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O)
 BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS)
 
 LUA_T=	lxclua
@@ -105,6 +122,55 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 $(LBCDUMP_T): $(LBCDUMP_O)
 	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
 
+# --- lua2wasm: Lua-to-WASM 编译器 ---
+# 核心模块已编译进 $(LUA_A)，可在 Lua 中通过 require("lua2wasm") 使用
+# 以下为可选独立 CLI 工具
+
+# lua2wasm CLI：将 .lua 编译为 .wat / .wasm（独立命令行工具）
+lua2wasm: $(LUA2WASM_CLI_O) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O)
+	$(CC) -o $@ $(LDFLAGS) $(LUA2WASM_CLI_O) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LIBS)
+
+# wat2wasm CLI：WAT 文本转 WASM 二进制（独立命令行工具）
+wat2wasm: $(WAT2WASM_CLI_O) $(WAT2WASM_CORE_O)
+	$(CC) -o $@ $(LDFLAGS) $(WAT2WASM_CLI_O) $(WAT2WASM_CORE_O) $(LIBS)
+
+# --- lua2wasm 编译规则（显式路径，避免与 lxclua 同名文件冲突） ---
+
+$(BUILDDIR)/ast.o: src/lua2wasm/ast.c src/lua2wasm/ast.h src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/lexer_l2w.o: src/lua2wasm/lexer.c src/lua2wasm/lexer.h src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/parser_l2w.o: src/lua2wasm/parser.c src/lua2wasm/parser.h src/lua2wasm/builtins.h src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/wat_builder.o: src/lua2wasm/wat_builder.c src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/codegen_l2w.o: src/lua2wasm/codegen.c src/lua2wasm/codegen.h src/lua2wasm/parser.h src/lua2wasm/wat_builder.h src/lua2wasm/builtins.h src/lua2wasm/xalloc.h src/lua2wasm/prelude_wat.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/builtins_l2w.o: src/lua2wasm/builtins.c src/lua2wasm/builtins.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/xalloc_l2w.o: src/lua2wasm/xalloc.c src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/wat2wasm_core.o: src/lua2wasm/wat2wasm.c src/lua2wasm/wat2wasm.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+# lua2wasm Lua 模块入口（编译进 liblua.a）
+$(BUILDDIR)/lua2wasmlib.o: src/lua2wasm/lua2wasmlib.c src/lua2wasm/lexer.h src/lua2wasm/parser.h src/lua2wasm/codegen.h src/lua2wasm/wat2wasm.h src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h src/core/lua.h src/core/lauxlib.h src/core/lualib.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+# 独立 CLI 编译规则
+$(BUILDDIR)/lua2wasm_main.o: src/lua2wasm/main.c src/lua2wasm/codegen.h src/lua2wasm/lexer.h src/lua2wasm/parser.h src/lua2wasm/wat2wasm.h src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/wat2wasm_cli.o: src/lua2wasm/wat2wasm_cli.c src/lua2wasm/wat2wasm.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
 $(WEBSERVER_A): $(WEBSERVER_O) $(LUA_A)
 	$(CC) -shared -o $@ $(LDFLAGS) $(WEBSERVER_O) $(LUA_A) $(LIBS) -lws2_32
 
@@ -112,8 +178,10 @@ test:
 	./$(LUA_T) -v
 clean:
 	$(RM) -r $(BUILDDIR)
-	$(RM) $(ALL_T) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
+	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
 	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
+	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
+	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
 
 
@@ -169,10 +237,6 @@ Linux linux:
 	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread" SYSLDFLAGS="-s"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
-Linux-gui linux-gui:
-	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE `pkg-config --cflags gtk+-3.0`" SYSCFLAGS="-DLUA_USE_LINUX" GUI_PLATFORM_DEF="-DGUI_PLATFORM_LINUX" GUI_OBJS="$(BUILDDIR)/gui_linux.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o" SYSLIBS="-Wl,-E -ldl -lm -lpthread `pkg-config --libs gtk+-3.0`" SYSLDFLAGS="-s"
-	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
-
 termux:
 	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
@@ -225,15 +289,18 @@ wasm:
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
 	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
 	"SYSLIBS=" \
+	"WASMTIME_INC=" \
+	"WASMTIME_LIB=" \
 	"AR=$(EMAR) rcu" \
 	"RANLIB=$(EMRANLIB)" \
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
 	"CORE_O=$(CORE_O_NOJIT)" \
-	"LIB_O=lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o" \
+	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
+	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o $(BUILDDIR)/lsmgrlib.o $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o" \
 	"GUI_OBJS=" \
-	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0"
+	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
 
 # WASM 最小化版本（无文件系统，更小体积）
 wasm-minimal:
@@ -248,6 +315,7 @@ wasm-minimal:
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
 	"CORE_O=$(CORE_O_NOJIT)" \
+	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
 	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINVOKE_RUN=0"
 
 # 将 C 文件编译为 WASM 模块（供 wasm3 使用）
@@ -516,32 +584,13 @@ release:
 quickjs/%.o: quickjs/%.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
-$(BUILDDIR)/lquickjs.o: lquickjs.c | $(BUILDDIR)
+$(BUILDDIR)/lquickjs.o: src/bin/lquickjs.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -c $< -o $@
 quickjs/qjsc.o: quickjs/qjsc.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
 
 quickjs/qjs.o: quickjs/qjs.c
 	$(CC) $(CFLAGS) $(CMCFLAGS) -Iquickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\" -c $< -o $@
-
-GUI_OBJS=	$(BUILDDIR)/gui_windows.o $(BUILDDIR)/gui_controls.o $(BUILDDIR)/gui_controls_ext.o
-GUI_PLATFORM_DEF=	-DGUI_PLATFORM_WINDOWS
-
-# GUI库源文件编译规则 (跨平台)
-$(BUILDDIR)/lguilib.o: gui/lguilib.c gui/gui_core.h lua.h lauxlib.h lualib.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/lguilib.c -o $@
-
-$(BUILDDIR)/gui_windows.o: gui/gui_windows.c gui/gui_core.h gui/gui_windows.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_windows.c -o $@
-
-$(BUILDDIR)/gui_linux.o: gui/gui_linux.c gui/gui_core.h gui/gui_linux.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) `pkg-config --cflags gtk+-3.0` -c gui/gui_linux.c -o $@
-
-$(BUILDDIR)/gui_controls.o: gui/gui_controls.c gui/gui_core.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls.c -o $@
-
-$(BUILDDIR)/gui_controls_ext.o: gui/gui_controls_ext.c gui/gui_core.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -Igui $(GUI_PLATFORM_DEF) -c gui/gui_controls_ext.c -o $@
 
 $(BUILDDIR)/llex.o: llex.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
@@ -700,3 +749,15 @@ $(BUILDDIR)/ljit_cg_closure.o: src/vm/jit/codegen/ljit_cg_closure.c | $(BUILDDIR
 
 $(BUILDDIR)/ljit_cg_oop.o: src/vm/jit/codegen/ljit_cg_oop.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_oop.c -o $@
+
+# ============================================================
+# 生成合并头文件 lxclua.h（单头文件，供 C 扩展模块开发使用）
+# 用法: make head
+# 需要 Python 3
+# ============================================================
+PYTHON = python
+
+head:
+	@echo "正在生成合并头文件 lxclua.h ..."
+	@$(PYTHON) tools/merge_headers.py
+	@echo "完成: lxclua.h"

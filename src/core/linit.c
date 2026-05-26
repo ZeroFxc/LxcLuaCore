@@ -68,6 +68,14 @@ int luaopen_ByteCode(lua_State *L);
 /* 声明wasm3库的初始化函数 */
 int luaopen_wasm3(lua_State *L);
 
+/* 声明wasmtime库的初始化函数 (WASM GC运行时) — 原生平台专用, Emscripten 不可用 */
+#ifndef __EMSCRIPTEN__
+int luaopen_wasmtime(lua_State *L);
+#endif
+
+/* 声明lua2wasm库的初始化函数 */
+int luaopen_lua2wasm(lua_State *L);
+
 /* 声明lexer库的初始化函数 */
 int luaopen_lexer(lua_State *L);
 
@@ -80,11 +88,6 @@ int luaopen_asyncio(lua_State *L);
 /* 声明jit库的初始化函数 */
 #ifndef LUA_NOJIT
 int luaopen_jit(lua_State *L);
-#endif
-
-/* 声明GUI库的初始化函数（Windows/Linux桌面平台，排除Android） */
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-/* int luaopen_gui(lua_State *L); */
 #endif
 
 // clang and ffi libraries
@@ -124,15 +127,15 @@ static const luaL_Reg stdlibs[] = {
   {"tcc", luaopen_tcc},
   {"ByteCode", luaopen_ByteCode},
   {"wasm3", luaopen_wasm3},
+#ifndef __EMSCRIPTEN__
+  {"wasmtime", luaopen_wasmtime},
+#endif
+  {"lua2wasm", luaopen_lua2wasm},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
 #ifndef LUA_NOJIT
   {"jit", luaopen_jit},
-#endif
-
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-  /* {"gui", luaopen_gui}, */
 #endif
 
 #ifndef _WIN32
@@ -204,15 +207,15 @@ static const luaL_Reg loadedlibs[] = {
   {"tcc", luaopen_tcc},
   {"ByteCode", luaopen_ByteCode},
   {"wasm3", luaopen_wasm3},
+#ifndef __EMSCRIPTEN__
+  {"wasmtime", luaopen_wasmtime},
+#endif
+  {"lua2wasm", luaopen_lua2wasm},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
 #ifndef LUA_NOJIT
   {"jit", luaopen_jit},
-#endif
-
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-  /* {"gui", luaopen_gui}, */
 #endif
 
 #ifndef _WIN32

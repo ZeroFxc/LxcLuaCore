@@ -41,6 +41,8 @@ test_output/
 
 # SDK
 emsdk-main/
+wasmtime/
+*.wasm
 *.js
 
 # Koishi

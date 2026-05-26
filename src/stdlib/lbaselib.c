@@ -712,6 +712,48 @@ static int luaB_dofile (lua_State *L) {
 }
 
 
+static int luaB_getfile (lua_State *L) {
+  const char *fname = luaL_checkstring(L, 1);
+  FILE *f = fopen(fname, "rb");
+  if (f == NULL) {
+    return luaL_error(L, "cannot open file '%s': %s", fname, strerror(errno));
+  }
+  
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
+    return luaL_error(L, "cannot seek in file '%s': %s", fname, strerror(errno));
+  }
+  
+  long size = ftell(f);
+  if (size < 0) {
+    fclose(f);
+    return luaL_error(L, "cannot tell file size '%s': %s", fname, strerror(errno));
+  }
+  
+  if (fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
+    return luaL_error(L, "cannot seek in file '%s': %s", fname, strerror(errno));
+  }
+  
+  char *buf = (char *)lua_newuserdata(L, size);
+  if (buf == NULL) {
+    fclose(f);
+    return luaL_error(L, "cannot allocate memory for file '%s'", fname);
+  }
+  
+  size_t n = fread(buf, 1, size, f);
+  if (n != (size_t)size) {
+    fclose(f);
+    return luaL_error(L, "error reading file '%s': %s", fname, strerror(errno));
+  }
+  
+  fclose(f);
+  
+  lua_pushlstring(L, buf, size);
+  return 1;
+}
+
+
 static int luaB_assert (lua_State *L) {
   if (l_likely(lua_toboolean(L, 1)))  /* condition is true? */
     return lua_gettop(L);  /* return all arguments */
@@ -2804,6 +2846,7 @@ static const luaL_Reg base_funcs[] = {
   {"collectgarbage", luaB_collectgarbage},
   {"defer", luaB_defer},
   {"dofile", luaB_dofile},
+  {"getfile", luaB_getfile},
   {"dump", luaB_dump},
   {"error", luaB_error},
     {"grand", luaB_grand},

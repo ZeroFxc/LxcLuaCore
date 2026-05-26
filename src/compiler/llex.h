@@ -62,6 +62,7 @@ enum RESERVED {
   TK_OPTCHAIN,  /**< ?. */
   TK_NULLCOAL,  /**< ?? */
   TK_NULLCOALEQ,/**< ??= */
+  TK_POWEQ,     /**< ^= */
   TK_SPACESHIP, /**< <=> */
   TK_DOLLAR,    /**< $ */
   TK_DOLLDOLL,  /**< $$ */
