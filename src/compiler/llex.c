@@ -1178,8 +1178,11 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         next(ls);
         if (ls->current == '/') {  /* '//' 或 '//=' */
           next(ls);
-          if (check_next1(ls, '=')) return TK_IDIVEQ;  /* '//=' 整除赋值 */
-          else return TK_IDIV;  /* '//' */
+          if (ls->current == '=') {  /* '//=' 整除赋值 */
+            next(ls);
+            return TK_IDIVEQ;
+          }
+          return TK_IDIV;  /* '//' 整除运算符 */
         }
         else if (check_next1(ls, '=')) return TK_DIVEQ;  /* '/=' 除法赋值 */
         else return '/';
@@ -1224,6 +1227,11 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         next(ls);
         if(check_next1(ls,'=')) return TK_MODEQ;  /* '%=' 取模赋值 */
         else return '%';
+      }
+      case '^':{  /* '^' 或 '^=' (幂运算) */
+        next(ls);
+        if(check_next1(ls,'=')) return TK_POWEQ;  /* '^=' 幂赋值 */
+        else return '^';
       }
       case '@':{
         next(ls);

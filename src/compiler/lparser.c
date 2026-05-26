@@ -1361,6 +1361,43 @@ static void codeclosure (LexState *ls, expdesc *v) {
   luaK_exp2nextreg(fs, v);  /* fix it at the last register */
 }
 
+
+/*
+** keyword 编译时注册表操作
+** 将 keyword 名映射到编译后的 Proto，用于 $name 语法直接引用
+*/
+static Proto* keyword_lookup (LexState *ls, TString *name) {
+  global_State *g = G(ls->L);
+  int i;
+  for (i = 0; i < g->kwreg_count; i++) {
+    if (g->keyword_registry[i].name == name)
+      return g->keyword_registry[i].p;
+  }
+  return NULL;  /* 未找到 */
+}
+
+static void keyword_register (LexState *ls, TString *name, Proto *p) {
+  global_State *g = G(ls->L);
+  int i;
+  /* 检查是否已存在同名 keyword，覆盖 */
+  for (i = 0; i < g->kwreg_count; i++) {
+    if (g->keyword_registry[i].name == name) {
+      g->keyword_registry[i].p = p;
+      return;
+    }
+  }
+  /* 动态扩容 */
+  if (g->kwreg_count >= g->kwreg_size) {
+    int newsize = (g->kwreg_size == 0) ? 8 : g->kwreg_size * 2;
+    g->keyword_registry = luaM_reallocvector(
+        ls->L, g->keyword_registry, g->kwreg_size, newsize, KeywordRegEntry);
+    g->kwreg_size = newsize;
+  }
+  g->keyword_registry[g->kwreg_count].name = name;
+  g->keyword_registry[g->kwreg_count].p = p;
+  g->kwreg_count++;
+}
+
 /*
 ** codes instruction to create new concept in parent function.
 */
@@ -1704,8 +1741,22 @@ static int yindex_or_slice (LexState *ls, expdesc *v) {
   
   luaX_next(ls);  /* skip the '[' */
   
-  /* 检查是否是切片语法: 第一个 token 是 ':' */
-  if (ls->t.token == ':') {
+  /* 检查是否是切片语法: 第一个 token 是 ':' 或 TK_DBCOLON (::) */
+  if (ls->t.token == ':' || ls->t.token == TK_DBCOLON) {
+    /* 如果是 TK_DBCOLON (::)，需要拆分成两个 ':' token */
+    int is_dbcolon = (ls->t.token == TK_DBCOLON);
+    if (is_dbcolon) {
+      /* 将当前 TK_DBCOLON 替换为 ':'，并将第二个 ':' 放入 pending */
+      ls->t.token = ':';
+      /* 使用 lexer 的 pending 机制塞入一个 ':' token */
+      static Token pending_colon;
+      pending_colon.token = ':';
+      pending_colon.seminfo.ts = NULL;
+      ls->pending_tokens = &pending_colon;
+      ls->npending = 1;
+      ls->pending_idx = 0;  /* 0 < 1，下次 llex 即返回这个 ':' */
+    }
+    
     /* 这是切片语法: [:end] 或 [::step] 等形式 */
     
     /* 将源表放入寄存器 */
@@ -1767,8 +1818,20 @@ static int yindex_or_slice (LexState *ls, expdesc *v) {
   expdesc key;
   expr(ls, &key);
   
-  /* 检查表达式后面是否跟着 ':' */
-  if (ls->t.token == ':') {
+  /* 检查表达式后面是否跟着 ':' 或 TK_DBCOLON (::) */
+  if (ls->t.token == ':' || ls->t.token == TK_DBCOLON) {
+    /* 如果是 TK_DBCOLON (::)，需要拆分成两个 ':' token */
+    int is_dbcolon2 = (ls->t.token == TK_DBCOLON);
+    if (is_dbcolon2) {
+      ls->t.token = ':';
+      static Token pending_colon2;
+      pending_colon2.token = ':';
+      pending_colon2.seminfo.ts = NULL;
+      ls->pending_tokens = &pending_colon2;
+      ls->npending = 1;
+      ls->pending_idx = 0;
+    }
+    
     /* 这是切片语法: [start:end] 或 [start:end:step] */
     
     /* 将源表移动到下一个连续寄存器位置（切片需要连续的寄存器布局） */
@@ -2715,8 +2778,9 @@ static void lambda_parlist(LexState *ls, TString **varargname) {
 
 
 static void lambda_body(LexState *ls, expdesc *e, int line) {
-    /* lambda_body -> lambda_parlist -> explist */
-    /* lambda_body -> lambda_parlist [ '=>' ] stat */
+    /* lambda_body -> lambda_parlist ':'|let retstat          -- 表达式体 */
+    /* lambda_body -> lambda_parlist '=>' statement            -- 箭头体 */
+    /* lambda_body -> lambda_parlist statlist TK_END           -- 块体 */
     FuncState new_fs;
     BlockCnt bl;
     new_fs.f = addprototype(ls);
@@ -2726,15 +2790,20 @@ static void lambda_body(LexState *ls, expdesc *e, int line) {
     lambda_parlist(ls, &varargname);
     if (varargname) namedvararg(ls, varargname);
     if (testnext(ls, TK_LET)||testnext(ls, ':')) {
+        /* 表达式体: lambda(x): x * 2 */
         enterlevel(ls);
         retstat(ls);
         lua_assert(ls->fs->f->maxstacksize >= ls->fs->freereg &&
                    ls->fs->freereg >= ls->fs->nactvar);
         ls->fs->freereg = ls->fs->nactvar;  /* free registers */
         leavelevel(ls);
-    } else {
-        testnext(ls, TK_MEAN);
+    } else if (testnext(ls, TK_MEAN)) {
+        /* 箭头体: lambda(x) => statement */
         statement(ls);
+    } else {
+        /* 块体: lambda(x) body end */
+        statlist(ls);
+        check_match(ls, TK_END, TK_LAMBDA, line);
     }
     new_fs.f->lastlinedefined = ls->linenumber;
     codeclosure(ls, e);
@@ -3240,7 +3309,8 @@ static void primaryexp (LexState *ls, expdesc *v) {
       expdesc keywords_table, key_exp;
       
       luaX_next(ls);  /* Skip '$' */
-      check(ls, TK_NAME);
+      if (ls->t.token != TK_NAME && !is_type_token(ls->t.token))
+        error_expected(ls, TK_NAME);
       kwname = ls->t.seminfo.ts;
       
       if (strcmp(getstr(kwname), "embed") == 0) {
@@ -3313,27 +3383,41 @@ static void primaryexp (LexState *ls, expdesc *v) {
         return;
       }
 
-      /* Check for compile-time function call support here? */
-      /* For simplicity in this step, we keep the _KEYWORDS fallback but TODO: add const expr support */
-      /* We can implement a check here: if kwname matches a standard lib, try to execute */
+      /* $name(args) → 从 keyword 编译时注册表查找 Proto 直接创建 closure */
+      /* 无需运行时 _KEYWORDS 表查询 */
 
       luaX_next(ls);  /* Skip name */
 
-      /* Fallback to _KEYWORDS */
-      singlevaraux(fs, luaS_newliteral(ls->L, "_KEYWORDS"), &keywords_table, 1);
-      if (keywords_table.k == VVOID) {
-        expdesc env_key;
-        singlevaraux(fs, ls->envn, &keywords_table, 1);
-        codestring(&env_key, luaS_newliteral(ls->L, "_KEYWORDS"));
-        luaK_indexed(fs, &keywords_table, &env_key);
+      /* 从 keyword 编译时注册表查找 Proto */
+      {
+        Proto *kwproto = keyword_lookup(ls, kwname);
+        if (kwproto != NULL) {
+          /* keyword 必须是纯函数(无upvalue)，已在 keywordstat 中校验 */
+          /* 直接将 keyword proto 加入当前函数子原型列表 */
+          Proto *f = ls->fs->f;
+          if (ls->fs->np >= f->sizep) {
+            int oldsize = f->sizep;
+            luaM_growvector(ls->L, f->p, ls->fs->np, f->sizep, Proto *, MAXARG_Bx, "functions");
+            while (oldsize < f->sizep)
+              f->p[oldsize++] = NULL;
+          }
+          int proto_idx = ls->fs->np++;
+          f->p[proto_idx] = kwproto;
+          luaC_objbarrier(ls->L, f, kwproto);
+          /* 生成 OP_CLOSURE 指令，结果写入当前 freereg 寄存器 */
+          int reg = fs->freereg;
+          luaK_codeABx(fs, OP_CLOSURE, reg, proto_idx);
+          /* 使用 VNONRELOC 确保 funcargs 能正确获取寄存器 */
+          init_exp(v, VNONRELOC, reg);
+          fs->freereg = reg + 1;
+          return;
+        } else {
+          /* keyword 未找到，给出友好的编译时错误 */
+          luaX_syntaxerror(ls, luaO_pushfstring(ls->L,
+            "keyword '$%s' not found (did you forget 'keyword %s(...) end'?)",
+            getstr(kwname), getstr(kwname)));
+        }
       }
-      
-      luaK_exp2anyreg(fs, &keywords_table);
-      codestring(&key_exp, kwname);
-      luaK_indexed(fs, &keywords_table, &key_exp);
-      
-      *v = keywords_table;
-      return;
     }
     case TK_DOLLDOLL: {
       /**
@@ -6110,15 +6194,16 @@ static void single_ifstat (LexState *ls, int line) {
 
 
 static void whenstat (LexState *ls, int line) {
-    /* ifstat -> IF cond THEN block {ELSEIF cond THEN block} [ELSE block] END */
+    /* whenstat -> WHEN cond block {CASE cond block} [ELSE block] END */
     FuncState *fs = ls->fs;
     int escapelist = NO_JUMP;  /* exit list for finished parts */
-    single_test_then_block(ls, &escapelist);  /* IF cond THEN block */
+    single_test_then_block(ls, &escapelist);  /* WHEN cond block */
     while (ls->t.token == TK_CASE)
-        single_test_then_block(ls, &escapelist);  /* IF cond THEN block */
+        single_test_then_block(ls, &escapelist);  /* CASE cond block */
     if (testnext(ls, TK_ELSE))
         single_block(ls);  /* 'else' part */
-    luaK_patchtohere(fs, escapelist);  /* patch escape list to 'if' end */
+    check_match(ls, TK_END, TK_WHEN, line);  /* 消费 'end' */
+    luaK_patchtohere(fs, escapelist);  /* patch escape list to 'when' end */
 }
 
 
@@ -10133,23 +10218,27 @@ static void commandstat (LexState *ls, int line) {
 /*
 ** 关键字声明语法处理
 ** 语法: keyword 关键字名(参数列表) 代码块 end
-** 等价于: function 关键字名(参数列表) 代码块 end; _KEYWORDS["关键字名"] = 关键字名
 ** 
+** 编译时处理：
+**   1. 像普通函数一样编译函数体
+**   2. 将编译后的 Proto 注册到全局 keyword 注册表
+**   3. $name(args) 调用时直接从注册表引用 Proto，无需运行时表查询
+**
 ** 参数：
 **   ls - 词法状态
 **   line - 行号
-** 说明：
-**   将函数引用存储到 _KEYWORDS 表，支持宏调用语法 $name(args)
 */
 static void keywordstat (LexState *ls, int line) {
   /* keywordstat -> KEYWORD funcname body */
   expdesc v, b;
   TString *kwname;
+  Proto *kwproto;
   
   luaX_next(ls);  /* skip KEYWORD */
   
-  /* 先保存关键字名（不消费 token） */
-  check(ls, TK_NAME);
+  /* 先保存关键字名（不消费 token）允许类型标记作为keyword名 */
+  if (ls->t.token != TK_NAME && !is_type_token(ls->t.token))
+    error_expected(ls, TK_NAME);
   kwname = ls->t.seminfo.ts;
   
   /* 使用 singlevar 获取变量描述符（这会消费 NAME token） */
@@ -10158,46 +10247,39 @@ static void keywordstat (LexState *ls, int line) {
   /* 检查是否为只读 */
   check_readonly(ls, &v);
   
-  /* 解析函数体 */
+  /* 解析函数体，此时 b 是 VRELOC，b.u.info 指向 OP_CLOSURE 指令 */
   body(ls, &b, 0, line);
   
-  /* 存储函数到变量 */
+  /* 在 apply_decorators_inline / luaK_storevar 之前提取 Proto */
+  /* body() 已调用 codeclosure，其中 luaK_exp2nextreg 将 b 从 VRELOC 改为 VNONRELOC */
+  /* b.u.info 现在是寄存器号，需要从指令中反向查找 OP_CLOSURE */
+  {
+    int reg = b.u.info;
+    Instruction *code = ls->fs->f->code;
+    int i;
+    kwproto = NULL;
+    for (i = ls->fs->pc - 1; i >= 0; i--) {
+      if (GET_OPCODE(code[i]) == OP_CLOSURE && GETARG_A(code[i]) == reg) {
+        kwproto = ls->fs->f->p[GETARG_Bx(code[i])];
+        break;
+      }
+    }
+  }
+  lua_assert(kwproto != NULL);
+  /* keyword 必须是纯函数，不能捕获 upvalue */
+  /* 否则从其他编译单元创建 closure 时 upvalue 会无效 */
+  if (kwproto->sizeupvalues > 0) {
+    luaX_syntaxerror(ls,
+      "keyword cannot capture upvalues (use parameters instead of outer variables)");
+  }
+  /* 注册到 keyword 编译时注册表 */
+  keyword_register(ls, kwname, kwproto);
+  
+  /* 之后应用 decorator 和 store（保证可以像普通函数一样调用） */
   apply_decorators_inline(ls, &v, &b);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);
-  
-  /* 将函数引用注册到 _KEYWORDS 表: _KEYWORDS[关键字名] = 函数引用 */
-  {
-    FuncState *fs = ls->fs;
-    expdesc keywords_table, key_exp, func_exp;
-    
-    /* 获取 _KEYWORDS 全局表 */
-    singlevaraux(fs, luaS_newliteral(ls->L, "_KEYWORDS"), &keywords_table, 1);
-    if (keywords_table.k == VVOID) {
-      /* _KEYWORDS 不存在，从 _ENV 获取 */
-      expdesc env_key;
-      singlevaraux(fs, ls->envn, &keywords_table, 1);
-      codestring(&env_key, luaS_newliteral(ls->L, "_KEYWORDS"));
-      luaK_indexed(fs, &keywords_table, &env_key);
-    }
-    
-    /* 重新获取函数变量的值 */
-    singlevaraux(fs, kwname, &func_exp, 1);
-    if (func_exp.k == VVOID) {
-      /* 从 _ENV 获取 */
-      expdesc env_key2;
-      singlevaraux(fs, ls->envn, &func_exp, 1);
-      codestring(&env_key2, kwname);
-      luaK_indexed(fs, &func_exp, &env_key2);
-    }
-    luaK_exp2anyreg(fs, &func_exp);
-    
-    /* 设置 _KEYWORDS[关键字名] = 函数引用 */
-    luaK_exp2anyregup(fs, &keywords_table);
-    codestring(&key_exp, kwname);
-    luaK_indexed(fs, &keywords_table, &key_exp);
-    luaK_storevar(fs, &keywords_table, &func_exp);
-  }
+  /* 不再需要 _KEYWORDS 运行时表，keyword 现在是真正的编译时特性 */
 }
 
 
@@ -11788,6 +11870,7 @@ static BinOpr getcompoundop (int token) {
     case TK_SHLEQ:    return OPR_SHL;     /* <<= */
     case TK_CONCATEQ: return OPR_CONCAT;  /* ..= */
     case TK_NULLCOALEQ: return OPR_NULLCOAL; /* ??= */
+    case TK_POWEQ:    return OPR_POW;      /* ^= */
     case TK_NE:       return OPR_BXOR;    /* ~= 在赋值上下文中作为位异或赋值 */
     default:          return OPR_NOBINOPR;
   }

@@ -299,6 +299,15 @@ typedef struct {
 } MemPoolArena;
 
 /**
+ * @brief keyword 编译时注册表条目
+ * 将 keyword 名映射到编译后的 Proto，用于 $name 语法直接引用
+ */
+typedef struct KeywordRegEntry {
+  TString *name;  /**< keyword 名称 */
+  struct Proto *p;  /**< 编译后的函数原型 */
+} KeywordRegEntry;
+
+/**
  * @brief Global state structure.
  *
  * Shared by all threads of this state.
@@ -359,6 +368,10 @@ typedef struct global_State {
   MemPoolArena mempool;  /**< Memory pool manager. */
   /* VM protection code table list */
   struct VMCodeTable *vm_code_list;  /**< VM protection code table list head. */
+  /* keyword 编译时注册表：keyword -> Proto 的映射 */
+  struct KeywordRegEntry *keyword_registry;  /**< Array of keyword registrations. */
+  int kwreg_size;   /**< Allocated size of keyword_registry. */
+  int kwreg_count;  /**< Number of entries in keyword_registry. */
 } global_State;
 
 

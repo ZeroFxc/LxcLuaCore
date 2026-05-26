@@ -2743,7 +2743,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         int ic = GETARG_sC(i);
         lua_Integer ib;
         if (tointegerns(rb, &ib)) {
-          pc++; setivalue(s2v(ra), luaV_shiftl(ic, ib));
+          pc++; setivalue(s2v(ra), luaV_shiftl(ib, ic));
         }
         vmbreak;
       }

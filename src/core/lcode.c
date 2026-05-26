@@ -1867,10 +1867,8 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       break;
     }
     case OPR_SHL: {
-      if (isSCint(e1)) {
-        swapexps(e1, e2);
-        codebini(fs, OP_SHLI, e1, e2, 1, line, TM_SHL);  /* I << r2 */
-      }
+      if (isSCint(e2))
+        codebini(fs, OP_SHLI, e1, e2, 0, line, TM_SHL);  /* r1 << I */
       else if (finishbinexpneg(fs, e1, e2, OP_SHRI, line, TM_SHL)) {
         /* coded as (r1 >> -I) */;
       }

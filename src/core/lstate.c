@@ -506,6 +506,9 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   g->genminormul = LUAI_GENMINORMUL;
   for (i=0; i < LUA_NUMTAGS; i++) g->mt[i] = NULL;
   g->vm_code_list = NULL;  /* initialize VM code list */
+  g->keyword_registry = NULL;  /* initialize keyword registry */
+  g->kwreg_size = 0;
+  g->kwreg_count = 0;
   luaM_poolinit(L);  /* initialize memory pool */
   l_mutex_init(&g->lock);
   if (luaD_rawrunprotected(L, f_luaopen, NULL) != LUA_OK) {

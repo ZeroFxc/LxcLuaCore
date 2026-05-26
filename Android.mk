@@ -10,7 +10,7 @@ LOCAL_CFLAGS += -g0 -DNDEBUG
 
 # 极致性能构建配置
 LOCAL_CFLAGS += -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration
-LOCAL_CFLAGS += -std=gnu99 -fasm
+LOCAL_CFLAGS += -fasm
 
 
 
@@ -83,6 +83,7 @@ LOCAL_SRC_FILES := \
 	src/compiler/llexer_compiler.c\
 	src/utils/lobfuscate.c \
 	src/wasm/lwasm3.c \
+	src/wasm/lwasmtime.c \
 	src/bin/lquickjs.c \
 	src/wasm/m3_api_libc.c \
 	src/wasm/m3_api_meta_wasi.c \
@@ -133,9 +134,18 @@ LOCAL_SRC_FILES := \
 	quickjs/libunicode.c \
 	quickjs/cutils.c \
 	quickjs/quickjs-libc.c \
-	quickjs/dtoa.c
+	quickjs/dtoa.c \
+	src/lua2wasm/ast.c \
+	src/lua2wasm/lexer.c \
+	src/lua2wasm/parser.c \
+	src/lua2wasm/wat_builder.c \
+	src/lua2wasm/codegen.c \
+	src/lua2wasm/builtins.c \
+	src/lua2wasm/wat2wasm.c \
+	src/lua2wasm/xalloc.c \
+	src/lua2wasm/lua2wasmlib.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.0-aarch64-android-c-api/include
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 
 # QuickJS 配置
