@@ -220,8 +220,29 @@ typedef struct Dyndata {
 } Dyndata;
 
 
+#define hasmultret(k)		((k) == VCALL || (k) == VVARARG)
+
+/* Expression parsing flags (used by lcode.c for switch expression) */
+#define E_NO_COLON 1
+#define E_NO_CALL 2
+
+#define eqstr(a,b)	((a) == (b))
+
 /* control of blocks */
-struct BlockCnt;  /* defined in lparser.c */
+typedef struct BlockCnt {
+  struct BlockCnt *previous;  /**< chain */
+  int firstlabel;  /**< index of first label in this block */
+  int firstgoto;  /**< index of first pending goto in this block */
+  lu_byte nactvar;  /**< # active locals outside the block */
+  lu_byte upval;  /**< true if some variable in the block is an upvalue */
+  lu_byte isloop;  /**< true if 'block' is a loop */
+  lu_byte insidetbc;  /**< true if inside the scope of a to-be-closed var. */
+  struct {
+    TString **arr;
+    int n;
+    int size;
+  } exports;
+} BlockCnt;
 
 
 /**
@@ -252,6 +273,42 @@ typedef struct FuncState {
 LUAI_FUNC int luaY_nvarstack (FuncState *fs);
 LUAI_FUNC LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                                  Dyndata *dyd, const char *name, int firstchar);
+
+/*
+** Exported parser functions for compiler layer usage.
+** These allow lcode.c to perform single-pass parsing + codegen
+** for syntax features that need to generate bytecodes directly.
+*/
+LUAI_FUNC void expr (LexState *ls, expdesc *v);
+LUAI_FUNC void expr_nocase (LexState *ls, expdesc *v);
+LUAI_FUNC void statlist (LexState *ls);
+LUAI_FUNC void statement (LexState *ls);
+LUAI_FUNC void enterblock (FuncState *fs, struct BlockCnt *bl, lu_byte isloop);
+LUAI_FUNC void leaveblock (FuncState *fs);
+LUAI_FUNC void adjustlocalvars (LexState *ls, int nvars);
+LUAI_FUNC int testnext (LexState *ls, int c);
+LUAI_FUNC void checknext (LexState *ls, int c);
+LUAI_FUNC void check_match (LexState *ls, int what, int who, int where);
+
+/* Function state management for arrow functions and other features */
+LUAI_FUNC Proto *addprototype (LexState *ls);
+LUAI_FUNC void open_func (LexState *ls, FuncState *fs, BlockCnt *bl);
+LUAI_FUNC void close_func (LexState *ls);
+LUAI_FUNC void codeclosure (LexState *ls, expdesc *v);
+LUAI_FUNC void parlist (LexState *ls, TString **varargname);
+LUAI_FUNC void retstat (LexState *ls);
+LUAI_FUNC void namedvararg (LexState *ls, TString *varargname);
+
+/* C stack depth management macros (used in arrow function body parsing) */
+#define enterlevel(ls)	luaE_incCstack(ls->L)
+#define leavelevel(ls) ((ls)->L->nCcalls--)
+
+/* Macro for creating a local variable from a string literal. */
+#define new_localvarliteral(ls,v) \
+    new_localvar(ls,  \
+      luaX_newstring(ls, "" v, (sizeof(v)/sizeof(char)) - 1))
+
+LUAI_FUNC int new_localvar (LexState *ls, TString *name);
 
 
 #endif

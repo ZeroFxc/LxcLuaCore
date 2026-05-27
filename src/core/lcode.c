@@ -2328,6 +2328,298 @@ void luaK_interpstring (LexState *ls, expdesc *v) {
 }
 
 /*
+** 生成 Switch 表达式的字节码（编译层直接实现，不依赖 IIFE 模拟）
+** 
+** 替代 lparser.c simpleexp() 中原来的 IIFE 模拟方式：
+**   a = (function() switch (exp) do case... end end)()
+** 
+** 新实现直接在当前 FuncState 中生成比较分支字节码：
+**   1. 解析控制表达式并物化到寄存器
+**   2. 分配结果寄存器
+**   3. 为每个 case 生成 EQ 比较 + 条件跳转
+**   4. case body (=> expr) 直接存入结果寄存器
+**   5. 无匹配时结果寄存器为 nil
+** 
+** @param ls 词法状态（用于解析标记和错误报告）
+** @param v 输出表达式描述符，存储 switch 表达式的结果
+*/
+void luaK_switchexpression (LexState *ls, expdesc *v) {
+  FuncState *fs = ls->fs;
+  int line = ls->linenumber;
+  BlockCnt bl;
+  expdesc ctrl;
+  int jump_to_check;          /* 跳转到下一个 case 检查 */
+  int escapelist = NO_JUMP;   /* case body 执行完后跳到 switch 结束的跳转列表 */
+  int default_label = -1;     /* default 分支的标签位置 */
+  int has_default = 0;        /* 是否有 default 分支 */
+  int result_reg;             /* 结果寄存器 */
+  int outer_nvarstack;        /* 进入块之前的外层 nvarstack */
+  int outer_freereg;          /* 进入块之前的外层 freereg */
+
+  luaX_next(ls);  /* 跳过 'switch' 标记 */
+
+  /* 保存外层状态，用于 leaveblock 后判断上下文：
+   * - 若 outer_freereg == outer_nvarstack：local 赋值场景，结果应放在 nvarstack
+   * - 若 outer_freereg >  outer_nvarstack：函数参数等场景，结果应放在 freereg 之上 */
+  outer_nvarstack = luaY_nvarstack(fs);
+  outer_freereg = fs->freereg;
+
+  /* 进入循环块（支持 break 语句） */
+  enterblock(fs, &bl, 1);
+
+  /* 解析控制表达式并物化到寄存器 */
+  expr(ls, &ctrl);
+  luaK_exp2nextreg(fs, &ctrl);
+
+  /* 将控制值保存为局部变量，确保寄存器安全 */
+  new_localvarliteral(ls, "(switch control)");
+  adjustlocalvars(ls, 1);
+  fs->freereg = luaY_nvarstack(fs);  /* 同步 freereg 与新 locals 栈 */
+
+  /* 分配结果寄存器（在控制寄存器之后） */
+  result_reg = fs->freereg;
+  luaK_reserveregs(fs, 1);
+
+  /* 跳过开始分隔符: do / then / : / { */
+  if (!testnext(ls, TK_DO) && !testnext(ls, TK_THEN) && !testnext(ls, ':'))
+    testnext(ls, '{');
+
+  /* 初始跳转：跳到第一个 case 检查 */
+  jump_to_check = luaK_jump(fs);
+
+  /* 解析 case/default 分支 */
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS && ls->t.token != '}') {
+    if (ls->t.token == TK_CASE) {
+      int to_body_jump = NO_JUMP;  /* 匹配成功时跳转到 case body */
+      int next_check_jump;         /* 所有检查失败时跳到下一个 case */
+
+      /* 将上一轮检查的修补点设置在此处 */
+      luaK_patchtohere(fs, jump_to_check);
+
+      luaX_next(ls);  /* 跳过 'case' */
+
+      /* 解析 case 值（支持逗号分隔的多个值） */
+      do {
+        expdesc e;
+        expdesc c = ctrl;  /* 复制控制表达式描述符 */
+        int old_flags = ls->expr_flags;
+        ls->expr_flags |= E_NO_COLON;
+        expr_nocase(ls, &e);
+        ls->expr_flags = old_flags;
+
+        /* 生成 EQ 比较: ctrl == case_val */
+        luaK_infix(fs, OPR_EQ, &c);
+        luaK_posfix(fs, OPR_EQ, &c, &e, ls->linenumber);
+
+        /* 如果相等，跳转到 body */
+        luaK_goiftrue(fs, &c);
+        {
+          int j = luaK_jump(fs);
+          luaK_concat(fs, &to_body_jump, j);
+        }
+        /* 不相等时修补 c.f 跳到下一个检查 */
+        luaK_patchtohere(fs, c.f);
+      } while (testnext(ls, ','));
+
+      /* 所有值都不匹配时跳到下一个 case 检查 */
+      next_check_jump = luaK_jump(fs);
+      jump_to_check = next_check_jump;
+
+      /* case body 开始：修补匹配跳转到此处 */
+      luaK_patchtohere(fs, to_body_jump);
+
+      /* 解析 case body */
+      if (testnext(ls, TK_MEAN)) {
+        /* => 箭头形式：直接计算表达式并存入结果寄存器 */
+        expdesc body_exp;
+        expr(ls, &body_exp);
+        luaK_exp2reg(fs, &body_exp, result_reg);
+        /* 跳转到 switch 结束 */
+        luaK_concat(fs, &escapelist, luaK_jump(fs));
+      }
+      else {
+        /* : 语句块形式（兼容语法，不生成结果） */
+        testnext(ls, ':');
+        testnext(ls, TK_DO);
+        testnext(ls, TK_THEN);
+        statlist(ls);
+      }
+    }
+    else if (ls->t.token == TK_DEFAULT) {
+      if (has_default)
+        luaK_semerror(ls, "multiple default blocks");
+      has_default = 1;
+
+      luaX_next(ls);  /* 跳过 'default' */
+
+      /* 记录 default 标签位置 */
+      default_label = luaK_getlabel(fs);
+
+      /* 解析 default body */
+      if (testnext(ls, TK_MEAN)) {
+        /* => 箭头形式 */
+        expdesc body_exp;
+        expr(ls, &body_exp);
+        luaK_exp2reg(fs, &body_exp, result_reg);
+        luaK_concat(fs, &escapelist, luaK_jump(fs));
+      }
+      else {
+        /* : 语句块形式 */
+        testnext(ls, ':');
+        testnext(ls, TK_DO);
+        testnext(ls, TK_THEN);
+        statlist(ls);
+      }
+    }
+    else {
+      luaK_semerror(ls, "expected 'case' or 'default'");
+    }
+  }
+
+  /* switch 结束：修补挂起的检查跳转 */
+  if (has_default) {
+    /* 有 default：未匹配的检查跳到 default */
+    luaK_patchlist(fs, jump_to_check, default_label);
+  }
+  else {
+    /* 无 default：未匹配的检查跳到这里，设置结果为 nil */
+    luaK_patchtohere(fs, jump_to_check);
+    luaK_nil(fs, result_reg, 1);  /* R[result_reg] := nil */
+  }
+
+  /* 修补所有 case body 的退出跳转到此处 */
+  luaK_patchtohere(fs, escapelist);
+
+  /* 跳过结束标记 */
+  if (ls->t.token == TK_END)
+    luaX_next(ls);
+  else
+    testnext(ls, '}');
+
+  /* 离开循环块。
+   * leaveblock 将 fs->freereg 重置为外层 nvarstack。 */
+  leaveblock(fs);
+
+  /* 根据外层上下文决定结果放置策略。
+   * leaveblock 后 fs->freereg == nvarstack。
+   *
+   * 场景 A（local 赋值，outer_freereg == outer_nvarstack）：
+   *   没有额外寄存器占用，结果必须放入 nvarstack（= new local 的位置）。
+   *   从 result_reg MOVE 到 nvarstack，然后 VNONRELOC + freereg = nvarstack+1。
+   *
+   * 场景 B（函数参数等，outer_freereg > outer_nvarstack）：
+   *   函数等值占用了 nvarstack 之上的寄存器（例如 function base register），
+   *   结果不能放在 nvarstack（会覆盖函数）。结果保持在 result_reg，
+   *   设置 freereg = result_reg + 1，让调用方的 luaK_exp2nextreg 正确放置。 */
+  if (outer_freereg > outer_nvarstack) {
+    /* 场景 B：result_reg 在块内分配，位于 nvarstack 之上。
+     * 保持结果在原位，设置 freereg 使调用方正确识别。 */
+    fs->freereg = result_reg + 1;
+    v->k = VNONRELOC;
+    v->u.info = result_reg;
+  }
+  else {
+    /* 场景 A：将结果从块内 result_reg 移动到 nvarstack。
+     * 然后设置 freereg = nvarstack + 1，使后续 luaK_exp2nextreg
+     * 的 freeexp 能正确递减 freereg（assert 要求 reg == freereg）。 */
+    luaK_codeABC(fs, OP_MOVE, fs->freereg, result_reg, 0);
+    v->k = VNONRELOC;
+    v->u.info = fs->freereg;
+    fs->freereg++;
+  }
+  v->t = NO_JUMP;
+  v->f = NO_JUMP;
+  v->nodiscard = 0;
+}
+
+/*
+** ============================================================
+** 箭头函数编译（从 parser 层迁移到 compiler 层）
+** ============================================================
+*/
+
+/**
+ * @brief 编译箭头函数语句形式: ->(args){ stat } 或 ->{ stat }
+ * 
+ * 等价于: function(args) stat end
+ * 这是一个匿名函数语法糖，函数体包含零条或多条语句。
+ * 
+ * @param ls 词法状态（用于解析标记和错误报告）
+ * @param v 输出表达式描述符，存储生成的闭包
+ */
+void luaK_arrow_statement (LexState *ls, expdesc *v) {
+  int line = ls->linenumber;
+  FuncState new_fs;
+  BlockCnt bl;
+  luaX_next(ls);  /* 跳过 '->' */
+  
+  new_fs.f = addprototype(ls);
+  new_fs.f->linedefined = line;
+  open_func(ls, &new_fs, &bl);
+  
+  /* 解析参数列表（可选） */
+  TString *varargname = NULL;
+  if (testnext(ls, '(')) {
+    parlist(ls, &varargname);
+    checknext(ls, ')');
+  }
+  
+  /* 解析函数体 { stat } */
+  checknext(ls, '{');
+  if (varargname) namedvararg(ls, varargname);
+  while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+    statement(ls);
+  }
+  check_match(ls, '}', '{', line);
+  
+  new_fs.f->lastlinedefined = ls->linenumber;
+  codeclosure(ls, v);
+  close_func(ls);
+}
+
+/**
+ * @brief 编译箭头函数表达式形式: =>(args){ exp } 或 =>{ exp }
+ * 
+ * 等价于: function(args) return exp end
+ * 这是一个匿名函数语法糖，函数体包含单个表达式并自动返回结果。
+ * 
+ * @param ls 词法状态（用于解析标记和错误报告）
+ * @param v 输出表达式描述符，存储生成的闭包
+ */
+void luaK_arrow_expression (LexState *ls, expdesc *v) {
+  int line = ls->linenumber;
+  FuncState new_fs;
+  BlockCnt bl;
+  luaX_next(ls);  /* 跳过 '=>' */
+  
+  new_fs.f = addprototype(ls);
+  new_fs.f->linedefined = line;
+  open_func(ls, &new_fs, &bl);
+  
+  /* 解析参数列表（可选） */
+  TString *varargname = NULL;
+  if (testnext(ls, '(')) {
+    parlist(ls, &varargname);
+    checknext(ls, ')');
+  }
+  
+  /* 解析函数体 { exp } - 自动返回表达式 */
+  checknext(ls, '{');
+  if (varargname) namedvararg(ls, varargname);
+  enterlevel(ls);
+  retstat(ls);  /* 将表达式作为 return 语句处理 */
+  lua_assert(ls->fs->f->maxstacksize >= ls->fs->freereg &&
+             ls->fs->freereg >= ls->fs->nactvar);
+  ls->fs->freereg = ls->fs->nactvar;  /* 释放临时寄存器 */
+  leavelevel(ls);
+  check_match(ls, '}', '{', line);
+  
+  new_fs.f->lastlinedefined = ls->linenumber;
+  codeclosure(ls, v);
+  close_func(ls);
+}
+
+/*
 ** Do a final pass over the code of a function, doing small peephole
 ** optimizations and adjustments.
 */
