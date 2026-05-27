@@ -163,25 +163,72 @@ static int task_queue_pop(event_loop *loop, ev_task *out_task) {
 
 /*
 ** =====================================================================
+** 线程池工作队列操作（内部函数）
+** =====================================================================
+*/
+
+/**
+ * @brief 从线程池工作队列中取出一个工作项（需持有 pool_lock）
+ *
+ * @param loop 事件循环
+ * @return 工作项指针，队列为空返回 NULL
+ */
+static pool_work_item *pool_work_dequeue(event_loop *loop) {
+    if (!loop->pool_work_head) return NULL;
+
+    pool_work_item *item = loop->pool_work_head;
+    loop->pool_work_head = item->next;
+    if (!loop->pool_work_head) {
+        loop->pool_work_tail = NULL;
+    }
+    loop->pool_work_count--;
+    item->next = NULL;
+    return item;
+}
+
+/**
+ * @brief 向线程池工作队列添加一个工作项（需持有 pool_lock）
+ *
+ * @param loop 事件循环
+ * @param item 要添加的工作项
+ */
+static void pool_work_enqueue(event_loop *loop, pool_work_item *item) {
+    item->next = NULL;
+    if (!loop->pool_work_tail) {
+        loop->pool_work_head = loop->pool_work_tail = item;
+    } else {
+        loop->pool_work_tail->next = item;
+        loop->pool_work_tail = item;
+    }
+    loop->pool_work_count++;
+}
+
+/*
+** =====================================================================
 ** 线程池工作线程函数（内部）
 ** =====================================================================
 */
 
-typedef struct {
-    event_loop *loop;
-    void (*work_func)(void *);
-    void *work_data;
-    ev_task_cb complete_func;
-    void *complete_data;
-} pool_work_item;
-
+/**
+ * @brief 线程池工作线程主循环
+ *
+ * 采用生产者-消费者模型：
+ * - 等待条件变量通知有新工作
+ * - 从工作队列取出工作项
+ * - 在后台线程中执行阻塞的 work_func
+ * - 将 completion callback 投递回事件循环主线程
+ *
+ * @param arg 事件循环指针
+ * @return NULL
+ */
 static void *pool_worker_thread(void *arg) {
     event_loop *loop = (event_loop *)arg;
 
     while (1) {
         l_mutex_lock(&loop->pool_lock);
 
-        while (loop->pool_running) {
+        /* 等待工作队列非空或线程池停止 */
+        while (loop->pool_running && loop->pool_work_count == 0) {
             l_cond_wait(&loop->pool_cond, &loop->pool_lock);
         }
 
@@ -190,16 +237,30 @@ static void *pool_worker_thread(void *arg) {
             break;
         }
 
-        /* 获取工作项 */
-        /* TODO: 实现工作队列 */
-        
+        /* 从工作队列取出一个工作项 */
+        pool_work_item *item = pool_work_dequeue(loop);
         l_mutex_unlock(&loop->pool_lock);
 
-        /* 执行工作 */
-        /* TODO: 执行 work_func */
-        
-        /* 发布完成回调到主线程 */
-        /* TODO: ev_post_callback */
+        if (!item) continue;
+
+        /* 在工作线程中执行阻塞的 work_func */
+        if (item->work_func) {
+            item->work_func(item->work_data);
+        }
+
+        /* 将完成回调投递回事件循环主线程 */
+        if (item->complete_func) {
+            ev_task task;
+            memset(&task, 0, sizeof(task));
+            task.callback = item->complete_func;
+            task.data = item->complete_data;
+            task.priority = 0;
+            task.schedule_time = 0;
+            ev_post_callback(loop, item->complete_func, item->complete_data);
+        }
+
+        /* 释放工作项结构体（数据和回调上下文由回调负责释放） */
+        free(item);
     }
 
     return NULL;
@@ -208,7 +269,22 @@ static void *pool_worker_thread(void *arg) {
 /*
 ** =====================================================================
 ** 平台相关 I/O 多路复用初始化/销毁
-** =====================================================================*/
+** =====================================================================
+*/
+
+#ifdef _WIN32
+/**
+ * @brief IOCP overlapped I/O 包装结构体
+ *
+ * 将 OVERLAPPED 与 watcher 关联，用于在完成回调中定位观察者
+ */
+typedef struct {
+    OVERLAPPED overlapped;          /**< Windows overlapped 结构 */
+    ev_io_watcher *watcher;         /**< 关联的 I/O 观察者 */
+    void *buffer;                   /**< 操作缓冲区 */
+    event_loop *loop;               /**< 关联的事件循环 */
+} iocp_overlapped_t;
+#endif
 
 static int platform_io_init(event_loop *loop) {
 #if defined(_WIN32)
@@ -375,7 +451,7 @@ static int platform_io_poll(event_loop *loop, double timeout) {
     return events_processed;
 
 #elif defined(_WIN32)
-    /* IOCP 实现 */
+    /* IOCP 实现：使用 iocp_overlapped_t 包装结构提取 watcher */
     DWORD bytes_transferred;
     ULONG_PTR completion_key;
     LPOVERLAPPED overlapped;
@@ -396,12 +472,37 @@ static int platform_io_poll(event_loop *loop, double timeout) {
         }
 
         if (overlapped) {
-            /* 处理完成的 I/O 操作 */
-            /* TODO: 从 overlapped 中提取 watcher 并调用回调 */
-            events_processed++;
+            /* 从 iocp_overlapped_t 包装中提取 watcher 并调用回调 */
+            iocp_overlapped_t *iocp_ol = (iocp_overlapped_t *)overlapped;
+            ev_io_watcher *w = iocp_ol->watcher;
+            int revents = 0;
+
+            if (success) {
+                if (bytes_transferred > 0) {
+                    revents |= EV_READ;  /* 读完成 */
+                } else {
+                    revents |= EV_WRITE; /* 写完成 */
+                }
+            } else {
+                revents |= EV_ERROR;
+            }
+
+            if (w && w->callback) {
+                w->callback(loop, w, revents);
+                events_processed++;
+            }
+
+            /* IOCP 一次性事件：清理 watcher */
+            if (w && (w->events & EV_ONESHOT)) {
+                w->active = 0;
+            }
         } else if (completion_key != 0) {
-            /* 用户定义的完成消息 */
-            events_processed++;
+            /* 用户自定义完成消息：completion_key 作为 ev_io_watcher 指针 */
+            ev_io_watcher *w = (ev_io_watcher *)completion_key;
+            if (w && w->callback) {
+                w->callback(loop, w, EV_READ);
+                events_processed++;
+            }
         }
     }
 
@@ -538,6 +639,19 @@ void ev_loop_destroy(event_loop *loop) {
             void *retval;
             l_thread_join(loop->pool_threads[i], &retval);
         }
+
+        /* 清理未处理的工作队列项 */
+        l_mutex_lock(&loop->pool_lock);
+        pool_work_item *item = loop->pool_work_head;
+        while (item) {
+            pool_work_item *next = item->next;
+            free(item);
+            item = next;
+        }
+        loop->pool_work_head = NULL;
+        loop->pool_work_tail = NULL;
+        loop->pool_work_count = 0;
+        l_mutex_unlock(&loop->pool_lock);
 
         l_cond_destroy(&loop->pool_cond);
         l_mutex_destroy(&loop->pool_lock);
@@ -916,17 +1030,35 @@ int ev_run_in_pool(event_loop *loop,
     if (!loop || !work_func) return -1;
 
     /*
-     * 当前实现：统一使用同步模式
+     * 尝试使用线程池模式：
+     * 1. 如果线程池已启动且有工作线程，将任务投递到工作队列
+     * 2. 如果线程池未启动或禁用，回退为同步执行（兼容旧行为）
+     */
+    if (loop->pool_threads && loop->pool_size > 0 && loop->pool_running) {
+        /* 分配工作项并加入工作队列 */
+        pool_work_item *item = (pool_work_item *)calloc(1, sizeof(pool_work_item));
+        if (!item) return -1;
+
+        item->work_func = work_func;
+        item->work_data = work_data;
+        item->complete_func = complete_func;
+        item->complete_data = complete_data;
+
+        l_mutex_lock(&loop->pool_lock);
+        pool_work_enqueue(loop, item);
+        l_cond_signal(&loop->pool_cond);  /* 唤醒一个工作线程 */
+        l_mutex_unlock(&loop->pool_lock);
+
+        return 0;
+    }
+
+    /*
+     * 回退模式（无线程池）：同步执行
      * 工作函数和完成回调都在当前线程立即执行
      * 这确保了 Promise 能被正确 resolve/reject
-     *
-     * TODO: 未来可优化为真正的异步线程池模式
      */
-
-    /* 执行工作函数 */
     work_func(work_data);
 
-    /* 立即执行完成回调 */
     if (complete_func) {
         ev_task task;
         memset(&task, 0, sizeof(task));

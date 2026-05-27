@@ -229,11 +229,29 @@ int l_thread_create(l_thread_t *t, l_thread_func func, void *arg) {
 int l_thread_join(l_thread_t t, void **retval) {
 #if defined(LUA_USE_WINDOWS)
   WaitForSingleObject(t.thread, INFINITE);
-  if (retval) GetExitCodeThread(t.thread, (LPDWORD)retval); /* This casts 32-bit exit code to pointer... dangerous on 64-bit */
+  if (retval) GetExitCodeThread(t.thread, (LPDWORD)retval);
   CloseHandle(t.thread);
   return 0;
 #else
   return pthread_join(t.thread, retval);
+#endif
+}
+
+/**
+ * @brief 分离线程（不等待线程结束，资源在线程结束后自动回收）
+ *
+ * 分离后的线程不能再被 join。适用于 fire-and-forget 场景。
+ *
+ * @param t 要分离的线程
+ * @return 0 成功，非零表示错误
+ */
+int l_thread_detach(l_thread_t t) {
+#if defined(LUA_USE_WINDOWS)
+  /* Windows: 关闭句柄即可分离（线程仍继续运行，但无法再 join） */
+  CloseHandle(t.thread);
+  return 0;
+#else
+  return pthread_detach(t.thread);
 #endif
 }
 

@@ -279,25 +279,25 @@ LUAI_FUNC LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
 ** These allow lcode.c to perform single-pass parsing + codegen
 ** for syntax features that need to generate bytecodes directly.
 */
-LUAI_FUNC void expr (LexState *ls, expdesc *v);
-LUAI_FUNC void expr_nocase (LexState *ls, expdesc *v);
-LUAI_FUNC void statlist (LexState *ls);
-LUAI_FUNC void statement (LexState *ls);
+LUAI_FUNC void expr (struct LexState *ls, expdesc *v);
+LUAI_FUNC void expr_nocase (struct LexState *ls, expdesc *v);
+LUAI_FUNC void statlist (struct LexState *ls);
+LUAI_FUNC void statement (struct LexState *ls);
 LUAI_FUNC void enterblock (FuncState *fs, struct BlockCnt *bl, lu_byte isloop);
 LUAI_FUNC void leaveblock (FuncState *fs);
-LUAI_FUNC void adjustlocalvars (LexState *ls, int nvars);
-LUAI_FUNC int testnext (LexState *ls, int c);
-LUAI_FUNC void checknext (LexState *ls, int c);
-LUAI_FUNC void check_match (LexState *ls, int what, int who, int where);
+LUAI_FUNC void adjustlocalvars (struct LexState *ls, int nvars);
+LUAI_FUNC int testnext (struct LexState *ls, int c);
+LUAI_FUNC void checknext (struct LexState *ls, int c);
+LUAI_FUNC void check_match (struct LexState *ls, int what, int who, int where);
 
 /* Function state management for arrow functions and other features */
-LUAI_FUNC Proto *addprototype (LexState *ls);
-LUAI_FUNC void open_func (LexState *ls, FuncState *fs, BlockCnt *bl);
-LUAI_FUNC void close_func (LexState *ls);
-LUAI_FUNC void codeclosure (LexState *ls, expdesc *v);
-LUAI_FUNC void parlist (LexState *ls, TString **varargname);
-LUAI_FUNC void retstat (LexState *ls);
-LUAI_FUNC void namedvararg (LexState *ls, TString *varargname);
+LUAI_FUNC Proto *addprototype (struct LexState *ls);
+LUAI_FUNC void open_func (struct LexState *ls, FuncState *fs, BlockCnt *bl);
+LUAI_FUNC void close_func (struct LexState *ls);
+LUAI_FUNC void codeclosure (struct LexState *ls, expdesc *v);
+LUAI_FUNC void parlist (struct LexState *ls, TString **varargname);
+LUAI_FUNC void retstat (struct LexState *ls);
+LUAI_FUNC void namedvararg (struct LexState *ls, TString *varargname);
 
 /* C stack depth management macros (used in arrow function body parsing) */
 #define enterlevel(ls)	luaE_incCstack(ls->L)
@@ -308,7 +308,7 @@ LUAI_FUNC void namedvararg (LexState *ls, TString *varargname);
     new_localvar(ls,  \
       luaX_newstring(ls, "" v, (sizeof(v)/sizeof(char)) - 1))
 
-LUAI_FUNC int new_localvar (LexState *ls, TString *name);
+LUAI_FUNC int new_localvar (struct LexState *ls, TString *name);
 
 
 #endif

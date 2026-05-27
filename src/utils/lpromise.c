@@ -9,6 +9,7 @@
 
 #include "lpromise.h"
 #include "lauxlib.h"
+#include "lthread.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -567,6 +568,7 @@ typedef struct {
     lua_State *L;           /**< Lua 状态（用于构建结果） */
     int mode;               /* 0=all, 1=race, 2=all_settled, 3=any */
     int done;               /* 是否已完成（防止重复处理） */
+    l_mutex_t lock;         /**< 互斥锁（线程安全：保护并发 settle 回调） */
 } compose_ctx;
 
 static void compose_on_settled(promise *child);
@@ -614,6 +616,7 @@ promise *promise_all(lua_State *L, event_loop *loop) {
     ctx->L = L;
     ctx->mode = 0;
     ctx->done = 0;
+    l_mutex_init(&ctx->lock);
 
     int pending_count = 0;
     int settled_count = 0;
@@ -625,6 +628,7 @@ promise *promise_all(lua_State *L, event_loop *loop) {
                 /* 任一失败 → 立即拒绝 */
                 push_promise_result(promises[i], L);
                 promise_reject(parent, L);
+                l_mutex_destroy(&ctx->lock);
                 free(ctx);
                 free(promises);
                 return parent;
@@ -646,6 +650,7 @@ promise *promise_all(lua_State *L, event_loop *loop) {
             lua_rawseti(L, -2, i + 1);
         }
         promise_resolve(parent, L);
+        l_mutex_destroy(&ctx->lock);
         free(ctx);
         free(promises);
         return parent;
@@ -670,31 +675,51 @@ static void compose_on_settled(promise *child) {
     compose_ctx *ctx = (compose_ctx *)child->aco_ctx;
     lua_State *L = ctx->L;
 
-    if (ctx->done || !ctx->parent) return;
-    if (ctx->parent->state != PROMISE_PENDING) { ctx->done = 1; return; }
+    /* 线程安全：锁定 ctx 防止并发 settle 导致重复处理 */
+    l_mutex_lock(&ctx->lock);
+
+    if (ctx->done || !ctx->parent) {
+        l_mutex_unlock(&ctx->lock);
+        return;
+    }
+    if (ctx->parent->state != PROMISE_PENDING) {
+        ctx->done = 1;
+        l_mutex_unlock(&ctx->lock);
+        return;
+    }
+
+    int local_done = 0;
 
     switch (ctx->mode) {
         case 0: { /* all */
             if (child->state == PROMISE_REJECTED) {
                 ctx->done = 1;
+                local_done = 1;
+                l_mutex_unlock(&ctx->lock);
                 push_promise_result(child, L);
                 promise_reject(ctx->parent, L);
-                return;
+                break;
             }
             ctx->resolved_count++;
             if (ctx->resolved_count == ctx->count) {
                 ctx->done = 1;
+                local_done = 1;
+                l_mutex_unlock(&ctx->lock);
                 lua_newtable(L);
                 for (int i = 0; i < ctx->count; i++) {
                     push_promise_result(ctx->promises[i], L);
                     lua_rawseti(L, -2, i + 1);
                 }
                 promise_resolve(ctx->parent, L);
+            } else {
+                l_mutex_unlock(&ctx->lock);
             }
             break;
         }
         case 1: { /* race */
             ctx->done = 1;
+            local_done = 1;
+            l_mutex_unlock(&ctx->lock);
             if (child->state == PROMISE_FULFILLED) {
                 push_promise_result(child, L);
                 promise_resolve(ctx->parent, L);
@@ -708,6 +733,8 @@ static void compose_on_settled(promise *child) {
             ctx->resolved_count++;
             if (ctx->resolved_count == ctx->count) {
                 ctx->done = 1;
+                local_done = 1;
+                l_mutex_unlock(&ctx->lock);
                 lua_newtable(L);
                 for (int i = 0; i < ctx->count; i++) {
                     lua_newtable(L);
@@ -724,27 +751,37 @@ static void compose_on_settled(promise *child) {
                     lua_rawseti(L, -2, i + 1);
                 }
                 promise_resolve(ctx->parent, L);
+            } else {
+                l_mutex_unlock(&ctx->lock);
             }
             break;
         }
         case 3: { /* any */
             if (child->state == PROMISE_FULFILLED) {
                 ctx->done = 1;
+                local_done = 1;
+                l_mutex_unlock(&ctx->lock);
                 push_promise_result(child, L);
                 promise_resolve(ctx->parent, L);
-                return;
+                break;
             }
             ctx->rejected_count++;
             if (ctx->rejected_count == ctx->count) {
                 ctx->done = 1;
+                local_done = 1;
+                l_mutex_unlock(&ctx->lock);
                 lua_pushliteral(L, "All promises were rejected");
                 promise_reject(ctx->parent, L);
+            } else {
+                l_mutex_unlock(&ctx->lock);
             }
             break;
         }
     }
 
-    if (ctx->done) {
+    if (local_done) {
+        /* 销毁互斥锁并释放组合上下文 */
+        l_mutex_destroy(&ctx->lock);
         free(ctx->promises);
         free(ctx);
     }
@@ -794,6 +831,7 @@ promise *promise_race(lua_State *L, event_loop *loop) {
     ctx->L = L;
     ctx->mode = 1;  /* race */
     ctx->done = 0;
+    l_mutex_init(&ctx->lock);
 
     int found_settled = -1;
     for (int i = 0; i < count; i++) {
@@ -813,6 +851,7 @@ promise *promise_race(lua_State *L, event_loop *loop) {
             push_promise_result(promises[found_settled], L);
             promise_reject(parent, L);
         }
+        l_mutex_destroy(&ctx->lock);
         free(ctx);
         for (int i = 0; i < count; i++) promise_release(promises[i]);
         free(promises);
@@ -875,6 +914,7 @@ promise *promise_all_settled(lua_State *L, event_loop *loop) {
     ctx->L = L;
     ctx->mode = 2;  /* all_settled */
     ctx->done = 0;
+    l_mutex_init(&ctx->lock);
 
     int pending_count = 0;
     int settled_count = 0;
@@ -908,6 +948,7 @@ promise *promise_all_settled(lua_State *L, event_loop *loop) {
             lua_rawseti(L, -2, i + 1);
         }
         promise_resolve(parent, L);
+        l_mutex_destroy(&ctx->lock);
         free(ctx);
         free(promises);
         return parent;
@@ -965,6 +1006,7 @@ promise *promise_any(lua_State *L, event_loop *loop) {
     ctx->L = L;
     ctx->mode = 3;  /* any */
     ctx->done = 0;
+    l_mutex_init(&ctx->lock);
 
     int found_fulfilled = -1;
     int rejected_count = 0;
@@ -983,6 +1025,7 @@ promise *promise_any(lua_State *L, event_loop *loop) {
         ctx->done = 1;
         push_promise_result(promises[found_fulfilled], L);
         promise_resolve(parent, L);
+        l_mutex_destroy(&ctx->lock);
         free(ctx);
         for (int i = 0; i < count; i++) promise_release(promises[i]);
         free(promises);
@@ -994,6 +1037,7 @@ promise *promise_any(lua_State *L, event_loop *loop) {
         ctx->done = 1;
         lua_pushliteral(L, "All promises were rejected");
         promise_reject(parent, L);
+        l_mutex_destroy(&ctx->lock);
         free(ctx);
         for (int i = 0; i < count; i++) promise_release(promises[i]);
         free(promises);

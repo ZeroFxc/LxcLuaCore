@@ -154,13 +154,26 @@ typedef struct ev_loop_config {
 /**@}*/
 
 /**
+ * @brief 线程池工作项（用于生产者-消费者模型）
+ *
+ * 每个工作项包含阻塞任务及其完成回调
+ */
+typedef struct pool_work_item {
+    void (*work_func)(void *work_data);    /**< 工作函数（在工作线程中执行） */
+    void *work_data;                       /**< 工作数据 */
+    ev_task_cb complete_func;              /**< 完成回调（在主线程事件循环中执行） */
+    void *complete_data;                   /**< 完成回调的数据 */
+    struct pool_work_item *next;           /**< 链表中的下一个工作项 */
+} pool_work_item;
+
+/**
  * @brief 事件循环主结构体
  *
  * 核心组件：
  * - 任务队列（FIFO + 优先级）
  * - 定时器最小堆
  * - I/O 多路复用（平台相关）
- * - 线程池（可选）
+ * - 线程池（可选，含工作队列）
  */
 typedef struct event_loop {
     /* 基本信息 */
@@ -202,9 +215,12 @@ typedef struct event_loop {
     /* 线程池（用于阻塞操作的异步化） */
     l_thread_t *pool_threads;  /**< 线程数组 */
     int pool_size;             /**< 线程池大小 */
-    l_cond_t pool_cond;        /**< 线程池条件变量 */
+    l_cond_t pool_cond;        /**< 线程池条件变量（用于通知工作线程有新任务） */
     l_mutex_t pool_lock;       /**< 线程池互斥锁 */
     int pool_running;          /**< 线程池运行标志 */
+    pool_work_item *pool_work_head;  /**< 工作队列头指针（生产者-消费者链表） */
+    pool_work_item *pool_work_tail;  /**< 工作队列尾指针 */
+    int pool_work_count;       /**< 当前工作队列中的待处理工作项数量 */
     
     /* 统计信息 */
     ev_loop_stats stats;       /**< 性能统计 */
