@@ -48,45 +48,18 @@ extern void luaX_addalias(LexState *ls, TString *name, Token *tokens, int ntoken
 #define MAXVARS		200
 
 
-#define hasmultret(k)		((k) == VCALL || (k) == VVARARG)
-
-#define E_NO_COLON 1
-#define E_NO_CALL 2
-
 /* because all strings are unified by the scanner, the parser
    can use pointer equality for string equality */
-#define eqstr(a,b)	((a) == (b))
-
-
-/*
-** nodes for block list (list of active blocks)
-*/
-typedef struct BlockCnt {
-  struct BlockCnt *previous;  /* chain */
-  int firstlabel;  /* index of first label in this block */
-  int firstgoto;  /* index of first pending goto in this block */
-  lu_byte nactvar;  /* # active locals outside the block */
-  lu_byte upval;  /* true if some variable in the block is an upvalue */
-  lu_byte isloop;  /* true if 'block' is a loop */
-  lu_byte insidetbc;  /* true if inside the scope of a to-be-closed var. */
-  struct {
-    TString **arr;
-    int n;
-    int size;
-  } exports;
-} BlockCnt;
-
-
 
 /*
 ** prototypes for recursive non-terminal functions
 */
-static void statement (LexState *ls);
-static void expr (LexState *ls, expdesc *v);
+void statement (LexState *ls);
+void expr (LexState *ls, expdesc *v);
 static int explist (LexState *ls, expdesc *v);
 static void fixforjump (FuncState *fs, int pc, int dest, int back);
 
-static void retstat (LexState *ls);
+void retstat (LexState *ls);
 static TypeHint *gettypehint (LexState *ls);
 static void check_type_compatibility(LexState *ls, TypeHint *target, expdesc *e);
 static TypeHint *typehint_new(LexState *ls);
@@ -143,7 +116,7 @@ static void checklimit (FuncState *fs, int v, int l, const char *what) {
 /*
 ** Test whether next token is 'c'; if so, skip it.
 */
-static int testnext (LexState *ls, int c) {
+int testnext (LexState *ls, int c) {
   if (ls->t.token == c) {
     luaX_next(ls);
     return 1;
@@ -554,7 +527,7 @@ static void check (LexState *ls, int c) {
 /*
 ** Check that next token is 'c' and skip it.
 */
-static void checknext (LexState *ls, int c) {
+void checknext (LexState *ls, int c) {
   check(ls, c);
   luaX_next(ls);
 }
@@ -568,7 +541,7 @@ static void checknext (LexState *ls, int c) {
 ** raise an error that the expected 'what' should match a 'who'
 ** in line 'where' (if that is not the current line).
 */
-static void check_match (LexState *ls, int what, int who, int where) {
+void check_match (LexState *ls, int what, int who, int where) {
   if (l_unlikely(!testnext(ls, what))) {
     if (where == ls->linenumber)  /* all in the same line? */
       error_expected(ls, what);  /* do not need a complex message */
@@ -733,7 +706,7 @@ static int registerlocalvar (LexState *ls, FuncState *fs, TString *varname) {
 ** Create a new local variable with the given 'name'. Return its index
 ** in the function.
 */
-static int new_localvar (LexState *ls, TString *name) {
+int new_localvar (LexState *ls, TString *name) {
   lua_State *L = ls->L;
   FuncState *fs = ls->fs;
   Dyndata *dyd = ls->dyd;
@@ -749,11 +722,6 @@ static int new_localvar (LexState *ls, TString *name) {
   var->vd.used = 0;
   return dyd->actvar.n - 1 - fs->firstlocal;
 }
-
-#define new_localvarliteral(ls,v) \
-    new_localvar(ls,  \
-      luaX_newstring(ls, "" v, (sizeof(v)/sizeof(char)) - 1));
-
 
 
 /*
@@ -854,7 +822,7 @@ static void check_readonly (LexState *ls, expdesc *e) {
 /*
 ** Start the scope for the last 'nvars' created variables.
 */
-static void adjustlocalvars (LexState *ls, int nvars) {
+void adjustlocalvars (LexState *ls, int nvars) {
   FuncState *fs = ls->fs;
   int reglevel = luaY_nvarstack(fs);
   int i;
@@ -1097,12 +1065,6 @@ static void adjust_assign (LexState *ls, int nvars, int nexps, expdesc *e) {
 }
 
 
-#define enterlevel(ls)	luaE_incCstack(ls->L)
-
-
-#define leavelevel(ls) ((ls)->L->nCcalls--)
-
-
 /*
 ** Generates an error that a goto jumps into the scope of some
 ** local variable.
@@ -1235,7 +1197,7 @@ static void movegotosout (FuncState *fs, BlockCnt *bl) {
 }
 
 
-static void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isloop) {
+void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isloop) {
   bl->isloop = isloop;
   bl->nactvar = fs->nactvar;
   bl->firstlabel = fs->ls->dyd->label.n;
@@ -1278,7 +1240,7 @@ static void add_export(LexState *ls, TString *name) {
   bl->exports.arr[bl->exports.n++] = name;
 }
 
-static void leaveblock (FuncState *fs) {
+void leaveblock (FuncState *fs) {
   BlockCnt *bl = fs->bl;
   LexState *ls = fs->ls;
   if (bl->exports.n > 0) {
@@ -1331,7 +1293,7 @@ static void leaveblock (FuncState *fs) {
 /*
 ** adds a new prototype into list of prototypes
 */
-static Proto *addprototype (LexState *ls) {
+Proto *addprototype (LexState *ls) {
   Proto *clp;
   lua_State *L = ls->L;
   FuncState *fs = ls->fs;
@@ -1355,7 +1317,7 @@ static Proto *addprototype (LexState *ls) {
 ** are in use at that time.
 
 */
-static void codeclosure (LexState *ls, expdesc *v) {
+void codeclosure (LexState *ls, expdesc *v) {
   FuncState *fs = ls->fs->prev;
   init_exp(v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, fs->np - 1));
   luaK_exp2nextreg(fs, v);  /* fix it at the last register */
@@ -1408,7 +1370,7 @@ static void codeconcept (LexState *ls, expdesc *v) {
 }
 
 
-static void open_func (LexState *ls, FuncState *fs, BlockCnt *bl) {
+void open_func (LexState *ls, FuncState *fs, BlockCnt *bl) {
   Proto *f = fs->f;
   fs->prev = ls->fs;  /* linked list of funcstates */
   fs->ls = ls;
@@ -1435,7 +1397,7 @@ static void open_func (LexState *ls, FuncState *fs, BlockCnt *bl) {
 }
 
 
-static void close_func (LexState *ls) {
+void close_func (LexState *ls) {
   lua_State *L = ls->L;
   FuncState *fs = ls->fs;
   Proto *f = fs->f;
@@ -1528,7 +1490,7 @@ static int block_follow (LexState *ls, int withuntil) {
 }
 
 
-static void statlist (LexState *ls) {
+void statlist (LexState *ls) {
   /* statlist -> { stat [';'] } */
   while (!block_follow(ls, 1)) {
 
@@ -2250,7 +2212,7 @@ static void setvararg (FuncState *fs, int nparams) {
 }
 
 
-static void namedvararg (LexState *ls, TString *varargname) {
+void namedvararg (LexState *ls, TString *varargname) {
   enterlevel(ls);
   new_localvar(ls, varargname);
 
@@ -2303,7 +2265,7 @@ static void namedvararg (LexState *ls, TString *varargname) {
  * @param ls 词法分析器状态
  * @param varargname 输出参数，如果存在具名可变参数则存储其名称
  */
-static void parlist (LexState *ls, TString **varargname) {
+void parlist (LexState *ls, TString **varargname) {
   /* parlist -> [ {NAME [':' type] ['=' expr] ','} (NAME [':' type] ['=' expr] | '...') ] */
   FuncState *fs = ls->fs;
   Proto *f = fs->f;
@@ -4509,119 +4471,34 @@ static void simpleexp (LexState *ls, expdesc *v) {
     }
     case TK_SWITCH: {
       /**
-       * switch表达式语法糖 - 将switch作为表达式使用
-       * 转换为立即执行函数（IIFE）:
-       *   a = switch (exp) do case... end
-       * 等价于:
-       *   a = (function() switch (exp) do case... end end)()
+       * Switch 表达式 — 编译层直接实现（结果寄存器法）
        * 
-       * 这样switch内部的return语句就能正确返回值给外部变量
+       * 不再使用 IIFE 模拟：
+       *   旧: a = (function() switch (exp) do case... end end)()
+       *   新: 直接在当前 FuncState 中生成比较分支字节码，
+       *       每个 case => expr 存入结果寄存器，无函数包装开销。
+       * 
+       * @see luaK_switchexpression() in lcode.c
        */
-      int line = ls->linenumber;
-      FuncState new_fs;
-      BlockCnt bl;
-      FuncState *fs = ls->fs;
-      
-      /* 创建新的函数原型 */
-      new_fs.f = addprototype(ls);
-      new_fs.f->linedefined = line;
-      open_func(ls, &new_fs, &bl);
-      
-      /* 解析switch语句作为函数体 */
-      switchstat(ls, line);
-      
-      new_fs.f->lastlinedefined = ls->linenumber;
-      
-      /* 生成闭包 */
-      codeclosure(ls, v);
-      close_func(ls);
-      
-      /* 立即调用这个闭包（无参数调用） */
-      luaK_exp2nextreg(fs, v);
-      int base = v->u.info;
-      init_exp(v, VCALL, luaK_codeABC(fs, OP_CALL, base, 1, 2));
-      luaK_fixline(fs, line);
-      fs->freereg = base + 1;
+      luaK_switchexpression(ls, v);
       return;
     }
     case TK_ARROW: {
       /**
        * 箭头函数语法糖（语句形式）: ->(args){ stat } 或 ->{ stat }
        * 等价于: function(args) stat end
-       * 
-       * 语法说明：
-       *   funcA = ->(arg1,...){ stat }  -- 带参数的匿名函数
-       *   funcA2 = ->{ stat }           -- 无参数的匿名函数
+       * 迁移到 lcode.c 编译层实现。
        */
-      int line = ls->linenumber;
-      FuncState new_fs;
-      BlockCnt bl;
-      luaX_next(ls);  /* 跳过 '->' */
-      
-      new_fs.f = addprototype(ls);
-      new_fs.f->linedefined = line;
-      open_func(ls, &new_fs, &bl);
-      
-      /* 解析参数列表（可选） */
-      TString *varargname = NULL;
-      if (testnext(ls, '(')) {
-        parlist(ls, &varargname);
-        checknext(ls, ')');
-      }
-      
-      /* 解析函数体 { stat } */
-      checknext(ls, '{');
-      if (varargname) namedvararg(ls, varargname);
-      while (ls->t.token != '}' && ls->t.token != TK_EOS) {
-
-        statement(ls);
-      }
-      check_match(ls, '}', '{', line);
-      
-      new_fs.f->lastlinedefined = ls->linenumber;
-      codeclosure(ls, v);
-      close_func(ls);
+      luaK_arrow_statement(ls, v);
       return;
     }
     case TK_MEAN: {
       /**
        * 箭头函数语法糖（表达式形式）: =>(args){ exp } 或 =>{ exp }
        * 等价于: function(args) return exp end
-       * 
-       * 语法说明：
-       *   funcB = =>(arg1,...){ exp }  -- 带参数，自动返回表达式
-       *   funcB2 = =>{ exp }           -- 无参数，自动返回表达式
+       * 迁移到 lcode.c 编译层实现。
        */
-      int line = ls->linenumber;
-      FuncState new_fs;
-      BlockCnt bl;
-      luaX_next(ls);  /* 跳过 '=>' */
-      
-      new_fs.f = addprototype(ls);
-      new_fs.f->linedefined = line;
-      open_func(ls, &new_fs, &bl);
-      
-      /* 解析参数列表（可选） */
-      TString *varargname = NULL;
-      if (testnext(ls, '(')) {
-        parlist(ls, &varargname);
-        checknext(ls, ')');
-      }
-      
-      /* 解析函数体 { exp } - 自动返回表达式 */
-      checknext(ls, '{');
-      if (varargname) namedvararg(ls, varargname);
-      enterlevel(ls);
-      retstat(ls);  /* 将表达式作为return语句处理 */
-      lua_assert(ls->fs->f->maxstacksize >= ls->fs->freereg &&
-                 ls->fs->freereg >= ls->fs->nactvar);
-      ls->fs->freereg = ls->fs->nactvar;
-      leavelevel(ls);
-      check_match(ls, '}', '{', line);
-      
-      new_fs.f->lastlinedefined = ls->linenumber;
-      codeclosure(ls, v);
-      close_func(ls);
+      luaK_arrow_expression(ls, v);
       return;
     }
     case '[': {
@@ -5033,6 +4910,7 @@ static const struct {
 };
 
 #define UNARY_PRIORITY	12  /* priority for unary operators */
+#define PRI_CASE        1   /* priority for case arrow '=>' */
 
 
 /*
@@ -5141,7 +5019,7 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
 }
 
 
-static void expr (LexState *ls, expdesc *v) {
+void expr (LexState *ls, expdesc *v) {
   subexpr(ls, v, 0);
   if (ls->t.token == '?') {
     /* printf("DEBUG: Ternary found at line %d\n", ls->linenumber); */
@@ -5176,6 +5054,15 @@ static void expr (LexState *ls, expdesc *v) {
 
     luaK_patchtohere(fs, escape);
   }
+}
+
+/*
+** expr_nocase: parse an expression, but stop before '=>' (OPR_CASE).
+** Used by switch expression / switch statement case value parsing
+** to prevent the binary => operator from consuming the case arrow.
+*/
+void expr_nocase (LexState *ls, expdesc *v) {
+  subexpr(ls, v, PRI_CASE);  /* limit >= 1 stops before OPR_CASE */
 }
 
 
@@ -12307,7 +12194,7 @@ done_args:
 }
 
 
-static void retstat (LexState *ls) {
+void retstat (LexState *ls) {
   /* stat -> RETURN [explist] [';'] */
   FuncState *fs = ls->fs;
   expdesc e;
@@ -12960,7 +12847,7 @@ static void usingstat(LexState *ls) {
   checknext(ls, ';');
 }
 
-static void statement (LexState *ls) {
+void statement (LexState *ls) {
   int line = ls->linenumber;  /* may be needed for error messages */
   enterlevel(ls);
   switch (ls->t.token) {

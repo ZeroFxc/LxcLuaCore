@@ -836,6 +836,15 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
             add_fmt(B, "    lua_pushcclosure(L, %s, %s);\n", protos[child_id].name, obf_int(child->sizeupvalues, &obf_seed, obfuscate));
             add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+
+            /* 修复自引用 upvalue：闭包捕获自身所在的槽位 */
+            for (int k = 0; k < child->sizeupvalues; k++) {
+                Upvaldesc *uv = &child->upvalues[k];
+                if (uv->instack && uv->idx == a) {
+                    add_fmt(B, "    lua_pushvalue(L, %s); /* fix self-upval %d */\n", obf_int(a + 1, &obf_seed, obfuscate), k);
+                    add_fmt(B, "    lua_setupvalue(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(k + 1, &obf_seed, obfuscate));
+                }
+            }
             break;
         }
 
@@ -855,6 +864,15 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
             add_fmt(B, "    lua_pushcclosure(L, %s, %s); /* concept */\n", protos[child_id].name, obf_int(child->sizeupvalues, &obf_seed, obfuscate));
             add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+
+            /* 修复自引用 upvalue */
+            for (int k = 0; k < child->sizeupvalues; k++) {
+                Upvaldesc *uv = &child->upvalues[k];
+                if (uv->instack && uv->idx == a) {
+                    add_fmt(B, "    lua_pushvalue(L, %s); /* fix self-upval %d */\n", obf_int(a + 1, &obf_seed, obfuscate), k);
+                    add_fmt(B, "    lua_setupvalue(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(k + 1, &obf_seed, obfuscate));
+                }
+            }
             break;
         }
 
