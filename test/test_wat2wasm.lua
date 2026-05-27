@@ -1,0 +1,16 @@
+-- test_wat2wasm.lua
+local wasmtime = require("wasmtime")
+local f = io.open("test/simple.wasm", "rb")
+local bin = f:read("*all")
+f:close()
+print("size:", #bin)
+print("hex:", bin:gsub(".", function(c) return string.format("%02X", c:byte()) end))
+
+local engine = wasmtime.newEngine({gc=false, exceptions=false, funcRef=false, refTypes=false})
+local module = wasmtime.newModule(engine, bin)
+print("[OK] module")
+local store = wasmtime.newStore(engine)
+local inst = wasmtime.newInstance(store, module)
+local add = inst:getExport("add")
+print("add(1,2) =", add:call(1, 2))
+print("[ALL OK]")

@@ -854,13 +854,17 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
     }
     
     /* 将用户函数和参数移到协程栈中并启动执行 */
-    int nargs = lua_gettop(L);  /* 栈上元素数（含函数+参数） */
+    int nargs = lua_gettop(L);  /* L栈上: [函数, 参数...] ，nargs = 1 + 实际参数数 */
     if (nargs > 0) {
-        lua_xmove(L, co_L, nargs);  /* 将函数+所有参数移到协程 */
+        lua_xmove(L, co_L, nargs);  /* 将所有元素移到协程 */
     }
     
     int nres = 0;
-    int status = lua_resume(co_L, L, nargs > 0 ? nargs - 1 : 0, &nres);
+    /* lua_resume 的 nargs 参数是传递给函数的参数数量，不包含函数本身
+     * co_L 栈上: [函数, arg1, ..., argN]
+     * lua_resume nargs = 实际参数个数 = lua_gettop - 1 */
+    int resume_nargs = nargs > 0 ? nargs - 1 : 0;
+    int status = lua_resume(co_L, L, resume_nargs, &nres);
     
     if (status == LUA_OK || status == LUA_YIELD) {
         if (status == LUA_OK) {
@@ -1945,6 +1949,17 @@ static int laio_promise_index(lua_State *L) {
         lua_pushcfunction(L, laio_promise_cancel);
         return 1;
     }
+    else if (strcmp(key, "state") == 0) {
+        /* state: 返回 Promise 当前状态字符串 */
+        promise *p = *pp;
+        switch (p->state) {
+            case PROMISE_PENDING:   lua_pushstring(L, "pending");   break;
+            case PROMISE_FULFILLED: lua_pushstring(L, "fulfilled"); break;
+            case PROMISE_REJECTED:  lua_pushstring(L, "rejected");  break;
+            default:                lua_pushstring(L, "unknown");   break;
+        }
+        return 1;
+    }
 
     /* 其他字段：从元表本身查找 */
     if (lua_getmetatable(L, 1)) {
@@ -2386,13 +2401,14 @@ int luaopen_asyncio(lua_State *L) {
      * 供 VM 的 OP_ASYNCWRAP 操作码内部使用。
      */
 
-    /* 存储 asyncio 表引用到注册表（供 lvm.c 检测） */
-    lua_pushvalue(L, -2);  /* 复制 asyncio 表 */
-    lua_setfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO");
-
-    /* 注册 run_async_internal 到 asyncio 表（但不暴露给用户） */
+    /* 先注册 run_async_internal 到 asyncio 表（但不暴露给用户） */
     lua_pushcfunction(L, laio_run_async_internal);
     lua_setfield(L, -2, "run_async_internal");
+
+    /* 再存储 asyncio 表引用到注册表（此时已包含 run_async_internal）
+     * 注意：asyncio 表在栈顶（索引 -1），promise 元表在索引 -2 */
+    lua_pushvalue(L, -1);  /* 复制栈顶的 asyncio 表 */
+    lua_setfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO");
 
     return 1;
 }

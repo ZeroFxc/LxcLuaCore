@@ -87,6 +87,7 @@ void l_rwlock_destroy(l_rwlock_t *l);
 /* Thread API */
 int l_thread_create(l_thread_t *t, l_thread_func func, void *arg);
 int l_thread_join(l_thread_t t, void **retval);
+int l_thread_detach(l_thread_t t);
 size_t l_thread_selfid(void);
 size_t l_thread_getid(l_thread_t *t);
 

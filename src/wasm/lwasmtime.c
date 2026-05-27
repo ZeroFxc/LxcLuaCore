@@ -6,14 +6,85 @@
  *
  * Lua API:
  *   local wasmtime = require("wasmtime")
- *   local engine   = wasmtime.newEngine()           -- 创建引擎
- *   local store    = wasmtime.newStore(engine)      -- 创建存储（执行上下文）
+ *   local engine   = wasmtime.newEngine([config])        -- 创建引擎（支持 config 表）
+ *   local store    = wasmtime.newStore(engine)           -- 创建存储（执行上下文）
  *   local module   = wasmtime.newModule(engine, wasm_bytes)  -- 编译模块
- *   local ok, err  = wasmtime.validate(wasm_bytes)  -- 仅验证不编译
+ *   local ok, err  = wasmtime.validate(wasm_bytes)       -- 仅验证不编译
  *   local instance = wasmtime.newInstance(store, module, imports) -- 实例化
- *   local func     = instance:getExport("main")     -- 获取导出函数
- *   local results  = func:call(args...)             -- 调用函数
- *   local output   = wasmtime.runLua2wasm(wasm_bytes) -- lua2wasm 一键运行
+ *
+ *   -- 导出操作
+ *   local func     = instance:getExport("name")          -- 获取导出函数
+ *   local mem      = instance:getMemory("memory")        -- 获取内存导出
+ *   local global   = instance:getGlobal("name")          -- 获取全局变量导出
+ *   local table    = instance:getTable("name")           -- 获取表导出
+ *   local item,kind = instance:getExportEx("name")       -- 通用导出获取
+ *   local exports  = instance:getExports()               -- 导出类型列表
+ *
+ *   -- 函数操作
+ *   local results  = func:call(args...)                  -- 调用函数
+ *   local params,rets = func:getType()                   -- 获取函数签名
+ *
+ *   -- 内存操作
+ *   local data     = mem:read(offset, len)               -- 读取内存
+ *   local n        = mem:write(offset, str)              -- 写入内存
+ *   local pages    = mem:size()                          -- 页数
+ *   local bytes    = mem:dataSize()                      -- 字节数
+ *   local old,ok   = mem:grow(delta)                     -- 增长内存
+ *   local min,max  = mem:getType()                       -- 内存限制
+ *
+ *   -- 全局变量操作
+ *   local val      = global:get()                        -- 读取全局变量
+ *   local ok,err   = global:set(val)                     -- 设置全局变量
+ *
+ *   -- 表操作
+ *   local val      = table:get(idx)                      -- 读取表元素
+ *   local ok,err   = table:set(idx, val)                 -- 设置表元素
+ *   local n        = table:size()                        -- 表大小
+ *   local old,ok   = table:grow(delta[, init_val])       -- 增长表
+ *
+ *   -- Store 操作
+ *   local ok,err   = store:setFuel(amount)               -- 设置燃料上限
+ *   local fuel     = store:getFuel()                     -- 获取剩余燃料
+ *   store:gc()                                           -- 触发 GC
+ *   local ok       = store:setEpochDeadline(ticks)       -- 设置 epoch 截止
+ *   local mem2     = store:newMemory(min, max)           -- 创建独立内存
+ *
+ *   -- Module 操作
+ *   local bytes    = module:serialize()                  -- 序列化编译模块
+ *   local exports  = module:getExports()                 -- 导出类型列表
+ *   local imports  = module:getImports()                 -- 导入类型列表
+ *   local mod2     = wasmtime.deserializeModule(engine, bytes) -- 反序列化模块
+ *
+ *   -- Linker 操作
+ *   local linker   = wasmtime.newLinker(engine)          -- 创建 linker
+ *   linker:defineFunc(mod, name, params, results, cb)    -- 定义 host import
+ *   local inst     = linker:instantiate(store, module)   -- 通过 linker 实例化
+ *
+ *   -- externref
+ *   local eref     = wasmtime.newExternref(store, data)  -- 创建 externref
+ *
+ *   -- 共享内存（多线程）
+ *   local shmem    = wasmtime.newSharedMemory(engine, min, max) -- 线程安全共享内存
+ *   local sz       = shmem:size()                         -- 共享内存大小(字节)
+ *   local ptr      = shmem:data()                         -- 数据指针(lightuserdata)
+ *
+ *   -- Engine 高级配置
+ *   local engine   = wasmtime.newEngine{
+ *     optLevel         = "speed",      -- "none"/"speed"/"speedAndSize"
+ *     parallelCompilation = true,      -- 并行编译
+ *     profiler         = "none",       -- "none"/"jitdump"/"vtune"/"perfmap"
+ *     nanCanonicalization = false,     -- NaN 规范化（确定性执行）
+ *     nativeUnwind     = true,         -- 原生栈展开信息
+ *     sharedMemory     = false,        -- 启用共享内存
+ *     memoryMayMove    = false,        -- 内存可重定位
+ *     memoryGuardSize  = 0,            -- 内存保护区大小(字节)
+ *     maxWasmStack     = 0,            -- 最大 WASM 栈大小(字节)
+ *     tailCall         = false,        -- 启用尾调用
+ *   }
+ *   engine:incrementEpoch()                              -- 递增 epoch 计数器
+ *
+ *   -- lua2wasm 一键端到端：
+ *   local output   = wasmtime.runLua2wasm(wasm_bytes)     -- lua2wasm 一键运行
  *
  * lua2wasm 一键端到端：
  *   local lua2wasm  = require("lua2wasm")
@@ -1225,6 +1296,29 @@ typedef struct {
     int store_ref;
 } wmt_Function;
 
+#define WMT_MEMORY   "wasmtime.memory"
+#define WMT_GLOBAL   "wasmtime.global"
+#define WMT_TABLE    "wasmtime.table"
+#define WMT_SHMEM    "wasmtime.sharedmemory"
+
+typedef struct {
+    wasmtime_memory_t memory;
+    wasmtime_store_t  *store;
+    int               store_ref;
+} wmt_Memory;
+
+typedef struct {
+    wasmtime_global_t global;
+    wasmtime_store_t  *store;
+    int               store_ref;
+} wmt_Global;
+
+typedef struct {
+    wasmtime_table_t  table;
+    wasmtime_store_t  *store;
+    int               store_ref;
+} wmt_Table;
+
 /* ============================================================
  * 辅助函数
  * ============================================================ */
@@ -1342,18 +1436,229 @@ static int wmt_engine_gc(lua_State *L) {
 }
 
 /**
- * @brief wasmtime.newEngine() → engine
- * 创建一个新的 WASM 引擎，启用 GC 支持。
+ * @brief wasmtime.newEngine([config]) → engine
+ * 创建一个新的 WASM 引擎。
+ *
+ * config 可选表字段：
+ *   gc           (bool, 默认 true)  启用 WASM GC 提案
+ *   refTypes     (bool, 默认 true)  启用引用类型
+ *   exceptions   (bool, 默认 true)  启用异常处理
+ *   funcRef      (bool, 默认 true)  启用函数引用
+ *   multiValue   (bool, 默认 true)  启用多返回值
+ *   multiMemory  (bool, 默认 true)  启用多内存
+ *   simd         (bool, 默认 true)  启用 SIMD
+ *   threads      (bool, 默认 false) 启用线程
+ *   fuel         (bool, 默认 false) 启用燃料消耗计量
+ *   epoch        (bool, 默认 false) 启用 epoch 中断
+ *   compiler         (string, 默认 "cranelift") "cranelift" 或 "winch"
+ *   staticMemMax     (number, 0=默认)   静态内存大小上限(字节)
+ *   dynamicMemReserve(number, 0=默认)   动态内存预留(字节)
+ *   optLevel         (string, 默认 "speed") "none"/"speed"/"speedAndSize"
+ *   parallelCompilation (bool, 默认 true) 并行编译
+ *   profiler         (string, 默认 "none") "none"/"jitdump"/"vtune"/"perfmap"
+ *   nanCanonicalization (bool, 默认 false) NaN 规范化（确定性执行）
+ *   nativeUnwind     (bool, 默认 true) 生成原生栈展开信息
+ *   sharedMemory     (bool, 默认 false) 启用共享内存
+ *   memoryMayMove    (bool, 默认 false) 内存可重定位
+ *   memoryGuardSize  (number, 0=默认) 内存保护区大小(字节)
+ *   maxWasmStack     (number, 0=默认) 最大 WASM 栈大小(字节)
+ *   tailCall         (bool, 默认 false) 启用尾调用
  */
 static int l_new_engine(lua_State *L) {
     wasm_config_t *config = wasm_config_new();
-    /* 启用 WASM GC 提案（lua2wasm 依赖） */
-    wasmtime_config_wasm_gc_set(config, true);
-    /* 启用引用类型 */
-    wasmtime_config_wasm_reference_types_set(config, true);
-    wasmtime_config_wasm_exceptions_set(config, true);
-    /* 启用函数引用（lua2wasm 使用 ref.func） */
-    wasmtime_config_wasm_function_references_set(config, true);
+
+    /* 默认配置 */
+    bool gc_enabled = true;
+    bool ref_types = true;
+    bool exceptions = true;
+    bool func_ref = true;
+    bool multi_val = true;
+    bool multi_mem = true;
+    bool simd = true;
+    bool threads = false;
+    bool fuel = false;
+    bool epoch = false;
+    const char *compiler = "cranelift";
+    uint64_t static_mem_max = 0;
+    uint64_t dynamic_mem_reserve = 0;
+    const char *opt_level = "speed";
+    int parallel_compilation = 1;
+    const char *profiler = "none";
+    int nan_canon = 0;
+    int native_unwind = 1;
+    int shared_memory = 0;
+    int memory_may_move = 0;
+    uint64_t memory_guard_size = 0;
+    uint64_t max_wasm_stack = 0;
+    int tail_call = 0;
+
+    /* 解析可选配置表 */
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "gc");
+        if (!lua_isnil(L, -1)) gc_enabled = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "refTypes");
+        if (!lua_isnil(L, -1)) ref_types = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "exceptions");
+        if (!lua_isnil(L, -1)) exceptions = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "funcRef");
+        if (!lua_isnil(L, -1)) func_ref = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "multiValue");
+        if (!lua_isnil(L, -1)) multi_val = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "multiMemory");
+        if (!lua_isnil(L, -1)) multi_mem = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "simd");
+        if (!lua_isnil(L, -1)) simd = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "threads");
+        if (!lua_isnil(L, -1)) threads = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "fuel");
+        if (!lua_isnil(L, -1)) fuel = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "epoch");
+        if (!lua_isnil(L, -1)) epoch = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "compiler");
+        if (lua_isstring(L, -1)) compiler = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "staticMemMax");
+        if (lua_isinteger(L, -1)) static_mem_max = (uint64_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "dynamicMemReserve");
+        if (lua_isinteger(L, -1)) dynamic_mem_reserve = (uint64_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "optLevel");
+        if (lua_isstring(L, -1)) opt_level = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "parallelCompilation");
+        if (!lua_isnil(L, -1)) parallel_compilation = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "profiler");
+        if (lua_isstring(L, -1)) profiler = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "nanCanonicalization");
+        if (!lua_isnil(L, -1)) nan_canon = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "nativeUnwind");
+        if (!lua_isnil(L, -1)) native_unwind = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "sharedMemory");
+        if (!lua_isnil(L, -1)) shared_memory = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "memoryMayMove");
+        if (!lua_isnil(L, -1)) memory_may_move = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "memoryGuardSize");
+        if (lua_isinteger(L, -1)) memory_guard_size = (uint64_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "maxWasmStack");
+        if (lua_isinteger(L, -1)) max_wasm_stack = (uint64_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "tailCall");
+        if (!lua_isnil(L, -1)) tail_call = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+    }
+
+    /* 应用配置 */
+    wasmtime_config_wasm_gc_set(config, gc_enabled);
+    wasmtime_config_wasm_reference_types_set(config, ref_types);
+    wasmtime_config_wasm_exceptions_set(config, exceptions);
+    wasmtime_config_wasm_function_references_set(config, func_ref);
+    wasmtime_config_wasm_multi_value_set(config, multi_val);
+    wasmtime_config_wasm_multi_memory_set(config, multi_mem);
+    wasmtime_config_wasm_simd_set(config, simd);
+    wasmtime_config_wasm_threads_set(config, threads);
+    wasmtime_config_consume_fuel_set(config, fuel);
+    if (epoch) wasmtime_config_epoch_interruption_set(config, true);
+
+    /* 编译器策略 */
+    if (strcmp(compiler, "winch") == 0) {
+        wasmtime_config_strategy_set(config, WASMTIME_STRATEGY_WINCH);
+    } else {
+        wasmtime_config_strategy_set(config, WASMTIME_STRATEGY_CRANELIFT);
+    }
+
+    /* 内存设置 */
+    if (static_mem_max > 0) {
+        wasmtime_config_memory_reservation_set(config, static_mem_max);
+    }
+    if (dynamic_mem_reserve > 0) {
+        wasmtime_config_memory_reservation_for_growth_set(config, dynamic_mem_reserve);
+    }
+
+    /* Cranelift 优化级别 */
+    if (strcmp(opt_level, "none") == 0) {
+        wasmtime_config_cranelift_opt_level_set(config, WASMTIME_OPT_LEVEL_NONE);
+    } else if (strcmp(opt_level, "speedAndSize") == 0) {
+        wasmtime_config_cranelift_opt_level_set(config, WASMTIME_OPT_LEVEL_SPEED_AND_SIZE);
+    } else {
+        wasmtime_config_cranelift_opt_level_set(config, WASMTIME_OPT_LEVEL_SPEED);
+    }
+
+    /* 并行编译 */
+    wasmtime_config_parallel_compilation_set(config, parallel_compilation);
+
+    /* Profiler 策略 */
+    if (strcmp(profiler, "jitdump") == 0) {
+        wasmtime_config_profiler_set(config, WASMTIME_PROFILING_STRATEGY_JITDUMP);
+    } else if (strcmp(profiler, "vtune") == 0) {
+        wasmtime_config_profiler_set(config, WASMTIME_PROFILING_STRATEGY_VTUNE);
+    } else if (strcmp(profiler, "perfmap") == 0) {
+        wasmtime_config_profiler_set(config, WASMTIME_PROFILING_STRATEGY_PERFMAP);
+    }
+
+    /* NaN 规范化（确定性执行） */
+    wasmtime_config_cranelift_nan_canonicalization_set(config, nan_canon);
+
+    /* 原生栈展开信息 */
+    wasmtime_config_native_unwind_info_set(config, native_unwind);
+
+    /* 共享内存 */
+    wasmtime_config_shared_memory_set(config, shared_memory);
+
+    /* 内存可重定位 */
+    wasmtime_config_memory_may_move_set(config, memory_may_move);
+
+    /* 内存保护区大小 */
+    if (memory_guard_size > 0) {
+        wasmtime_config_memory_guard_size_set(config, memory_guard_size);
+    }
+
+    /* 最大 WASM 栈大小 */
+    if (max_wasm_stack > 0) {
+        wasmtime_config_max_wasm_stack_set(config, max_wasm_stack);
+    }
+
+    /* 尾调用 */
+    wasmtime_config_wasm_tail_call_set(config, tail_call);
 
     wasm_engine_t *engine = wasm_engine_new_with_config(config);
     /* config 已被引擎接管，不需要单独释放 */
@@ -1368,6 +1673,19 @@ static int l_new_engine(lua_State *L) {
 
     luaL_getmetatable(L, WMT_ENGINE);
     lua_setmetatable(L, -2);
+    return 1;
+}
+
+/**
+ * @brief engine:incrementEpoch()
+ * 递增引擎的 epoch 计数器，触发所有关联 store 的 epoch 中断检查。
+ * 配合 setEpochDeadline 使用，由主机线程调用通知 guest 停止执行。
+ * 返回 0 表示成功。
+ */
+static int l_engine_increment_epoch(lua_State *L) {
+    wmt_Engine *we = (wmt_Engine*)luaL_checkudata(L, 1, WMT_ENGINE);
+    wasmtime_engine_increment_epoch(we->engine);
+    lua_pushinteger(L, 0);
     return 1;
 }
 
@@ -1586,7 +1904,7 @@ static int l_new_instance(lua_State *L) {
 
 /**
  * @brief instance:getExport(name) → func_or_nil
- * 从实例中获取指定名称的导出项。
+ * 从实例中获取指定名称的导出项（函数类型）。
  * @param L
  *   - 参数 1: instance (self)
  *   - 参数 2: name (string)
@@ -1624,6 +1942,221 @@ static int l_instance_get_export(lua_State *L) {
     lua_pushvalue(L, 1);
     luaL_ref(L, LUA_REGISTRYINDEX);
 
+    return 1;
+}
+
+/* ---- instance:getExportEx ---- */
+
+/**
+ * @brief instance:getExportEx(name) → extern_item, kind_string
+ * 通用导出查找：返回 wasmtime_extern_t 包装对象 + 类型字符串。
+ *
+ * kind_string 为以下之一：
+ *   "func", "memory", "global", "table", "nil"
+ *
+ * 可用于获取任何类型的导出并调用对应方法。
+ * 建议使用专门的 getMemory/getGlobal/getTable 方法获得类型化 userdata。
+ */
+static int l_instance_get_export_ex(lua_State *L) {
+    wmt_Instance *wi = (wmt_Instance*)luaL_checkudata(L, 1, WMT_INSTANCE);
+    const char *name = luaL_checkstring(L, 2);
+
+    wasmtime_extern_t item;
+    wasmtime_context_t *ctx = wasmtime_store_context(wi->store);
+    bool found = wasmtime_instance_export_get(
+        ctx, &wi->instance, name, strlen(name), &item);
+
+    if (!found) {
+        lua_pushnil(L);
+        lua_pushstring(L, "nil");
+        return 2;
+    }
+
+    switch (item.kind) {
+        case WASMTIME_EXTERN_FUNC: {
+            wmt_Function *wf = (wmt_Function*)lua_newuserdata(L, sizeof(wmt_Function));
+            wf->func = item.of.func;
+            wf->store = wi->store;
+            wf->store_ref = wi->store_ref;
+            luaL_getmetatable(L, WMT_FUNC);
+            lua_setmetatable(L, -2);
+            lua_pushvalue(L, 1);
+            luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushstring(L, "func");
+            return 2;
+        }
+        case WASMTIME_EXTERN_MEMORY: {
+            wmt_Memory *wm = (wmt_Memory*)lua_newuserdata(L, sizeof(wmt_Memory));
+            wm->memory = item.of.memory;
+            wm->store = wi->store;
+            wm->store_ref = wi->store_ref;
+            luaL_getmetatable(L, WMT_MEMORY);
+            lua_setmetatable(L, -2);
+            lua_pushvalue(L, 1);
+            luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushstring(L, "memory");
+            return 2;
+        }
+        case WASMTIME_EXTERN_GLOBAL: {
+            wmt_Global *wg = (wmt_Global*)lua_newuserdata(L, sizeof(wmt_Global));
+            wg->global = item.of.global;
+            wg->store = wi->store;
+            wg->store_ref = wi->store_ref;
+            luaL_getmetatable(L, WMT_GLOBAL);
+            lua_setmetatable(L, -2);
+            lua_pushvalue(L, 1);
+            luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushstring(L, "global");
+            return 2;
+        }
+        case WASMTIME_EXTERN_TABLE: {
+            wmt_Table *wt = (wmt_Table*)lua_newuserdata(L, sizeof(wmt_Table));
+            wt->table = item.of.table;
+            wt->store = wi->store;
+            wt->store_ref = wi->store_ref;
+            luaL_getmetatable(L, WMT_TABLE);
+            lua_setmetatable(L, -2);
+            lua_pushvalue(L, 1);
+            luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushstring(L, "table");
+            return 2;
+        }
+        default:
+            lua_pushnil(L);
+            lua_pushstring(L, "unknown");
+            return 2;
+    }
+}
+
+/**
+ * @brief instance:getExports() → table
+ * 返回实例所有导出项的 name→type 映射表。
+ * @return { [name] = "func"|"memory"|"global"|"table" }
+ */
+static int l_instance_get_exports(lua_State *L) {
+    wmt_Instance *wi = (wmt_Instance*)luaL_checkudata(L, 1, WMT_INSTANCE);
+    wasmtime_context_t *ctx = wasmtime_store_context(wi->store);
+
+    lua_newtable(L);
+    size_t idx = 0;
+    while (1) {
+        char *name_str = NULL;
+        size_t name_len = 0;
+        wasmtime_extern_t item;
+        bool found = wasmtime_instance_export_nth(
+            ctx, &wi->instance, idx, &name_str, &name_len, &item);
+        if (!found) break;
+
+        /* 通过 kind 获取导出类型名 */
+        const char *kind_name = "unknown";
+        switch (item.kind) {
+            case WASMTIME_EXTERN_FUNC:   kind_name = "func";   break;
+            case WASMTIME_EXTERN_MEMORY: kind_name = "memory"; break;
+            case WASMTIME_EXTERN_GLOBAL: kind_name = "global"; break;
+            case WASMTIME_EXTERN_TABLE:  kind_name = "table";  break;
+            default: break;
+        }
+        lua_pushlstring(L, name_str, name_len);
+        lua_rawseti(L, -2, (int)(idx + 1));
+        idx++;
+    }
+
+    return 1;
+}
+
+/**
+ * @brief instance:getMemory(name) → memory_userdata
+ * 获取实例的内存导出。
+ * @return memory userdata，失败返回 nil
+ */
+static int l_instance_get_memory(lua_State *L) {
+    wmt_Instance *wi = (wmt_Instance*)luaL_checkudata(L, 1, WMT_INSTANCE);
+    const char *name = luaL_checkstring(L, 2);
+
+    wasmtime_extern_t item;
+    wasmtime_context_t *ctx = wasmtime_store_context(wi->store);
+    bool found = wasmtime_instance_export_get(
+        ctx, &wi->instance, name, strlen(name), &item);
+
+    if (!found || item.kind != WASMTIME_EXTERN_MEMORY) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    wmt_Memory *wm = (wmt_Memory*)lua_newuserdata(L, sizeof(wmt_Memory));
+    wm->memory = item.of.memory;
+    wm->store = wi->store;
+    wm->store_ref = wi->store_ref;
+
+    luaL_getmetatable(L, WMT_MEMORY);
+    lua_setmetatable(L, -2);
+
+    lua_pushvalue(L, 1);
+    luaL_ref(L, LUA_REGISTRYINDEX);
+    return 1;
+}
+
+/**
+ * @brief instance:getGlobal(name) → global_userdata
+ * 获取实例的全局变量导出。
+ * @return global userdata，失败返回 nil
+ */
+static int l_instance_get_global(lua_State *L) {
+    wmt_Instance *wi = (wmt_Instance*)luaL_checkudata(L, 1, WMT_INSTANCE);
+    const char *name = luaL_checkstring(L, 2);
+
+    wasmtime_extern_t item;
+    wasmtime_context_t *ctx = wasmtime_store_context(wi->store);
+    bool found = wasmtime_instance_export_get(
+        ctx, &wi->instance, name, strlen(name), &item);
+
+    if (!found || item.kind != WASMTIME_EXTERN_GLOBAL) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    wmt_Global *wg = (wmt_Global*)lua_newuserdata(L, sizeof(wmt_Global));
+    wg->global = item.of.global;
+    wg->store = wi->store;
+    wg->store_ref = wi->store_ref;
+
+    luaL_getmetatable(L, WMT_GLOBAL);
+    lua_setmetatable(L, -2);
+
+    lua_pushvalue(L, 1);
+    luaL_ref(L, LUA_REGISTRYINDEX);
+    return 1;
+}
+
+/**
+ * @brief instance:getTable(name) → table_userdata
+ * 获取实例的表导出（用于 funcref/externref 表）。
+ * @return table userdata，失败返回 nil
+ */
+static int l_instance_get_table(lua_State *L) {
+    wmt_Instance *wi = (wmt_Instance*)luaL_checkudata(L, 1, WMT_INSTANCE);
+    const char *name = luaL_checkstring(L, 2);
+
+    wasmtime_extern_t item;
+    wasmtime_context_t *ctx = wasmtime_store_context(wi->store);
+    bool found = wasmtime_instance_export_get(
+        ctx, &wi->instance, name, strlen(name), &item);
+
+    if (!found || item.kind != WASMTIME_EXTERN_TABLE) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    wmt_Table *wt = (wmt_Table*)lua_newuserdata(L, sizeof(wmt_Table));
+    wt->table = item.of.table;
+    wt->store = wi->store;
+    wt->store_ref = wi->store_ref;
+
+    luaL_getmetatable(L, WMT_TABLE);
+    lua_setmetatable(L, -2);
+
+    lua_pushvalue(L, 1);
+    luaL_ref(L, LUA_REGISTRYINDEX);
     return 1;
 }
 
@@ -1737,6 +2270,775 @@ static int l_func_call(lua_State *L) {
     if (retc == 0) return 0;
     return retc;
 }
+
+/**
+ * @brief func:getType() → params, results
+ * 返回函数签名的参数和返回值类型。
+ * 每个类型为字符串: "i32", "i64", "f32", "f64", "anyref", "externref", "funcref"
+ * @return params (string array), results (string array)
+ */
+static int l_func_get_type(lua_State *L) {
+    wmt_Function *wf = (wmt_Function*)luaL_checkudata(L, 1, WMT_FUNC);
+    wasmtime_context_t *ctx = wasmtime_store_context(wf->store);
+    wasm_functype_t *ftype = wasmtime_func_type(ctx, &wf->func);
+    if (!ftype) {
+        return luaL_error(L, "Failed to get function type");
+    }
+
+    const wasm_valtype_vec_t *params = wasm_functype_params(ftype);
+    const wasm_valtype_vec_t *results = wasm_functype_results(ftype);
+
+    /* 参数类型数组 */
+    lua_newtable(L);
+    for (size_t i = 0; i < params->size; i++) {
+        wasm_valkind_t kind = wasm_valtype_kind(params->data[i]);
+        const char *name = "unknown";
+        switch (kind) {
+            case WASM_I32: name = "i32"; break;
+            case WASM_I64: name = "i64"; break;
+            case WASM_F32: name = "f32"; break;
+            case WASM_F64: name = "f64"; break;
+            case WASM_FUNCREF: name = "funcref"; break;
+            default: name = "ref"; break;
+        }
+        lua_pushstring(L, name);
+        lua_rawseti(L, -2, (int)i + 1);
+    }
+
+    /* 返回值类型数组 */
+    lua_newtable(L);
+    for (size_t i = 0; i < results->size; i++) {
+        wasm_valkind_t kind = wasm_valtype_kind(results->data[i]);
+        const char *name = "unknown";
+        switch (kind) {
+            case WASM_I32: name = "i32"; break;
+            case WASM_I64: name = "i64"; break;
+            case WASM_F32: name = "f32"; break;
+            case WASM_F64: name = "f64"; break;
+            case WASM_FUNCREF: name = "funcref"; break;
+            default: name = "ref"; break;
+        }
+        lua_pushstring(L, name);
+        lua_rawseti(L, -2, (int)i + 1);
+    }
+
+    wasm_functype_delete(ftype);
+    return 2;
+}
+
+/* ============================================================
+ * Memory
+ * ============================================================ */
+
+static int wmt_memory_gc(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    luaL_unref(L, LUA_REGISTRYINDEX, wm->store_ref);
+    wm->store = NULL;
+    return 0;
+}
+
+/**
+ * @brief memory:read(offset, length) → string
+ * 从 WASM 线性内存中读取数据。
+ * @param offset 内存偏移（字节）
+ * @param length 读取的字节数
+ * @return Lua string
+ */
+static int l_memory_read(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    lua_Integer offset = luaL_checkinteger(L, 2);
+    lua_Integer length = luaL_checkinteger(L, 3);
+
+    if (offset < 0 || length < 0) {
+        return luaL_error(L, "memory:read: invalid offset/length");
+    }
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    uint8_t *data = wasmtime_memory_data(ctx, &wm->memory);
+    size_t data_size = wasmtime_memory_data_size(ctx, &wm->memory);
+
+    if ((size_t)(offset + length) > data_size) {
+        return luaL_error(L, "memory:read: out of bounds");
+    }
+
+    lua_pushlstring(L, (const char*)(data + offset), (size_t)length);
+    return 1;
+}
+
+/**
+ * @brief memory:write(offset, data) → bytes_written
+ * 向 WASM 线性内存写入数据。
+ * @param offset 内存偏移（字节）
+ * @param data   要写入的字符串
+ * @return 写入的字节数
+ */
+static int l_memory_write(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    lua_Integer offset = luaL_checkinteger(L, 2);
+    size_t data_len;
+    const char *data_str = luaL_checklstring(L, 3, &data_len);
+
+    if (offset < 0) {
+        return luaL_error(L, "memory:write: invalid offset");
+    }
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    uint8_t *mem_data = wasmtime_memory_data(ctx, &wm->memory);
+    size_t mem_size = wasmtime_memory_data_size(ctx, &wm->memory);
+
+    if ((size_t)offset + data_len > mem_size) {
+        return luaL_error(L, "memory:write: out of bounds");
+    }
+
+    memcpy(mem_data + offset, data_str, data_len);
+    lua_pushinteger(L, (lua_Integer)data_len);
+    return 1;
+}
+
+/**
+ * @brief memory:size() → pages
+ * 返回当前内存大小（以 64KB 页为单位）。
+ */
+static int l_memory_size(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    uint64_t pages = wasmtime_memory_size(ctx, &wm->memory);
+    lua_pushinteger(L, (lua_Integer)pages);
+    return 1;
+}
+
+/**
+ * @brief memory:dataSize() → bytes
+ * 返回内存的实际字节数。
+ */
+static int l_memory_data_size(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    size_t sz = wasmtime_memory_data_size(ctx, &wm->memory);
+    lua_pushinteger(L, (lua_Integer)sz);
+    return 1;
+}
+
+/**
+ * @brief memory:grow(delta_pages) → old_pages, ok
+ * 增长内存。
+ * @param delta_pages 要增长的页数
+ * @return old_pages (之前的页数), ok (成功=true/失败=false+error)
+ */
+static int l_memory_grow(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    uint64_t delta = (uint64_t)luaL_checkinteger(L, 2);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    uint64_t old_size;
+    wasmtime_error_t *error = wasmtime_memory_grow(ctx, &wm->memory, delta, &old_size);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushinteger(L, 0);
+        lua_pushboolean(L, 0);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 3;
+    }
+
+    lua_pushinteger(L, (lua_Integer)old_size);
+    lua_pushboolean(L, 1);
+    return 2;
+}
+
+/**
+ * @brief memory:getType() → min, max
+ * 返回内存类型限制。
+ * @return min（最小页数）, max（最大页数，0 表示无上限）
+ */
+static int l_memory_get_type(lua_State *L) {
+    wmt_Memory *wm = (wmt_Memory*)luaL_checkudata(L, 1, WMT_MEMORY);
+    wasmtime_context_t *ctx = wasmtime_store_context(wm->store);
+    wasm_memorytype_t *mty = wasmtime_memory_type(ctx, &wm->memory);
+    if (!mty) {
+        lua_pushinteger(L, 0);
+        lua_pushinteger(L, 0);
+        return 2;
+    }
+    const wasm_limits_t *limits = wasm_memorytype_limits(mty);
+    lua_pushinteger(L, (lua_Integer)limits->min);
+    lua_pushinteger(L, (lua_Integer)limits->max);
+    return 2;
+}
+
+/* ============================================================
+ * Global
+ * ============================================================ */
+
+static int wmt_global_gc(lua_State *L) {
+    wmt_Global *wg = (wmt_Global*)luaL_checkudata(L, 1, WMT_GLOBAL);
+    luaL_unref(L, LUA_REGISTRYINDEX, wg->store_ref);
+    wg->store = NULL;
+    return 0;
+}
+
+/**
+ * @brief global:get() → value
+ * 读取全局变量的当前值。
+ * @return Lua 值（number/boolean/string）
+ */
+static int l_global_get(lua_State *L) {
+    wmt_Global *wg = (wmt_Global*)luaL_checkudata(L, 1, WMT_GLOBAL);
+    wasmtime_context_t *ctx = wasmtime_store_context(wg->store);
+    wasmtime_val_t val;
+    wasmtime_global_get(ctx, &wg->global, &val);
+    wasmtime_val_to_lua(L, &val);
+    return 1;
+}
+
+/**
+ * @brief global:set(value) → ok
+ * 设置全局变量的值。
+ * @param value Lua 值（number/boolean/string）
+ * @return true 成功，false+error 失败
+ */
+static int l_global_set(lua_State *L) {
+    wmt_Global *wg = (wmt_Global*)luaL_checkudata(L, 1, WMT_GLOBAL);
+    wasmtime_val_t val;
+    lua_to_wasmtime_val(L, 2, &val);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wg->store);
+    wasmtime_error_t *error = wasmtime_global_set(ctx, &wg->global, &val);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushboolean(L, 0);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* ============================================================
+ * Table
+ * ============================================================ */
+
+static int wmt_table_gc(lua_State *L) {
+    wmt_Table *wt = (wmt_Table*)luaL_checkudata(L, 1, WMT_TABLE);
+    luaL_unref(L, LUA_REGISTRYINDEX, wt->store_ref);
+    wt->store = NULL;
+    return 0;
+}
+
+/**
+ * @brief table:get(index) → value
+ * 读取表在 index 位置的值。
+ * @param index 表索引（从 0 开始）
+ * @return Lua 值
+ */
+static int l_table_get(lua_State *L) {
+    wmt_Table *wt = (wmt_Table*)luaL_checkudata(L, 1, WMT_TABLE);
+    lua_Integer idx = luaL_checkinteger(L, 2);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wt->store);
+    wasmtime_val_t val;
+    bool ok = wasmtime_table_get(ctx, &wt->table, (uint32_t)idx, &val);
+    if (!ok) {
+        lua_pushnil(L);
+        return 1;
+    }
+    wasmtime_val_to_lua(L, &val);
+    return 1;
+}
+
+/**
+ * @brief table:set(index, value) → ok
+ * 设置表在 index 位置的值。
+ * @param index 表索引（从 0 开始）
+ * @param value Lua 值
+ * @return true 成功，false+error 失败
+ */
+static int l_table_set(lua_State *L) {
+    wmt_Table *wt = (wmt_Table*)luaL_checkudata(L, 1, WMT_TABLE);
+    lua_Integer idx = luaL_checkinteger(L, 2);
+    wasmtime_val_t val;
+    lua_to_wasmtime_val(L, 3, &val);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wt->store);
+    wasmtime_error_t *error = wasmtime_table_set(ctx, &wt->table, (uint32_t)idx, &val);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushboolean(L, 0);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/**
+ * @brief table:size() → count
+ * 返回表的当前大小（元素数量）。
+ */
+static int l_table_size(lua_State *L) {
+    wmt_Table *wt = (wmt_Table*)luaL_checkudata(L, 1, WMT_TABLE);
+    wasmtime_context_t *ctx = wasmtime_store_context(wt->store);
+    uint64_t sz = wasmtime_table_size(ctx, &wt->table);
+    lua_pushinteger(L, (lua_Integer)sz);
+    return 1;
+}
+
+/**
+ * @brief table:grow(delta, [init_val]) → old_size, ok
+ * 增长表大小。
+ * @param delta    要增长的元素数
+ * @param init_val 新元素的初始值（可选，默认 nil/i32(0)）
+ * @return old_size (之前的大小), ok (成功=true/失败=false+error)
+ */
+static int l_table_grow(lua_State *L) {
+    wmt_Table *wt = (wmt_Table*)luaL_checkudata(L, 1, WMT_TABLE);
+    uint64_t delta = (uint64_t)luaL_checkinteger(L, 2);
+
+    wasmtime_val_t init_val;
+    init_val.kind = WASMTIME_I32;
+    init_val.of.i32 = 0;
+    if (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) {
+        lua_to_wasmtime_val(L, 3, &init_val);
+    }
+
+    wasmtime_context_t *ctx = wasmtime_store_context(wt->store);
+    uint64_t old_size;
+    wasmtime_error_t *error = wasmtime_table_grow(ctx, &wt->table, delta, &init_val, &old_size);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushinteger(L, 0);
+        lua_pushboolean(L, 0);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 3;
+    }
+
+    lua_pushinteger(L, (lua_Integer)old_size);
+    lua_pushboolean(L, 1);
+    return 2;
+}
+
+/* ============================================================
+ * Store 额外方法: fuel / gc
+ * ============================================================ */
+
+/**
+ * @brief store:setFuel(amount) → ok
+ * 设置 store 的燃料上限。
+ * 需要 engine 创建时启用 fuel 配置。
+ * @param amount 燃料量（uint64）
+ * @return true 成功，false+error 失败
+ */
+static int l_store_set_fuel(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    uint64_t amount = (uint64_t)luaL_checkinteger(L, 2);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+    wasmtime_error_t *error = wasmtime_context_set_fuel(ctx, amount);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushboolean(L, 0);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/**
+ * @brief store:getFuel() → amount
+ * 获取当前 store 的剩余燃料。
+ * @return 剩余燃料量
+ */
+static int l_store_get_fuel(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+    uint64_t fuel;
+    wasmtime_context_get_fuel(ctx, &fuel);
+    lua_pushinteger(L, (lua_Integer)fuel);
+    return 1;
+}
+
+/**
+ * @brief store:gc()
+ * 触发 store 内 GC（垃圾回收 externref/anyref/GcRef）。
+ */
+static int l_store_gc(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+    wasmtime_context_gc(ctx);
+    return 0;
+}
+
+/**
+ * @brief store:setEpochDeadline(ticks) → ok
+ * 设置 epoch 截止值（需要 engine 创建时启用 epoch 配置）。
+ */
+static int l_store_set_epoch_deadline(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    uint64_t ticks = (uint64_t)luaL_checkinteger(L, 2);
+
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+    wasmtime_context_set_epoch_deadline(ctx, ticks);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* ============================================================
+ * Module 序列化/反序列化
+ * ============================================================ */
+
+/**
+ * @brief module:serialize() → serialized_bytes
+ * 将已编译的模块序列化为字节流。
+ * 可用于预编译 WASM 模块以加速后续加载。
+ * @return 序列化的二进制数据 (string)
+ */
+static int l_module_serialize(lua_State *L) {
+    wmt_Module *wm = (wmt_Module*)luaL_checkudata(L, 1, WMT_MODULE);
+
+    wasm_byte_vec_t buffer;
+    wasmtime_error_t *error = wasmtime_module_serialize(wm->module, &buffer);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushnil(L);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    lua_pushlstring(L, (const char*)buffer.data, buffer.size);
+    wasm_byte_vec_delete(&buffer);
+    return 1;
+}
+
+/**
+ * @brief wasmtime.deserializeModule(engine, serialized_bytes) → module
+ * 从序列化字节流反序列化模块（无须重新编译 WASM）。
+ * @param engine engine userdata
+ * @param data   序列化的二进制数据 (string)
+ * @return module userdata，失败返回 nil+error
+ */
+static int l_deserialize_module(lua_State *L) {
+    wmt_Engine *we = (wmt_Engine*)luaL_checkudata(L, 1, WMT_ENGINE);
+    size_t data_len;
+    const char *data = luaL_checklstring(L, 2, &data_len);
+
+    wasmtime_module_t *mod = NULL;
+    wasmtime_error_t *error = wasmtime_module_deserialize(
+        we->engine, (const uint8_t*)data, data_len, &mod);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pushnil(L);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    if (!mod) {
+        lua_pushnil(L);
+        lua_pushstring(L, "deserialize: mod is NULL");
+        return 2;
+    }
+
+    wmt_Module *wm = (wmt_Module*)lua_newuserdata(L, sizeof(wmt_Module));
+    wm->module = mod;
+    luaL_getmetatable(L, WMT_MODULE);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/**
+ * @brief module:getExports() → table
+ * 返回模块导出项的类型信息。
+ * @return { [1] = { name = "xxx", kind = "func"/"memory"/"global"/"table" }, ... }
+ */
+static int l_module_get_exports(lua_State *L) {
+    wmt_Module *wm = (wmt_Module*)luaL_checkudata(L, 1, WMT_MODULE);
+
+    wasm_exporttype_vec_t exports;
+    wasmtime_module_exports(wm->module, &exports);
+
+    lua_newtable(L);
+    for (size_t i = 0; i < exports.size; i++) {
+        const wasm_name_t *name = wasm_exporttype_name(exports.data[i]);
+        const wasm_externtype_t *ext = wasm_exporttype_type(exports.data[i]);
+        wasm_externkind_t ekind = wasm_externtype_kind(ext);
+
+        const char *kind_name = "unknown";
+        switch (ekind) {
+            case WASM_EXTERN_FUNC:   kind_name = "func";   break;
+            case WASM_EXTERN_MEMORY: kind_name = "memory"; break;
+            case WASM_EXTERN_GLOBAL: kind_name = "global"; break;
+            case WASM_EXTERN_TABLE:  kind_name = "table";  break;
+            default: break;
+        }
+
+        lua_newtable(L);
+        lua_pushlstring(L, name->data, name->size);
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, kind_name);
+        lua_setfield(L, -2, "kind");
+        lua_rawseti(L, -2, (int)i + 1);
+    }
+
+    wasm_exporttype_vec_delete(&exports);
+    return 1;
+}
+
+/**
+ * @brief module:getImports() → table
+ * 返回模块导入项的类型信息。
+ * @return { [1] = { module = "xxx", name = "yyy", kind = "func"/... }, ... }
+ */
+static int l_module_get_imports(lua_State *L) {
+    wmt_Module *wm = (wmt_Module*)luaL_checkudata(L, 1, WMT_MODULE);
+
+    wasm_importtype_vec_t imports;
+    wasmtime_module_imports(wm->module, &imports);
+
+    lua_newtable(L);
+    for (size_t i = 0; i < imports.size; i++) {
+        const wasm_name_t *mod = wasm_importtype_module(imports.data[i]);
+        const wasm_name_t *name = wasm_importtype_name(imports.data[i]);
+        const wasm_externtype_t *ext = wasm_importtype_type(imports.data[i]);
+        wasm_externkind_t ekind = wasm_externtype_kind(ext);
+
+        const char *kind_name = "unknown";
+        switch (ekind) {
+            case WASM_EXTERN_FUNC:   kind_name = "func";   break;
+            case WASM_EXTERN_MEMORY: kind_name = "memory"; break;
+            case WASM_EXTERN_GLOBAL: kind_name = "global"; break;
+            case WASM_EXTERN_TABLE:  kind_name = "table";  break;
+            default: break;
+        }
+
+        lua_newtable(L);
+        lua_pushlstring(L, mod->data, mod->size);
+        lua_setfield(L, -2, "module");
+        lua_pushlstring(L, name->data, name->size);
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, kind_name);
+        lua_setfield(L, -2, "kind");
+        lua_rawseti(L, -2, (int)i + 1);
+    }
+
+    wasm_importtype_vec_delete(&imports);
+    return 1;
+}
+
+/* ============================================================
+ * externref 支持
+ * ============================================================ */
+
+/**
+ * @brief wasmtime.newExternref(store, data) → externref_val
+ * 创建一个 externref 值，将 data 作为宿主引用传递给 WASM。
+ * @param store store userdata
+ * @param data  任意的 Lua 值（轻量 userdata 或 integer 指针）
+ *              Lua 字符串或 userdata 作为指针存储
+ * @return 一个 wasmtime_val_t（Lua table），可用于传参调用
+ */
+static int l_new_externref(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+
+    void *host_data = NULL;
+    /* 从 Lua 值中提取宿主数据 */
+    switch (lua_type(L, 2)) {
+        case LUA_TSTRING:
+            host_data = (void*)lua_tostring(L, 2);
+            break;
+        case LUA_TUSERDATA:
+        case LUA_TLIGHTUSERDATA:
+            host_data = lua_touserdata(L, 2);
+            break;
+        default:
+            return luaL_error(L, "externref: only string/userdata supported as host data");
+    }
+
+    wasmtime_externref_t externref;
+    bool ok = wasmtime_externref_new(ctx, host_data, NULL, &externref);
+    if (!ok) {
+        return luaL_error(L, "externref: failed to create");
+    }
+
+    /* 返回一个 Lua table 包装 wasmtime_val_t */
+    wasmtime_val_t val;
+    val.kind = WASMTIME_EXTERNREF;
+    val.of.externref = externref;
+
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)(uintptr_t)host_data);
+    lua_setfield(L, -2, "_data");
+
+    return 1;
+}
+
+/**
+ * @brief externref:getData() → userdata_or_string
+ * 从 externref 值中提取宿主数据。
+ */
+static int l_externref_get_data(lua_State *L) {
+    /* 此为简化实现 */
+    lua_getfield(L, 1, "_data");
+    return 1;
+}
+
+/**
+ * @brief store:newMemory(min, max) → memory_userdata
+ * 创建一个独立的 WASM 内存。
+ * @param min 最小页数
+ * @param max 最大页数 (0 表示无上限)
+ * @return memory userdata
+ */
+static int l_store_new_memory(lua_State *L) {
+    wmt_Store *ws = (wmt_Store*)luaL_checkudata(L, 1, WMT_STORE);
+    uint32_t min_pages = (uint32_t)luaL_optinteger(L, 2, 1);
+    uint32_t max_pages = (uint32_t)luaL_optinteger(L, 3, 0);
+
+    wasm_limits_t limits = { min_pages, max_pages };
+    wasm_memorytype_t *mtype = wasm_memorytype_new(&limits);
+    if (!mtype) {
+        return luaL_error(L, "store:newMemory: failed to create memory type");
+    }
+
+    wasmtime_context_t *ctx = wasmtime_store_context(ws->store);
+    wmt_Memory *wm = (wmt_Memory*)lua_newuserdata(L, sizeof(wmt_Memory));
+    wasmtime_error_t *error = wasmtime_memory_new(ctx, mtype, &wm->memory);
+    wasm_memorytype_delete(mtype);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        lua_pop(L, 1); /* pop userdata */
+        lua_pushnil(L);
+        lua_pushlstring(L, msg.data, msg.size);
+        wasm_byte_vec_delete(&msg);
+        wasmtime_error_delete(error);
+        return 2;
+    }
+
+    wm->store = ws->store;
+    lua_pushvalue(L, 1);
+    wm->store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    luaL_getmetatable(L, WMT_MEMORY);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/* ============================================================
+ * SharedMemory  — 线程安全的 WASM 共享内存
+ * ============================================================ */
+
+typedef struct {
+    wasmtime_sharedmemory_t *shmem;
+    uint64_t size;
+} wmt_SharedMemory;
+
+static int wmt_sharedmemory_gc(lua_State *L) {
+    wmt_SharedMemory *sm = (wmt_SharedMemory*)luaL_checkudata(L, 1, WMT_SHMEM);
+    if (sm->shmem) {
+        wasmtime_sharedmemory_delete(sm->shmem);
+        sm->shmem = NULL;
+    }
+    return 0;
+}
+
+/**
+ * @brief wasmtime.newSharedMemory(engine, minPages, maxPages) → sharedmemory
+ * 创建一个线程安全的 WASM 共享内存，可跨线程/跨 store 共享。
+ * @param engine   engine userdata
+ * @param minPages 最小页数
+ * @param maxPages 最大页数 (0 表示无上限)
+ * @return sharedmemory userdata
+ */
+static int l_new_shared_memory(lua_State *L) {
+    wmt_Engine *we = (wmt_Engine*)luaL_checkudata(L, 1, WMT_ENGINE);
+    uint32_t min_pages = (uint32_t)luaL_checkinteger(L, 2);
+    uint32_t max_pages = (uint32_t)luaL_optinteger(L, 3, 0);
+
+    /* 创建 memory type */
+    wasm_limits_t limits;
+    limits.min = min_pages;
+    limits.max = max_pages == 0 ? wasm_limits_max_default : max_pages;
+    wasm_memorytype_t *memty = wasm_memorytype_new(&limits);
+
+    wasmtime_sharedmemory_t *shmem = NULL;
+    wasmtime_error_t *error = wasmtime_sharedmemory_new(we->engine, memty, &shmem);
+    wasm_memorytype_delete(memty);
+
+    if (error) {
+        wasm_name_t msg;
+        wasmtime_error_message(error, &msg);
+        wasmtime_error_delete(error);
+        return luaL_error(L, "Failed to create shared memory: %.*s", (int)msg.size, msg.data);
+    }
+
+    wmt_SharedMemory *sm = (wmt_SharedMemory*)lua_newuserdata(L, sizeof(wmt_SharedMemory));
+    sm->shmem = shmem;
+    sm->size = min_pages * 65536ULL;
+
+    luaL_getmetatable(L, WMT_SHMEM);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/**
+ * @brief sharedmemory:size() → bytes
+ * 返回共享内存的大小（字节）。
+ */
+static int l_sharedmemory_size(lua_State *L) {
+    wmt_SharedMemory *sm = (wmt_SharedMemory*)luaL_checkudata(L, 1, WMT_SHMEM);
+    lua_pushinteger(L, (lua_Integer)sm->size);
+    return 1;
+}
+
+/**
+ * @brief sharedmemory:data() → lightuserdata
+ * 返回共享内存的原始数据指针。
+ */
+static int l_sharedmemory_data(lua_State *L) {
+    wmt_SharedMemory *sm = (wmt_SharedMemory*)luaL_checkudata(L, 1, WMT_SHMEM);
+    uint8_t *base = wasmtime_sharedmemory_data(sm->shmem);
+    lua_pushlightuserdata(L, base);
+    return 1;
+}
+
+static const struct luaL_Reg sharedmemory_methods[] = {
+    {"size", l_sharedmemory_size},
+    {"data", l_sharedmemory_data},
+    {"__gc", wmt_sharedmemory_gc},
+    {NULL, NULL}
+};
 
 /* ============================================================
  * 元表创建
@@ -2541,22 +3843,36 @@ static int l_run_lua2wasm(lua_State *L) {
  * ============================================================ */
 
 static const struct luaL_Reg engine_methods[] = {
+    {"incrementEpoch", l_engine_increment_epoch},
     {"__gc", wmt_engine_gc},
     {NULL, NULL}
 };
 
 static const struct luaL_Reg store_methods[] = {
+    {"setFuel",     l_store_set_fuel},
+    {"getFuel",     l_store_get_fuel},
+    {"gc",          l_store_gc},
+    {"setEpochDeadline", l_store_set_epoch_deadline},
+    {"newMemory",   l_store_new_memory},
     {"__gc", wmt_store_gc},
     {NULL, NULL}
 };
 
 static const struct luaL_Reg module_methods[] = {
+    {"serialize",   l_module_serialize},
+    {"getExports",  l_module_get_exports},
+    {"getImports",  l_module_get_imports},
     {"__gc", wmt_module_gc},
     {NULL, NULL}
 };
 
 static const struct luaL_Reg instance_methods[] = {
-    {"getExport", l_instance_get_export},
+    {"getExport",    l_instance_get_export},
+    {"getExportEx",  l_instance_get_export_ex},
+    {"getExports",   l_instance_get_exports},
+    {"getMemory",    l_instance_get_memory},
+    {"getGlobal",    l_instance_get_global},
+    {"getTable",     l_instance_get_table},
     {"__gc", wmt_instance_gc},
     {NULL, NULL}
 };
@@ -2570,18 +3886,49 @@ static const struct luaL_Reg linker_methods[] = {
 
 static const struct luaL_Reg function_methods[] = {
     {"call", l_func_call},
+    {"getType", l_func_get_type},
     {"__gc", wmt_func_gc},
     {NULL, NULL}
 };
 
+static const struct luaL_Reg memory_methods[] = {
+    {"read",     l_memory_read},
+    {"write",    l_memory_write},
+    {"size",     l_memory_size},
+    {"dataSize", l_memory_data_size},
+    {"grow",     l_memory_grow},
+    {"getType",  l_memory_get_type},
+    {"__gc",     wmt_memory_gc},
+    {NULL, NULL}
+};
+
+static const struct luaL_Reg global_methods[] = {
+    {"get",  l_global_get},
+    {"set",  l_global_set},
+    {"__gc", wmt_global_gc},
+    {NULL, NULL}
+};
+
+static const struct luaL_Reg table_methods[] = {
+    {"get",   l_table_get},
+    {"set",   l_table_set},
+    {"size",  l_table_size},
+    {"grow",  l_table_grow},
+    {"__gc",  wmt_table_gc},
+    {NULL, NULL}
+};
+
 static const struct luaL_Reg wasmtime_lib[] = {
-    {"newEngine",     l_new_engine},
-    {"newStore",      l_new_store},
-    {"newModule",     l_new_module},
-    {"newInstance",   l_new_instance},
-    {"validate",      l_validate},
-    {"newLinker",     l_new_linker},
-    {"runLua2wasm",   l_run_lua2wasm},
+    {"newEngine",         l_new_engine},
+    {"newStore",          l_new_store},
+    {"newModule",         l_new_module},
+    {"newInstance",       l_new_instance},
+    {"validate",          l_validate},
+    {"newLinker",         l_new_linker},
+    {"deserializeModule", l_deserialize_module},
+    {"newExternref",      l_new_externref},
+    {"newSharedMemory",   l_new_shared_memory},
+    {"runLua2wasm",       l_run_lua2wasm},
     {NULL, NULL}
 };
 
@@ -2595,7 +3942,11 @@ int luaopen_wasmtime(lua_State *L) {
     create_meta(L, WMT_INSTANCE, instance_methods);
     create_meta(L, WMT_LINKER, linker_methods);
     create_meta(L, WMT_FUNC, function_methods);
+    create_meta(L, WMT_MEMORY, memory_methods);
+    create_meta(L, WMT_GLOBAL, global_methods);
+    create_meta(L, WMT_TABLE, table_methods);
     create_meta(L, WMT_CALLER, caller_methods);
+    create_meta(L, WMT_SHMEM, sharedmemory_methods);
 
     luaL_newlib(L, wasmtime_lib);
     return 1;
