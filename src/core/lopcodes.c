@@ -136,6 +136,7 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_GENERICWRAP */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_CHECKTYPE */
  ,opmode(0, 0, 0, 0, 0, iAx)		/* OP_EXTRAARG */
+ ,opmode(0, 0, 0, 0, 1, iAx)		/* OP_CUSTOM - 使用 Ax 携带用户 opcode */
 };
 
 

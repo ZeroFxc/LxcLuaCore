@@ -20,7 +20,19 @@ typedef struct {
     lua_State *L_thread;    /**< Lua state associated with the thread */
     int ref;                /**< Registry reference to the thread state */
     char name[64];          /**< Thread name */
+    int joined;             /**< Flag: thread has been joined */
+    int detached;           /**< Flag: thread has been detached */
+    int has_error;          /**< Flag: thread terminated with error */
 } ThreadHandle;
+
+/**
+ * @brief Bundled argument passed to thread entry function.
+ * Allows thread_entry to report errors back to ThreadHandle.
+ */
+typedef struct {
+    lua_State *L_thread;    /**< Lua state for the new thread */
+    ThreadHandle *th;       /**< Thread handle for error reporting */
+} ThreadArg;
 
 /**
  * @brief Element in a channel's linked list.
@@ -63,17 +75,22 @@ typedef struct {
 /**
  * @brief Entry point for new threads.
  *
- * @param arg Pointer to the Lua state of the new thread.
+ * Receives a ThreadArg bundling the Lua state and ThreadHandle.
+ * Sets the has_error flag on the ThreadHandle if lua_pcall fails.
+ *
+ * @param arg Pointer to ThreadArg containing L_thread and ThreadHandle.
  * @return NULL.
  */
 static void *thread_entry(void *arg) {
-    lua_State *L = (lua_State *)arg;
-    // Stack: func, args...
+    ThreadArg *ta = (ThreadArg *)arg;
+    lua_State *L = ta->L_thread;
+    ThreadHandle *th = ta->th;
     int nargs = lua_gettop(L) - 1;
     if (lua_pcall(L, nargs, LUA_MULTRET, 0) != LUA_OK) {
-        // Error string is on stack
+        if (th) th->has_error = 1;
         fprintf(stderr, "Thread error: %s\n", lua_tostring(L, -1));
     }
+    free(ta);
     return NULL;
 }
 
@@ -140,7 +157,16 @@ static int thread_create(lua_State *L) {
         lua_xmove(L, L1, 1);
     }
 
-    if (l_thread_create(&th->thread, thread_entry, L1) != 0) {
+    ThreadArg *ta = (ThreadArg *)malloc(sizeof(ThreadArg));
+    if (!ta) {
+        luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+        return luaL_error(L, "out of memory");
+    }
+    ta->L_thread = L1;
+    ta->th = th;
+
+    if (l_thread_create(&th->thread, thread_entry, ta) != 0) {
+        free(ta);
         luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
         return luaL_error(L, "failed to create thread");
     }
@@ -153,26 +179,42 @@ static int thread_create(lua_State *L) {
  *
  * Usage: th:join()
  *
+ * On success: returns true followed by the thread function's return values.
+ * On error: returns false followed by the error string.
+ *
  * @param L The Lua state.
- * @return Number of results returned by the thread function.
+ * @return Number of results (including the leading boolean).
  */
 static int thread_join(lua_State *L) {
     ThreadHandle *th = (ThreadHandle *)luaL_checkudata(L, 1, "lthread");
-    if (th->L_thread == NULL) {
+    if (th->detached)
+        return luaL_error(L, "cannot join a detached thread");
+    if (th->joined)
         return luaL_error(L, "thread already joined");
-    }
+    if (th->L_thread == NULL)
+        return luaL_error(L, "invalid thread handle");
 
     l_thread_join(th->thread, NULL);
+    th->joined = 1;
 
     int nres = lua_gettop(th->L_thread);
-    if (nres > 0) {
-        lua_xmove(th->L_thread, L, nres);
+
+    if (th->has_error) {
+        lua_pushboolean(L, 0);
+        if (nres > 0) {
+            lua_xmove(th->L_thread, L, nres);
+        }
+    } else {
+        lua_pushboolean(L, 1);
+        if (nres > 0) {
+            lua_xmove(th->L_thread, L, nres);
+        }
     }
 
     luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
     th->L_thread = NULL;
 
-    return nres;
+    return nres + 1;
 }
 
 /**
@@ -198,7 +240,14 @@ static int thread_createx(lua_State *L) {
     }
 
     l_thread_t thread;
-    if (l_thread_create(&thread, thread_entry, L1) != 0) {
+    ThreadArg *ta = (ThreadArg *)malloc(sizeof(ThreadArg));
+    if (!ta)
+        return luaL_error(L, "out of memory");
+    ta->L_thread = L1;
+    ta->th = NULL;
+
+    if (l_thread_create(&thread, thread_entry, ta) != 0) {
+        free(ta);
         return luaL_error(L, "failed to create thread");
     }
 
@@ -291,6 +340,53 @@ static int thread_id(lua_State *L) {
     ThreadHandle *th = (ThreadHandle *)luaL_checkudata(L, 1, "lthread");
     lua_pushinteger(L, (lua_Integer)l_thread_getid(&th->thread));
     return 1;
+}
+
+/**
+ * @brief Garbage collector for thread handles.
+ *
+ * If the thread is still running and hasn't been joined or detached,
+ * detach it to prevent resource leak. Releases the registry anchor.
+ *
+ * @param L The Lua state.
+ * @return 0.
+ */
+static int thread_gc(lua_State *L) {
+    ThreadHandle *th = (ThreadHandle *)luaL_checkudata(L, 1, "lthread");
+    if (th->L_thread != NULL && !th->joined && !th->detached) {
+        l_thread_detach(th->thread);
+        luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+        th->L_thread = NULL;
+        th->detached = 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Detaches a thread so it runs independently (fire-and-forget).
+ *
+ * A detached thread cannot be joined. Resources are automatically
+ * cleaned up when the thread terminates.
+ *
+ * Usage: th:detach()
+ *
+ * @param L The Lua state.
+ * @return 0.
+ */
+static int thread_detach(lua_State *L) {
+    ThreadHandle *th = (ThreadHandle *)luaL_checkudata(L, 1, "lthread");
+    if (th->joined)
+        return luaL_error(L, "thread already joined");
+    if (th->detached)
+        return luaL_error(L, "thread already detached");
+    if (th->L_thread == NULL)
+        return luaL_error(L, "invalid thread handle");
+
+    l_thread_detach(th->thread);
+    luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+    th->L_thread = NULL;
+    th->detached = 1;
+    return 0;
 }
 
 /**
@@ -859,11 +955,16 @@ static int thread_pick(lua_State *L) {
             }
 
             Listener *l = malloc(sizeof(Listener));
-            if (l) {
-                l->sel = &sel;
-                l->next = ch->listeners;
-                ch->listeners = l;
+            if (!l) {
+                l_mutex_unlock(&ch->lock);
+                unregister_all(L, 1, &sel);
+                l_mutex_destroy(&sel.lock);
+                l_cond_destroy(&sel.cond);
+                return luaL_error(L, "out of memory");
             }
+            l->sel = &sel;
+            l->next = ch->listeners;
+            ch->listeners = l;
             l_mutex_unlock(&ch->lock);
         }
         lua_pop(L, 2);
@@ -941,8 +1042,10 @@ static int thread_pick(lua_State *L) {
 
 static const luaL_Reg thread_methods[] = {
     {"join", thread_join},
+    {"detach", thread_detach},
     {"name", thread_name},
     {"id", thread_id},
+    {"__gc", thread_gc},
     {NULL, NULL}
 };
 

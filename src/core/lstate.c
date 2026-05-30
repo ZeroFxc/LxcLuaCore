@@ -265,6 +265,10 @@ static void init_registry (lua_State *L, global_State *g) {
   setthvalue(L, &registry->array[LUA_RIDX_MAINTHREAD - 1], L);
   /* registry[LUA_RIDX_GLOBALS] = new table (table of globals) */
   sethvalue(L, &registry->array[LUA_RIDX_GLOBALS - 1], luaH_new(L));
+  /* 创建自定义 opcode 处理器引用表 */
+  g->custom_op_reftable = luaH_new(L);
+  if (g->custom_op_reftable)
+    g->custom_op_reftable->is_shared = 1;
 }
 
 
@@ -509,6 +513,10 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   g->keyword_registry = NULL;  /* initialize keyword registry */
   g->kwreg_size = 0;
   g->kwreg_count = 0;
+  /* 初始化自定义 opcode 处理器表 */
+  memset(g->custom_op_handlers, 0, sizeof(g->custom_op_handlers));
+  g->custom_op_reftable = NULL;
+  g->custom_op_count = 0;
   luaM_poolinit(L);  /* initialize memory pool */
   l_mutex_init(&g->lock);
   if (luaD_rawrunprotected(L, f_luaopen, NULL) != LUA_OK) {

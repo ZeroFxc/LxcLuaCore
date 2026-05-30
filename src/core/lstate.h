@@ -17,6 +17,7 @@ typedef struct CallInfo CallInfo;
 #include "lobject.h"
 #include "ltm.h"
 #include "lzio.h"
+#include "lopcodes.h"
 
 
 /**
@@ -372,6 +373,10 @@ typedef struct global_State {
   struct KeywordRegEntry *keyword_registry;  /**< Array of keyword registrations. */
   int kwreg_size;   /**< Allocated size of keyword_registry. */
   int kwreg_count;  /**< Number of entries in keyword_registry. */
+  /* 自定义 opcode 处理器表 */
+  lua_CFunction custom_op_handlers[OP_CUSTOM_COUNT];  /**< 自定义 opcode 处理器 C 函数指针数组 */
+  struct Table *custom_op_reftable;  /**< 自定义 opcode 处理器引用表（存储原始函数引用） */
+  int custom_op_count;  /**< 已注册的自定义 opcode 数量 */
 } global_State;
 
 

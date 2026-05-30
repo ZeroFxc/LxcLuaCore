@@ -123,7 +123,8 @@ typedef struct promise {
         int str_ref;             /**< 字符串（注册表引用） */
         int tbl_ref;             /**< 表（注册表引用） */
         int func_ref;            /**< 函数（注册表引用） */
-        void *data;              /**< 轻量用户数据 */
+        int ud_ref;              /**< 完整用户数据（注册表引用） */
+        void *data;              /**< 轻量用户数据指针 */
     } result;
     
     /* 反应队列（then/catch/finally 回调列表） */

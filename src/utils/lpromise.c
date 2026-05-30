@@ -78,10 +78,31 @@ void promise_release(promise *p) {
     p->ref_count--;
     if (p->ref_count > 0) return;
 
-    /* 释放结果值引用 */
+    /* 释放注册表中的结果值引用 */
     if (p->state != PROMISE_PENDING) {
-        /* 需要释放注册表中的引用 */
-        /* 注意：这里假设 L 在某个地方可访问，实际使用时需要传入或存储 */
+        lua_State *L = p->loop ? p->loop->L : NULL;
+        if (L) {
+            switch (p->result_type) {
+                case LUA_TSTRING:
+                    if (p->result.str_ref != LUA_NOREF && p->result.str_ref != LUA_REFNIL)
+                        luaL_unref(L, LUA_REGISTRYINDEX, p->result.str_ref);
+                    break;
+                case LUA_TTABLE:
+                    if (p->result.tbl_ref != LUA_NOREF && p->result.tbl_ref != LUA_REFNIL)
+                        luaL_unref(L, LUA_REGISTRYINDEX, p->result.tbl_ref);
+                    break;
+                case LUA_TFUNCTION:
+                    if (p->result.func_ref != LUA_NOREF && p->result.func_ref != LUA_REFNIL)
+                        luaL_unref(L, LUA_REGISTRYINDEX, p->result.func_ref);
+                    break;
+                case LUA_TUSERDATA:
+                    if (p->result.ud_ref != LUA_NOREF && p->result.ud_ref != LUA_REFNIL)
+                        luaL_unref(L, LUA_REGISTRYINDEX, p->result.ud_ref);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 
     /* 释放反应队列 */
@@ -106,17 +127,17 @@ int promise_resolve(promise *p, lua_State *L) {
 
     p->state = PROMISE_FULFILLED;
 
-    /* 从栈顶获取结果值并保存 */
+    /* 从栈顶获取结果值并保存（始终消费栈顶值） */
     int top = lua_gettop(L);
     if (top > 0) {
-        int need_pop = 1;  /* 大多数类型需要手动 pop */
         p->result_type = lua_type(L, -1);
         switch (p->result_type) {
             case LUA_TNIL:
-                need_pop = 0;
+                lua_pop(L, 1);
                 break;
             case LUA_TBOOLEAN:
                 p->result.boolean_val = lua_toboolean(L, -1);
+                lua_pop(L, 1);
                 break;
             case LUA_TNUMBER:
                 if (lua_isinteger(L, -1)) {
@@ -125,30 +146,29 @@ int promise_resolve(promise *p, lua_State *L) {
                 } else {
                     p->result.num_val = lua_tonumber(L, -1);
                 }
+                lua_pop(L, 1);
                 break;
             case LUA_TSTRING:
                 p->result.str_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                need_pop = 0;  /* luaL_ref 已消费 */
                 break;
             case LUA_TTABLE:
                 p->result.tbl_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                need_pop = 0;  /* luaL_ref 已消费 */
                 break;
             case LUA_TFUNCTION:
                 p->result.func_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                need_pop = 0;  /* luaL_ref 已消费 */
                 break;
             case LUA_TUSERDATA:
+                p->result.ud_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+                break;
             case LUA_TLIGHTUSERDATA:
                 p->result.data = lua_touserdata(L, -1);
+                lua_pop(L, 1);
                 break;
             default:
                 p->result_type = LUA_TNIL;
-                need_pop = 0;
+                lua_pop(L, 1);
                 break;
         }
-        /* promise_resolve 不消费栈值：调用者负责清理 */
-        (void)need_pop;
     }
 
     /* 触发所有已注册的反应 */
@@ -167,15 +187,13 @@ int promise_reject(promise *p, lua_State *L) {
 
     p->state = PROMISE_REJECTED;
 
-    /* 从栈顶获取拒绝原因 */
+    /* 从栈顶获取拒绝原因并保存（始终消费栈顶值） */
     int top = lua_gettop(L);
     if (top > 0) {
-        int need_pop = 1;
         p->result_type = lua_type(L, -1);
         switch (p->result_type) {
             case LUA_TSTRING:
                 p->result.str_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                need_pop = 0;
                 break;
             case LUA_TNUMBER:
                 if (lua_isinteger(L, -1)) {
@@ -184,15 +202,15 @@ int promise_reject(promise *p, lua_State *L) {
                 } else {
                     p->result.num_val = lua_tonumber(L, -1);
                 }
+                lua_pop(L, 1);
                 break;
             default:
+                lua_pop(L, 1);  /* 弹出未知类型的值 */
                 lua_pushliteral(L, "Rejected");
+                p->result_type = LUA_TSTRING;
                 p->result.str_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                need_pop = 0;  /* push+ref 模式，ref 消费了 push 的值 */
                 break;
         }
-        /* promise_reject 不消费栈值：调用者负责清理 */
-        (void)need_pop;
     }
 
     /* 触发所有 catch 反应 */
@@ -258,6 +276,16 @@ static void push_promise_result(promise *p, lua_State *L) {
             } else {
                 lua_pushnil(L);
             }
+            break;
+        case LUA_TUSERDATA:
+            if (p->result.ud_ref != LUA_NOREF && p->result.ud_ref != LUA_REFNIL) {
+                lua_rawgeti(L, LUA_REGISTRYINDEX, p->result.ud_ref);
+            } else {
+                lua_pushnil(L);
+            }
+            break;
+        case LUA_TLIGHTUSERDATA:
+            lua_pushlightuserdata(L, p->result.data);
             break;
         default:
             lua_pushnil(L);
@@ -333,13 +361,10 @@ static void execute_reaction(promise_reaction *reaction, promise *parent, lua_St
             } else {
                 promise_reject(child, L);
             }
-
-            lua_pop(L, 1);  /* 清理返回值 */
         } else {
             /* 无回调，透传结果 */
             push_promise_result(parent, L);
             promise_resolve(child, L);
-            lua_pop(L, 1);
         }
     }
     else if (parent->state == PROMISE_REJECTED && (reaction->type == 1 || reaction->type == 2)) {
@@ -357,11 +382,9 @@ static void execute_reaction(promise_reaction *reaction, promise *parent, lua_St
                 if (parent->state == PROMISE_REJECTED) {
                     push_promise_result(parent, L);
                     promise_reject(child, L);
-                    lua_pop(L, 1);
                 } else {
                     push_promise_result(parent, L);
                     promise_resolve(child, L);
-                    lua_pop(L, 1);
                 }
             } else {
                 /* catch: 传入错误原因 */
@@ -373,13 +396,11 @@ static void execute_reaction(promise_reaction *reaction, promise *parent, lua_St
                 } else {
                     promise_reject(child, L);
                 }
-                lua_pop(L, 1);
             }
         } else {
             /* 无 catch 回调，继续传播拒绝 */
             push_promise_result(parent, L);
             promise_reject(child, L);
-            lua_pop(L, 1);
         }
     }
     else if (parent->state == PROMISE_FULFILLED && reaction->type == 2) {
@@ -392,7 +413,6 @@ static void execute_reaction(promise_reaction *reaction, promise *parent, lua_St
         /* 透传原始结果 */
         push_promise_result(parent, L);
         promise_resolve(child, L);
-        lua_pop(L, 1);
     }
 
     promise_release(child);
@@ -539,18 +559,22 @@ promise *promise_wrap_value(lua_State *L, event_loop *loop) {
         if (lua_getfield(L, -1, "__name") == LUA_TSTRING) {
             const char *name = lua_tostring(L, -1);
             if (name && strcmp(name, "Promise") == 0) {
-                lua_pop(L, 2);
+                lua_pop(L, 2);  /* 弹出元表和 __name */
                 /* 假设 userdata 中包含 promise* */
                 promise **pp = (promise **)lua_touserdata(L, -1);
                 if (pp && *pp) {
-                    return promise_retain(*pp);
+                    promise *ret = promise_retain(*pp);
+                    lua_pop(L, 1);  /* 弹出 Promise userdata */
+                    return ret;
                 }
+                lua_pop(L, 1);  /* 弹出无效 userdata */
+                return NULL;
             }
         }
-        lua_pop(L, 2);
+        lua_pop(L, 2);  /* 弹出元表和 __name */
     }
 
-    /* 包装为 fulfilled Promise */
+    /* 包装为 fulfilled Promise（promise_resolve 现在消费栈顶值） */
     return promise_resolved(L, loop);
 }
 
@@ -597,7 +621,6 @@ promise *promise_all(lua_State *L, event_loop *loop) {
             free(promises);
             return NULL;
         }
-        lua_pop(L, 1);
     }
 
     promise *parent = promise_new(L, loop);
@@ -628,6 +651,15 @@ promise *promise_all(lua_State *L, event_loop *loop) {
                 /* 任一失败 → 立即拒绝 */
                 push_promise_result(promises[i], L);
                 promise_reject(parent, L);
+                /* 释放所有已 retain 的子 Promise */
+                for (int k = 0; k < i; k++) {
+                    if (promises[k]->state == PROMISE_PENDING) {
+                        promises[k]->aco_ctx = NULL;
+                        promises[k]->on_settled = NULL;
+                        promise_release(promises[k]);
+                    }
+                }
+                for (int k = 0; k < count; k++) promise_release(promises[k]);
                 l_mutex_destroy(&ctx->lock);
                 free(ctx);
                 free(promises);
@@ -780,6 +812,15 @@ static void compose_on_settled(promise *child) {
     }
 
     if (local_done) {
+        /* 清理所有子 Promise：清除回调并释放引用计数 */
+        for (int i = 0; i < ctx->count; i++) {
+            promise *p = ctx->promises[i];
+            if (p) {
+                p->aco_ctx = NULL;
+                p->on_settled = NULL;
+                promise_release(p);
+            }
+        }
         /* 销毁互斥锁并释放组合上下文 */
         l_mutex_destroy(&ctx->lock);
         free(ctx->promises);
@@ -806,7 +847,6 @@ promise *promise_race(lua_State *L, event_loop *loop) {
             free(promises);
             return NULL;
         }
-        lua_pop(L, 1);
     }
 
     promise *parent = promise_new(L, loop);
@@ -889,7 +929,6 @@ promise *promise_all_settled(lua_State *L, event_loop *loop) {
             free(promises);
             return NULL;
         }
-        lua_pop(L, 1);
     }
 
     promise *parent = promise_new(L, loop);
@@ -910,6 +949,7 @@ promise *promise_all_settled(lua_State *L, event_loop *loop) {
     ctx->promises = promises;
     ctx->count = count;
     ctx->resolved_count = 0;
+    ctx->rejected_count = 0;
     ctx->parent = parent;
     ctx->L = L;
     ctx->mode = 2;  /* all_settled */
@@ -980,7 +1020,6 @@ promise *promise_any(lua_State *L, event_loop *loop) {
             free(promises);
             return NULL;
         }
-        lua_pop(L, 1);
     }
 
     promise *parent = promise_new(L, loop);
@@ -1122,7 +1161,6 @@ int promise_cancel(promise *p, lua_State *L) {
 
     lua_pushliteral(L, "Promise cancelled");
     promise_reject(p, L);
-    lua_pop(L, 1);
 
     return 0;
 }

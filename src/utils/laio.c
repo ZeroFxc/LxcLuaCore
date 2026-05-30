@@ -176,11 +176,9 @@ static void file_complete(event_loop *loop, ev_task *task) {
     if (ctx->content && ctx->p && ctx->content_length > 0) {
         lua_pushlstring(L, ctx->content, ctx->content_length);
         promise_resolve(ctx->p, L);
-        lua_pop(L, 1);
     } else if (ctx->p) {
         lua_pushfstring(L, "Failed to read file: %s", ctx->filepath ? ctx->filepath : "(null)");
         promise_reject(ctx->p, L);
-        lua_pop(L, 1);
     }
 
     free(ctx->content);
@@ -329,11 +327,9 @@ static void http_complete(event_loop *loop, ev_task *task) {
         lua_setfield(L, -2, "elapsed");
 
         promise_resolve(ctx->p, L);
-        lua_pop(L, 1);
     } else if (ctx->p) {
         lua_pushfstring(L, "HTTP request failed: %s", ctx->url ? ctx->url : "");
         promise_reject(ctx->p, L);
-        lua_pop(L, 1);
     }
 
     aio_http_response_free(&ctx->response);
@@ -478,12 +474,10 @@ static void dns_complete(event_loop *loop, ev_task *task) {
             lua_rawseti(L, -2, i + 1);
         }
         promise_resolve(ctx->p, L);
-        lua_pop(L, 1);
     } else if (ctx->p) {
         lua_pushfstring(L, "DNS resolution failed for: %s", 
                         ctx->hostname ? ctx->hostname : "(null)");
         promise_reject(ctx->p, L);
-        lua_pop(L, 1);
     }
 
     aio_dns_result_free(&ctx->result);
@@ -559,7 +553,6 @@ promise *aio_sleep(double seconds, lua_State *L, event_loop *loop) {
     if (seconds == 0) {
         lua_pushboolean(L, 1);  /* 返回 true 而不是 nil */
         promise_resolve(p, L);
-        lua_pop(L, 1);
         return p;
     }
 
@@ -809,7 +802,6 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
     if (!co_L) {
         lua_pushstring(L, "Failed to create coroutine");
         promise_reject(result_p, L);
-        lua_pop(L, 1);
         return result_p;
     }
     
@@ -821,7 +813,6 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
         luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
         lua_pushstring(L, "Failed to allocate coroutine context");
         promise_reject(result_p, L);
-        lua_pop(L, 1);
         return result_p;
     }
     
@@ -910,27 +901,24 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
                     int status2 = lua_resume(co_L, L, 0, &nres);
                     if (status2 == LUA_OK || status2 == LUA_YIELD) {
                         if (status2 == LUA_OK) {
-                            if (nres > 0) {
-                                lua_xmove(co_L, L, nres);
-                                promise_resolve(result_p, L);
-                                lua_pop(L, 1);
-                            } else {
-                                lua_pushboolean(L, 1);
-                                promise_resolve(result_p, L);
-                                lua_pop(L, 1);
+                                if (nres > 0) {
+                                    lua_xmove(co_L, L, nres);
+                                    promise_resolve(result_p, L);
+                                } else {
+                                    lua_pushboolean(L, 1);
+                                    promise_resolve(result_p, L);
+                                }
+                                free_coroutine_context(ctx);
+                                luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
                             }
+                            /* 如果再次 yield，继续上面的流程 */
+                        } else {
+                            const char *errmsg = lua_tostring(co_L, -1);
+                            lua_pushstring(L, errmsg ? errmsg : "Error after non-Promise yield");
+                            promise_reject(result_p, L);
                             free_coroutine_context(ctx);
                             luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
                         }
-                        /* 如果再次 yield，继续上面的流程 */
-                    } else {
-                        const char *errmsg = lua_tostring(co_L, -1);
-                        lua_pushstring(L, errmsg ? errmsg : "Error after non-Promise yield");
-                        promise_reject(result_p, L);
-                        lua_pop(L, 1);
-                        free_coroutine_context(ctx);
-                        luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
-                    }
                 }
             } else {
                 /* yield 但没有返回值（可能是 naked yield） */
@@ -946,7 +934,6 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
         
         lua_pushstring(L, errmsg ? errmsg : "Coroutine error");
         promise_reject(result_p, L);
-        lua_pop(L, 1);
         
         /* 清理 */
         if (ctx->waiting_p) { promise_release(ctx->waiting_p); }
@@ -1226,7 +1213,11 @@ static int laio_defer(lua_State *L) {
     task.callback = defer_callback;  /* 使用外部定义的函数 */
     task.data = dctx;
     ev_post_task(loop, &task);
-    
+
+    promise **pp = (promise **)lua_newuserdata(L, sizeof(promise *));
+    *pp = p;
+    luaL_getmetatable(L, PROMISE_METATABLE);
+    lua_setmetatable(L, -2);
     return 1;
 }
 
@@ -1243,12 +1234,10 @@ static void defer_callback(event_loop *loop, ev_task *task) {
         
         if (status == LUA_OK) {
             promise_resolve(ctx->p, ctx->L_main);
-            lua_pop(ctx->L_main, 1);
         } else {
             const char *err = lua_tostring(ctx->L_main, -1);
             lua_pushstring(ctx->L_main, err ? err : "defer error");
             promise_reject(ctx->p, ctx->L_main);
-            lua_pop(ctx->L_main, 1);
         }
     }
     
@@ -1362,7 +1351,6 @@ static int laio_promise_cancel(lua_State *L) {
 
     int ret = promise_cancel(*pp, L);
     if (ret == 0) {
-        lua_pop(L, 1);  /* cancel 推入了拒绝原因，清理掉 */
         lua_pushboolean(L, 1);
     } else {
         lua_pushboolean(L, 0);
@@ -1599,7 +1587,7 @@ static void laio_wt_timer_callback(event_loop *loop, ev_timer *timer) {
 
     promise_release(ctx->p);
     ctx->p = NULL;
-    /* 不 free(ctx)：ctx 包含 timer，事件循环仍持有 &ctx->timer */
+    free(ctx);
 }
 
 static int laio_gc(lua_State *L) {
@@ -1686,7 +1674,6 @@ static int laio_asyncio_map(lua_State *L) {
             const char *errmsg = lua_tostring(L, -1);
             lua_pushstring(L, errmsg ? errmsg : "map function error");
             promise *err_p = promise_rejected(L, loop);
-            lua_pop(L, 1);  /* pop error string consumed by promise_reject */
             if (!err_p) return luaL_error(L, "map: item %d reject failed", i);
 
             promise **pp = (promise **)lua_newuserdata(L, sizeof(promise *));
@@ -1697,7 +1684,6 @@ static int laio_asyncio_map(lua_State *L) {
             /* 函数成功：包装返回值为 fulfilled promise */
             promise *ok_p = promise_resolved(L, loop);
             if (!ok_p) return luaL_error(L, "map: item %d resolve failed", i);
-            lua_pop(L, 1);  /* promise_resolve 不消费栈值，手动清理 */
 
             promise **pp = (promise **)lua_newuserdata(L, sizeof(promise *));
             *pp = ok_p;
