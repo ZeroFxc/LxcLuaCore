@@ -90,6 +90,12 @@ int luaopen_asyncio(lua_State *L);
 int luaopen_jit(lua_State *L);
 #endif
 
+/* 声明自定义 opcode 库的初始化函数 */
+int luaopen_vmcustom(lua_State *L);
+
+/* 声明原生 VM 库的初始化函数 */
+int luaopen_nativevm(lua_State *L);
+
 // clang and ffi libraries
 
 /*
@@ -137,6 +143,8 @@ static const luaL_Reg stdlibs[] = {
 #ifndef LUA_NOJIT
   {"jit", luaopen_jit},
 #endif
+  {"vmcustom", luaopen_vmcustom},
+  {"nativevm", luaopen_nativevm},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},
@@ -217,6 +225,8 @@ static const luaL_Reg loadedlibs[] = {
 #ifndef LUA_NOJIT
   {"jit", luaopen_jit},
 #endif
+  {"vmcustom", luaopen_vmcustom},
+  {"nativevm", luaopen_nativevm},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},

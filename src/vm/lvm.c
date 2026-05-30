@@ -4043,6 +4043,35 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         }
         vmbreak;
       }
+      vmcase(OP_CUSTOM) {
+        StkId ra = RA(i);
+        lua_Unsigned user_op = GETARG_Ax(i);
+        if (user_op < OP_CUSTOM_COUNT) {
+          lua_CFunction handler = G(L)->custom_op_handlers[user_op];
+          if (handler != NULL) {
+            StkId saved_top = L->top.p;
+            L->top.p = ci->top.p;
+            int nargs = cast_int(L->top.p - base);
+            L->top.p = base;
+            int nresults = handler(L);
+            if (nresults >= 0) {
+              if (nresults > 0) {
+                StkId res = ra;
+                for (int j = 0; j < nresults; j++)
+                  setobjs2s(L, res + j, base + j);
+              }
+              L->top.p = saved_top;
+            }
+            else {
+              L->top.p = saved_top;
+              updatebase(ci);
+              pc--;
+              goto returning;
+            }
+          }
+        }
+        vmbreak;
+      }
       vmcase(OP_EXTRAARG) {
         lua_assert(0);
         vmbreak;

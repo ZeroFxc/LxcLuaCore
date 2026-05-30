@@ -413,11 +413,24 @@ OP_ASYNCWRAP,/*	A B	R[A] := async_wrap(R[B])			*/
 OP_GENERICWRAP,/* A B	R[A] := generic_wrap(R[B], R[B+1], R[B+2])	*/
 OP_CHECKTYPE,/*	A B C	if (check_type(R[A], R[B]) != true) error(K[C])	*/
 
-OP_EXTRAARG/*	Ax	extra (larger) argument for previous opcode	*/
+OP_EXTRAARG,/*	Ax	extra (larger) argument for previous opcode	*/
+
+OP_CUSTOM/*	A	dispatch to custom opcode handler (opcode in Ax)	*/
 } OpCode;
 
 
-#define NUM_OPCODES	((int)(OP_EXTRAARG) + 1)
+#define NUM_OPCODES	((int)(OP_CUSTOM) + 1)
+
+/*
+** 自定义 opcode 扩展系统
+** 内建 opcode 范围: 0 ~ (OP_CUSTOM - 1)
+** 自定义 opcode 范围: OP_CUSTOM_BASE ~ (OP_CUSTOM_BASE + OP_CUSTOM_COUNT - 1)
+** OP_CUSTOM 指令使用 Ax 字段携带实际的用户 opcode 号
+** 用户 opcode 空间: 0 ~ 255 (通过 OP_CUSTOM_BASE 偏移到 256 ~ 511)
+*/
+#define OP_CUSTOM_BASE    256     /* 自定义 opcode 起始值 */
+#define OP_CUSTOM_COUNT   256     /* 最大自定义 opcode 数量 */
+#define OP_CUSTOM_MAX     (OP_CUSTOM_BASE + OP_CUSTOM_COUNT - 1) /* 511 */
 
 
 

@@ -139,6 +139,7 @@ static const void *const disptab[NUM_OPCODES] = {
 &&L_OP_ASYNCWRAP,
 &&L_OP_GENERICWRAP,
 &&L_OP_CHECKTYPE,
-&&L_OP_EXTRAARG
+&&L_OP_EXTRAARG,
+&&L_OP_CUSTOM
 
 };

@@ -62,6 +62,8 @@ LOCAL_SRC_FILES := \
 	src/stdlib/lutf8lib.c \
 	src/stdlib/lbitlib.c \
 	src/vm/lvmlib.c \
+	src/vm/lvmustom.c \
+	src/vm/lnativevm.c \
 	src/vm/lvm.c \
 	src/core/lzio.c \
 	src/utils/lnamespace.c\
