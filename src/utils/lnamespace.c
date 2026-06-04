@@ -24,8 +24,8 @@ Namespace *luaN_new (lua_State *L, TString *name) {
   GCObject *o = luaC_newobj(L, LUA_VNAMESPACE, sizeof(Namespace));
   Namespace *ns = gco2ns(o);
   ns->name = name;
+  ns->gclist = NULL;
   ns->data = NULL;
-  ns->using_next = NULL;
   ns->using_next = NULL;
 
   /* Anchor ns on stack to prevent collection during table allocation */

@@ -51,6 +51,7 @@ static int super_compare(const TValue *k1, const TValue *k2) {
 SuperStruct *luaS_newsuperstruct (lua_State *L, TString *name, unsigned int size) {
   SuperStruct *ss = (SuperStruct *)luaC_newobj(L, LUA_TSUPERSTRUCT, sizeof(SuperStruct));
   ss->name = name;
+  ss->gclist = NULL;
   ss->nsize = 0;
   ss->ncapacity = size > 0 ? size : 4;
   ss->data = luaM_newvector(L, ss->ncapacity * 2, TValue);

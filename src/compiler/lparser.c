@@ -2345,6 +2345,7 @@ static void body (LexState *ls, expdesc *e, int ismethod, int line) {
       new_localvarliteral(ls, "self");
       adjustlocalvars(ls, 1);
       luaK_reserveregs(&new_fs, 1);
+      new_fs.f->numparams = cast_byte(new_fs.nactvar);
     }
     while (ls->t.token != '}' && ls->t.token != TK_EOS) {
 

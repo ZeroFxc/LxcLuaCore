@@ -563,37 +563,49 @@ static lua_Unsigned project (lua_Unsigned ran, lua_Unsigned n,
 
 
 static int math_random (lua_State *L) {
-  lua_Integer low, up;
-  lua_Unsigned p;
   RanState *state = (RanState *)lua_touserdata(L, lua_upvalueindex(1));
-  Rand64 rv = nextrand(state->s);  /* next pseudo-random value */
-  switch (lua_gettop(L)) {  /* check number of arguments */
-    case 0: {  /* no arguments */
-      lua_pushnumber(L, I2d(rv));  /* float between 0 and 1 */
+  Rand64 rv = nextrand(state->s);
+  switch (lua_gettop(L)) {
+    case 0: {
+      lua_pushnumber(L, I2d(rv));
       return 1;
     }
-    case 1: {  /* only upper limit */
-      low = 1;
-      up = luaL_checkinteger(L, 1);
-      if (up == 0) {  /* single 0 as argument? */
-        lua_pushinteger(L, l_castU2S(I2UInt(rv)));  /* full random integer */
-        return 1;
+    case 1: {
+      if (lua_isinteger(L, 1)) {
+        lua_Integer up = lua_tointeger(L, 1);
+        if (up == 0) {
+          lua_pushinteger(L, l_castU2S(I2UInt(rv)));
+          return 1;
+        }
+        luaL_argcheck(L, up >= 1, 1, "interval is empty");
+        lua_Unsigned p = project(I2UInt(rv), (lua_Unsigned)up - 1, state);
+        lua_pushinteger(L, (lua_Integer)(p + 1));
+      } else {
+        lua_Number up = luaL_checknumber(L, 1);
+        luaL_argcheck(L, up >= 1.0, 1, "interval is empty");
+        lua_Number r = I2d(rv);
+        lua_pushnumber(L, r * up);
       }
-      break;
+      return 1;
     }
-    case 2: {  /* lower and upper limits */
-      low = luaL_checkinteger(L, 1);
-      up = luaL_checkinteger(L, 2);
-      break;
+    case 2: {
+      if (lua_isinteger(L, 1) && lua_isinteger(L, 2)) {
+        lua_Integer low = lua_tointeger(L, 1);
+        lua_Integer up = lua_tointeger(L, 2);
+        luaL_argcheck(L, low <= up, 1, "interval is empty");
+        lua_Unsigned p = project(I2UInt(rv), (lua_Unsigned)up - (lua_Unsigned)low, state);
+        lua_pushinteger(L, (lua_Integer)(p + (lua_Unsigned)low));
+      } else {
+        lua_Number low = luaL_checknumber(L, 1);
+        lua_Number up = luaL_checknumber(L, 2);
+        luaL_argcheck(L, low <= up, 1, "interval is empty");
+        lua_Number r = I2d(rv);
+        lua_pushnumber(L, low + r * (up - low));
+      }
+      return 1;
     }
     default: return luaL_error(L, "wrong number of arguments");
   }
-  /* random integer in the interval [low, up] */
-  luaL_argcheck(L, low <= up, 1, "interval is empty");
-  /* project random integer into the interval [0, up - low] */
-  p = project(I2UInt(rv), l_castS2U(up) - l_castS2U(low), state);
-  lua_pushinteger(L, l_castU2S(p + l_castS2U(low)));
-  return 1;
 }
 
 
@@ -904,6 +916,194 @@ static int math_toexpr (lua_State *L) {
   return 1;
 }
 
+/*
+** {=======================================================
+** Noise function (Simplex-like gradient noise)
+** Supports 1D, 2D, 3D inputs. Returns value in [-1, 1].
+** ========================================================
+*/
+
+static const unsigned char noise_perm[512] = {
+  151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+  140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+  247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+  57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+  74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+  60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+  65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+  200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+  52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+  207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+  119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+  129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+  218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+  81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+  184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+  222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,
+  151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+  140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+  247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+  57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+  74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+  60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+  65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+  200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+  52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+  207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+  119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+  129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+  218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+  81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+  184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+  222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
+};
+
+/*
+** 平滑曲线：6t^5 - 15t^4 + 10t^3
+*/
+static lua_Number noise_fade(lua_Number t) {
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+/*
+** 线性插值
+*/
+static lua_Number noise_lerp(lua_Number t, lua_Number a, lua_Number b) {
+  return a + t * (b - a);
+}
+
+/*
+** 计算梯度贡献值
+** hash 的高4位决定梯度向量，返回值是梯度与距离向量的点积
+*/
+static lua_Number noise_grad(int hash, lua_Number x, lua_Number y) {
+  int h = hash & 3;
+  lua_Number u = h < 2 ? x : y;
+  lua_Number v = h < 1 || h == 2 ? y : x;
+  return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+}
+
+static lua_Number noise_grad3d(int hash, lua_Number x, lua_Number y, lua_Number z) {
+  int h = hash & 15;
+  lua_Number u = h < 8 ? x : y;
+  lua_Number v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+  return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+}
+
+/*
+** 2D Perlin-like噪声
+*/
+static lua_Number noise_2d(lua_Number x, lua_Number y) {
+  int xi = (int)l_mathop(floor)(x) & 255;
+  int yi = (int)l_mathop(floor)(y) & 255;
+
+  lua_Number xf = x - l_mathop(floor)(x);
+  lua_Number yf = y - l_mathop(floor)(y);
+
+  lua_Number u = noise_fade(xf);
+  lua_Number v = noise_fade(yf);
+
+  const unsigned char *p = noise_perm;
+
+  int aa = p[p[xi] + yi];
+  int ab = p[p[xi] + yi + 1];
+  int ba = p[p[xi + 1] + yi];
+  int bb = p[p[xi + 1] + yi + 1];
+
+  lua_Number x1 = noise_lerp(u,
+    noise_grad(aa, xf, yf),
+    noise_grad(ba, xf - 1, yf));
+  lua_Number x2 = noise_lerp(u,
+    noise_grad(ab, xf, yf - 1),
+    noise_grad(bb, xf - 1, yf - 1));
+
+  return noise_lerp(v, x1, x2);
+}
+
+/*
+** 3D Perlin-like噪声
+*/
+static lua_Number noise_3d(lua_Number x, lua_Number y, lua_Number z) {
+  int xi = (int)l_mathop(floor)(x) & 255;
+  int yi = (int)l_mathop(floor)(y) & 255;
+  int zi = (int)l_mathop(floor)(z) & 255;
+
+  lua_Number xf = x - l_mathop(floor)(x);
+  lua_Number yf = y - l_mathop(floor)(y);
+  lua_Number zf = z - l_mathop(floor)(z);
+
+  lua_Number u = noise_fade(xf);
+  lua_Number v = noise_fade(yf);
+  lua_Number w = noise_fade(zf);
+
+  const unsigned char *p = noise_perm;
+
+  int aaa = p[p[p[xi] + yi] + zi];
+  int aba = p[p[p[xi] + yi + 1] + zi];
+  int aab = p[p[p[xi] + yi] + zi + 1];
+  int abb = p[p[p[xi] + yi + 1] + zi + 1];
+  int baa = p[p[p[xi + 1] + yi] + zi];
+  int bba = p[p[p[xi + 1] + yi + 1] + zi];
+  int bab = p[p[p[xi + 1] + yi] + zi + 1];
+  int bbb = p[p[p[xi + 1] + yi + 1] + zi + 1];
+
+  lua_Number x1 = noise_lerp(u,
+    noise_grad3d(aaa, xf, yf, zf),
+    noise_grad3d(baa, xf - 1, yf, zf));
+  lua_Number x2 = noise_lerp(u,
+    noise_grad3d(aba, xf, yf - 1, zf),
+    noise_grad3d(bba, xf - 1, yf - 1, zf));
+  lua_Number y1 = noise_lerp(v, x1, x2);
+
+  lua_Number x3 = noise_lerp(u,
+    noise_grad3d(aab, xf, yf, zf - 1),
+    noise_grad3d(bab, xf - 1, yf, zf - 1));
+  lua_Number x4 = noise_lerp(u,
+    noise_grad3d(abb, xf, yf - 1, zf - 1),
+    noise_grad3d(bbb, xf - 1, yf - 1, zf - 1));
+  lua_Number y2 = noise_lerp(v, x3, x4);
+
+  return noise_lerp(w, y1, y2);
+}
+
+/*
+** math.noise(x [, y [, z]])
+** 生成Perlin噪声值，返回值范围约为[-1, 1]
+** - 1个参数: 1D噪声（实际采样2D噪声在(0, x)）
+** - 2个参数: 2D噪声
+** - 3个参数: 3D噪声
+*/
+static int math_noise(lua_State *L) {
+  int n = lua_gettop(L);
+  lua_Number result;
+  switch (n) {
+    case 1: {
+      lua_Number x = luaL_checknumber(L, 1);
+      result = noise_2d(l_mathop(0.0), x);
+      break;
+    }
+    case 2: {
+      lua_Number x = luaL_checknumber(L, 1);
+      lua_Number y = luaL_checknumber(L, 2);
+      result = noise_2d(x, y);
+      break;
+    }
+    case 3: {
+      lua_Number x = luaL_checknumber(L, 1);
+      lua_Number y = luaL_checknumber(L, 2);
+      lua_Number z = luaL_checknumber(L, 3);
+      result = noise_3d(x, y, z);
+      break;
+    }
+    default:
+      return luaL_error(L, "wrong number of arguments");
+  }
+  lua_pushnumber(L, result);
+  return 1;
+}
+
+/* }======================================================= */
+
 static const luaL_Reg mathlib[] = {
   {"abs",   math_abs},
   {"acos",  math_acos},
@@ -921,6 +1121,7 @@ static const luaL_Reg mathlib[] = {
   {"max",   math_max},
   {"min",   math_min},
   {"modf",   math_modf},
+  {"noise", math_noise},
   {"rad",   math_rad},
   {"sin",   math_sin},
   {"sqrt",  math_sqrt},

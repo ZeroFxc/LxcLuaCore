@@ -183,6 +183,7 @@ void luaS_copystruct (lua_State *L, TValue *dest, const TValue *src) {
     if (s_src->data != s_src->inline_data.d) {
         /* Source is a View -> Create a View */
         s_dest = (Struct *)luaC_newobjdt(L, LUA_TSTRUCT, offsetof(Struct, inline_data), 0);
+        s_dest->gclist = NULL;
         s_dest->def = s_src->def;
         s_dest->parent = s_src->parent;
         s_dest->data = s_src->data;
@@ -192,6 +193,7 @@ void luaS_copystruct (lua_State *L, TValue *dest, const TValue *src) {
     } else {
         /* Source is an Owner -> Create an Owner (Deep Copy) */
         s_dest = (Struct *)luaC_newobjdt(L, LUA_TSTRUCT, offsetof(Struct, inline_data) + size, 0);
+        s_dest->gclist = NULL;
         s_dest->def = s_src->def;
         s_dest->parent = NULL;
         s_dest->data = s_dest->inline_data.d;
@@ -276,6 +278,7 @@ void luaS_structindex (lua_State *L, const TValue *t, TValue *key, StkId val) {
             v->value_.struct_ = new_s;
             v->tt_ = ctb(LUA_VSTRUCT);
 
+            new_s->gclist = NULL;
             new_s->def = nested_def;
             new_s->data_size = size;
             new_s->parent = obj2gco(s);
@@ -480,6 +483,7 @@ static int struct_call (lua_State *L) {
     ret->tt_ = ctb(LUA_VSTRUCT);
     api_incr_top(L);
 
+    s->gclist = NULL;
     s->def = def;
     s->data_size = size;
     s->parent = NULL;
@@ -899,8 +903,8 @@ static int array_index(lua_State *L) {
             TValue *v = s2v(L->top.p - 1); /* Replace parent val with new struct */
             v->value_.struct_ = s;
             v->tt_ = ctb(LUA_VSTRUCT);
-            /* L->top does not change, we replaced the value */
 
+            s->gclist = NULL;
             s->def = arr->def;
             s->data_size = arr->size;
             s->gc_offsets = gc_offsets;

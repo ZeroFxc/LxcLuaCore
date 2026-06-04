@@ -520,6 +520,7 @@ typedef struct TExternalString {
  */
 typedef struct Struct {
   CommonHeader;
+  GCObject *gclist; /**< GC list. */
   struct Table *def;    /**< Struct definition (type info). */
   int *gc_offsets;      /**< GC offsets array. */
   int n_gc_offsets;     /**< Number of GC offsets. */
@@ -950,6 +951,7 @@ typedef struct Namespace {
  */
 typedef struct SuperStruct {
   CommonHeader;
+  GCObject *gclist; /**< GC list. */
   TString *name; /**< SuperStruct name. */
   unsigned int nsize; /**< Size. */
   unsigned int ncapacity; /**< Capacity. */
