@@ -553,20 +553,9 @@ static l_noret lexerror (LexState *ls, const char *msg, int token) {
       free(line_content);
   } else if (token) {
     luaO_pushfstring(ls->L,
-                     "=============================\n"
-                     "[X] [Lua语法错误]\n\n"
-                     "    词法位置: %d\n"
-                     "    行号: %d\n"
-                     "    报错位置的附近的代码: %s\n"
-                     "    错误描述: %s\n"
-                     "    错误位置附近: %s\n\n"
-                     "[Tip] 解决方法:\n"
-                     "    1. 检查语法错误位置\n"
-                     "    2. 确认括号、引号配对正确\n"
-                     "    3. 检查关键字使用是否正确\n"
-                     "=============================",
-                     ls->tokpos,ls->lastline,
-                     txtToken22(ls,ls->lasttoken),msg, txtToken(ls, token));
+                     "tokenpos: %d, Line: %d, LastToken: '%s', description: %s",
+                     ls->tokpos, ls->lastline,
+                     txtToken22(ls, ls->lasttoken), msg);
   }
   luaD_throw(ls->L, LUA_ERRSYNTAX);
 }

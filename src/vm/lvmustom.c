@@ -90,6 +90,21 @@ static void minivm_pushreg(MiniVM *vm, int reg) {
 }
 
 
+/**
+ * @brief 检查 MiniVM 中的值是否为"假"
+ * MiniVM 扩展语义：数字 0 也被视为假（与标准 Lua 不同）
+ * @param o 要检查的 TValue 指针
+ * @return 1=假值, 0=真值
+ */
+static int minivm_isfalse(const TValue *o) {
+  if (o == NULL) return 1;
+  if (ttisnil(o)) return 1;
+  if (ttisfalse(o)) return 1;
+  if (ttisfloat(o) && fltvalue(o) == 0.0) return 1;
+  if (ttisinteger(o) && ivalue(o) == 0) return 1;
+  return 0;
+}
+
 /*
 ** 微型 VM 内置指令
 */
@@ -254,14 +269,14 @@ static int minivm_exec_one(MiniVM *vm, int op, int a, int b, int c, int k) {
     case MINIVM_OP_JT:
       {
         TValue *ra = minivm_getreg(vm, a);
-        if (ra && !l_isfalse(ra)) return k + 1;
+        if (ra && !minivm_isfalse(ra)) return k + 1;
         return 1;
       }
 
     case MINIVM_OP_JF:
       {
         TValue *ra = minivm_getreg(vm, a);
-        if (ra && l_isfalse(ra)) return k + 1;
+        if (ra && minivm_isfalse(ra)) return k + 1;
         return 1;
       }
 
@@ -632,54 +647,162 @@ static int parse_reg(const char *s) {
   return atoi(s);
 }
 
+
+/*================================================================
+  标签系统 — 用于 vm.asm 的标签定义与解析
+================================================================*/
+
+#define ASM_MAX_LABELS 128
+
 /**
- /**
+ * @brief 存储一个标签的名称和所在 PC 位置
+ */
+typedef struct AsmLabel {
+  char name[64];
+  int pc;
+} AsmLabel;
+
+/**
+ * @brief 在标签列表中查找指定名称的标签，返回其 PC 位置
+ * @param labels 标签数组
+ * @param n 标签数量
+ * @param name 要查找的标签名（不含冒号前缀）
+ * @return 找到返回 PC (>=1)，未找到返回 0
+ */
+static int asm_find_label(AsmLabel *labels, int n, const char *name) {
+  for (int i = 0; i < n; i++) {
+    if (strcmp(labels[i].name, name) == 0)
+      return labels[i].pc;
+  }
+  return 0;
+}
+
+/**
+ * @brief 扫描源代码，跳过当前行剩余内容（到换行符为止）
+ * @param p 当前位置指针
+ * @param end 源代码结尾
+ * @return 下一行起始位置（跳过换行符）
+ */
+static const char *skip_to_next_line(const char *p, const char *end) {
+  while (p < end && *p != '\n' && *p != '\r') p++;
+  while (p < end && (*p == '\n' || *p == '\r')) p++;
+  return p;
+}
+
+/**
  * @brief vm.asm(code_str)
  * 汇编 vm语言 源代码为 bytecode 表（可直接传给 execmini/mcall）
  *
  * 支持语法：
  *   MNEMONIC Ra, Rb, Rc     — 三操作数 (ADD/SUB/MUL/DIV/EQ/LT/CALL)
- *   MNEMONIC Ra, val         — 两操作数 (LOADK/MOV)
- *   MNEMONIC Ra              — 单操作数 (PRINT/INC/DEC 等用户指令)
- *   MNEMONIC                 — 零操作数 (NOP/RET/HALT)
+ *   MNEMONIC Ra, val        — 两操作数 (LOADK/MOV)
+ *   MNEMONIC Ra             — 单操作数 (PRINT/INC/DEC 等用户指令)
+ *   MNEMONIC                — 零操作数 (NOP/RET/HALT)
+ *   :labelname              — 标签定义（单独一行）
  *
- * 跳转指令（偏移量自动写入 k 字段）：
- *   JMP offs                 — 无条件跳转 offs 条指令
- *   JT  Ra, offs             — Ra 为真时跳转 offs 条
- *   JF  Ra, offs             — Ra 为假时跳转 offs 条
+ * 跳转指令的标签引用（替代手工计算偏移量）：
+ *   JMP :label              — 无条件跳转到标签位置
+ *   JT  Ra, :label          — Ra 为真时跳转到标签
+ *   JF  Ra, :label          — Ra 为假时跳转到标签
  *
- * 例:
- *   LOADK R1, 10
- *   LOADK R2, 3
- *   ADD   R3, R1, R2
- *   PRINT R3
- *   HALT
+ * 跳转也可使用旧式的数字偏移量语法（向后兼容）：
+ *   JMP 2                   — 无条件跳转 2 条指令
  *
+ * 例（标签语法）:
  *   LOADK R1, 5
- *   JMP   2                  ; 跳过 2 条
- *   LOADK R2, 99             ; 被跳过
+ *   :loop
+ *   PRINT R1
+ *   LOADK R2, 1
+ *   SUB  R1, R1, R2
+ *   JT   R1, :loop
  *   HALT
  */
 static int vm_asm(lua_State *L) {
   size_t len;
   const char *code = luaL_checklstring(L, 1, &len);
 
-  lua_newtable(L);
-  int pc = 1;
-
-  const char *p = code;
   const char *end = code + len;
-
   char token[64];
   int values[3];
   int nvals;
+
+  /*============================================================
+    第一遍扫描：收集标签定义，确定每条标签对应的 PC 位置
+  ============================================================*/
+  AsmLabel labels[ASM_MAX_LABELS];
+  int nlabels = 0;
+  int scan_pc = 1;
+  const char *p = code;
 
   while (p < end) {
     p = skip_space(p, end);
     if (p >= end) break;
     if (*p == '\n' || *p == '\r') { p++; continue; }
     if (*p == '#' || *p == ';' || *p == '/') {
-      while (p < end && *p != '\n') p++;
+      p = skip_to_next_line(p, end);
+      continue;
+    }
+
+    /* 检测标签定义 :labelname */
+    if (*p == ':') {
+      p++;
+      if (p >= end || isspace(*p) || *p == '\n' || *p == '\r') {
+        luaL_error(L, "vm.asm: empty label name at PC %d", scan_pc);
+      }
+      const char *name_start = p;
+      while (p < end && !isspace(*p) && *p != '\n' && *p != '\r')
+        p++;
+      int name_len = (int)(p - name_start);
+      if (name_len >= 63)
+        luaL_error(L, "vm.asm: label name too long (max 63 chars)");
+      if (nlabels >= ASM_MAX_LABELS)
+        luaL_error(L, "vm.asm: too many labels (max %d)", ASM_MAX_LABELS);
+
+      AsmLabel *lb = &labels[nlabels];
+      memcpy(lb->name, name_start, name_len);
+      lb->name[name_len] = '\0';
+
+      /* 检查重复标签 */
+      for (int i = 0; i < nlabels; i++) {
+        if (strcmp(labels[i].name, lb->name) == 0)
+          luaL_error(L, "vm.asm: duplicate label ':%s'", lb->name);
+      }
+      lb->pc = scan_pc;
+      nlabels++;
+      p = skip_to_next_line(p, end);
+      continue;
+    }
+
+    /* 读取助记符并推进扫描 PC */
+    p = read_token(p, end, token, sizeof(token));
+    if (token[0] == '\0') continue;
+
+    int op = mnemonic_to_op(token);
+    if (op < 0) op = atoi(token);
+
+    scan_pc++;
+    p = skip_to_next_line(p, end);
+  }
+
+  /*============================================================
+    第二遍扫描：生成 bytecode，解析标签引用
+  ============================================================*/
+  lua_newtable(L);
+  int pc = 1;
+  p = code;
+
+  while (p < end) {
+    p = skip_space(p, end);
+    if (p >= end) break;
+    if (*p == '\n' || *p == '\r') { p++; continue; }
+    if (*p == '#' || *p == ';' || *p == '/') {
+      p = skip_to_next_line(p, end);
+      continue;
+    }
+
+    /* 跳过标签定义行（第一遍已经处理） */
+    if (*p == ':') {
+      p = skip_to_next_line(p, end);
       continue;
     }
 
@@ -689,17 +812,17 @@ static int vm_asm(lua_State *L) {
 
     int op = mnemonic_to_op(token);
     if (op < 0) {
-      /* 尝试作为数字 opcode */
       op = atoi(token);
     }
 
-    /* 读取最多 3 个操作数（禁止跨行） */
+    /* 读取操作数：数字值存入 values[]，标签引用存入 label_val */
     nvals = 0;
+    int label_val = 0;   /* 非0表示存在标签引用，存储标签的 PC */
+
     while (nvals < 3) {
       const char *next = skip_space(p, end);
       if (next >= end || *next == '\n' || *next == '\r' || *next == '#' || *next == ';')
         break;
-      /* 如果跳过的空白中包含换行符，说明已经到了下一行，停止读取 */
       {
         const char *chk = p;
         int crossed = 0;
@@ -711,16 +834,31 @@ static int vm_asm(lua_State *L) {
       }
       p = read_token(p, end, token, sizeof(token));
       if (token[0] == ',' || token[0] == '\0') continue;
+
+      /* 检测标签引用 :labelname */
+      if (token[0] == ':') {
+        int target = asm_find_label(labels, nlabels, token + 1);
+        if (target == 0)
+          luaL_error(L, "vm.asm: undefined label '%s' at line near PC %d", token, pc);
+        label_val = target;
+        continue;
+      }
       values[nvals++] = parse_reg(token);
     }
 
     int a = 0, b = 0, c = 0, k_val = 0;
 
     if (op == MINIVM_OP_JMP) {
-      k_val = (nvals > 0) ? values[0] : 0;
+      if (label_val > 0)
+        k_val = label_val - pc - 1;
+      else
+        k_val = (nvals > 0) ? values[0] : 0;
     } else if (op == MINIVM_OP_JT || op == MINIVM_OP_JF) {
       a = (nvals > 0) ? values[0] : 0;
-      k_val = (nvals > 1) ? values[1] : 0;
+      if (label_val > 0)
+        k_val = label_val - pc - 1;
+      else
+        k_val = (nvals > 1) ? values[1] : 0;
     } else {
       a = (nvals > 0) ? values[0] : 0;
       b = (nvals > 1) ? values[1] : 0;
@@ -735,7 +873,7 @@ static int vm_asm(lua_State *L) {
     lua_pushinteger(L, k_val); lua_setfield(L, -2, "k");
     lua_rawseti(L, -2, pc++);
 
-    while (p < end && *p != '\n') p++;
+    p = skip_to_next_line(p, end);
   }
 
   return 1;

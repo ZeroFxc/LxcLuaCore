@@ -142,6 +142,8 @@ static GCObject **getgclist (GCObject *o) {
     case LUA_VTHREAD: return &gco2th(o)->gclist;
     case LUA_VPROTO: return &gco2p(o)->gclist;
     case LUA_VNAMESPACE: return &gco2ns(o)->gclist;
+    case LUA_VSTRUCT: return &gco2struct(o)->gclist;
+    case LUA_VSUPERSTRUCT: return &gco2superstruct(o)->gclist;
     case LUA_VUSERDATA: {
       Udata *u = gco2u(o);
       lua_assert(u->nuvalue > 0);
@@ -833,6 +835,36 @@ static int traversethread (global_State *g, lua_State *th) {
 }
 
 
+static int traverseStruct (global_State *g, Struct *s) {
+  int count = 2;
+  markobjectN(g, s->def);
+  markobjectN(g, s->parent);
+  if (s->gc_offsets) {
+    int i;
+    for (i = 0; i < s->n_gc_offsets; i++) {
+      GCObject **slot = (GCObject**)(s->data + s->gc_offsets[i]);
+      markobjectN(g, *slot);
+    }
+    count += s->n_gc_offsets;
+  }
+  return 1 + count;
+}
+
+
+static int traverseSuperStruct (global_State *g, SuperStruct *ss) {
+  int extra = 1;
+  markobjectN(g, ss->name);
+  if (ss->data) {
+    unsigned int i;
+    for (i = 0; i < ss->nsize * 2; i++) {
+      markvalue(g, &ss->data[i]);
+    }
+    extra += (int)(ss->nsize * 2);
+  }
+  return 1 + extra;
+}
+
+
 /**
  * @brief Traverse one gray object, turning it to black.
  *
@@ -852,6 +884,8 @@ static lu_mem propagatemark (global_State *g) {
     case LUA_VPROTO: return traverseproto(g, gco2p(o));
     case LUA_VTHREAD: return traversethread(g, gco2th(o));
     case LUA_VNAMESPACE: return traverseNamespace(g, gco2ns(o));
+    case LUA_VSTRUCT: return traverseStruct(g, gco2struct(o));
+    case LUA_VSUPERSTRUCT: return traverseSuperStruct(g, gco2superstruct(o));
     default: lua_assert(0); return 0;
   }
 }

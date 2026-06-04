@@ -75,6 +75,7 @@ Concept *luaF_newconcept (lua_State *L, int nupvals) {
   c->p = NULL;
   c->nupvalues = cast_byte(nupvals);
   c->ishotfixed = 0;
+  c->gclist = NULL;
   while (nupvals--) c->upvals[nupvals] = NULL;
   return c;
 }
@@ -363,6 +364,8 @@ Proto *luaF_newproto (lua_State *L) {
   f->lastlinedefined = 0;
   f->source = NULL;
   f->is_sleeping = 0;
+  f->gclist = NULL;
+  f->vm_code_table = NULL;
 #ifndef LUA_NOJIT
   f->jit_trace = NULL;
 #endif
