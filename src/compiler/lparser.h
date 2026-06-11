@@ -225,6 +225,7 @@ typedef struct Dyndata {
 /* Expression parsing flags (used by lcode.c for switch expression) */
 #define E_NO_COLON 1
 #define E_NO_CALL 2
+#define E_INFIX_ARG 4   /* 在 infix 调用参数位置，抑制多参数箭头函数检测 */
 
 #define eqstr(a,b)	((a) == (b))
 
