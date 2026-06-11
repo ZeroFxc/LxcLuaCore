@@ -3216,7 +3216,15 @@ static void primaryexp (LexState *ls, expdesc *v) {
           return;
       }
 
-      expr(ls, v);
+      /* 在 infix 参数位置，(arg...) 应被解析为函数调用参数列表，而非单个括号表达式 */
+      if (old_flags & E_INFIX_ARG) {
+        if (ls->t.token == ')')
+          v->k = VVOID;
+        else
+          explist(ls, v);
+      } else {
+        expr(ls, v);
+      }
       ls->expr_flags = old_flags;
       check_match(ls, ')', '(', line);
       luaK_dischargevars(ls->fs, v);
