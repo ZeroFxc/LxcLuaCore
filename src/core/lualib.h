@@ -274,6 +274,11 @@ LUAMOD_API int (luaopen_package) (lua_State *L);
 #define LUA_PATCHLIBNAME "patch"
 LUAMOD_API int (luaopen_patch) (lua_State *L);
 
+LUAMOD_API int (luaopen_crypto) (lua_State *L);
+LUAMOD_API int (luaopen_uuid) (lua_State *L);
+LUAMOD_API int (luaopen_rsa) (lua_State *L);
+LUAMOD_API int (luaopen_ecc) (lua_State *L);
+
 
 /**
  * @brief Opens all standard libraries.

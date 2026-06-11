@@ -1,0 +1,14 @@
+tree 4ae51c4eca7f911df81daa195a3f65e836e18107
+parent e0b587b324d4bcb08f09c593772fa6e19b1295f8
+author google-labs-jules[bot] <161369871+google-labs-jules[bot]@users.noreply.github.com> 1770568590 +0000
+committer google-labs-jules[bot] <161369871+google-labs-jules[bot]@users.noreply.github.com> 1770568590 +0000
+
+Fix macOS compilation error in loslib.c
+
+- Guard Linux-specific headers <sys/prctl.h> and <linux/seccomp.h> with #if defined(__linux__).
+- Add #include <pthread.h> for macOS support.
+- Implement macOS-compatible os_tid using pthread_threadid_np.
+- Implement macOS-compatible os_aname returning "Darwin".
+- Explicitly disable os_seccomp and os_prctl on macOS (return "not supported").
+
+Co-authored-by: OxenFxc <211793895+OxenFxc@users.noreply.github.com>

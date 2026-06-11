@@ -1787,6 +1787,11 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
       luaK_exp2anyreg(fs, v);
       break;
     }
+    case OPR_INFIX: {
+      /* infix calls are handled directly in subexpr; this case shouldn't be reached */
+      luaK_exp2anyreg(fs, v);
+      break;
+    }
     default: lua_assert(0);
   }
 }
