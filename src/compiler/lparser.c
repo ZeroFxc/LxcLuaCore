@@ -3488,7 +3488,24 @@ static void pipe_funcexp (LexState *ls, expdesc *v) {
   for (;;) {
     switch (ls->t.token) {
       case '.':
-      case TK_DBCOLON: {  /* fieldsel */
+      case TK_DBCOLON: {  /* fieldsel or label */
+        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 再跟 ::，则是 label 而非字段访问
+           区分链式命名空间 (obj::ns::member) 需要 lookahead 三步：
+           - label: ::NAME::  → 第二个 :: 之后不是 NAME（通常是另一个 statement）
+           - 命名空间: obj::ns::member → 第二个 :: 之后还是 NAME
+           关键：lookahead3 如果在不同行，一定是 label（跨行不可能是命名空间链）*/
+        int la = luaX_lookahead(ls);
+        if (la == TK_NAME) {
+          int la2 = luaX_lookahead2(ls);
+          if (la2 == TK_DBCOLON) {
+            int la3 = luaX_lookahead3(ls);
+            /* 跨行一定是 label */
+            if (la3 != TK_NAME || ls->lookahead3.linenumber != ls->lookahead2.linenumber) {
+              /* 这是 label ::name::，停止 suffixedexp 循环，交由 statement() 处理 */
+              return;
+            }
+          }
+        }
         fieldsel(ls, v);
         break;
       }
@@ -3617,7 +3634,24 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         break;
       }
       case '.':
-      case TK_DBCOLON: {  /* fieldsel */
+      case TK_DBCOLON: {  /* fieldsel or label */
+        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 再跟 ::，则是 label 而非字段访问
+           区分链式命名空间 (obj::ns::member) 需要 lookahead 三步：
+           - label: ::NAME::  → 第二个 :: 之后不是 NAME（通常是另一个 statement）
+           - 命名空间: obj::ns::member → 第二个 :: 之后还是 NAME
+           关键：lookahead3 如果在不同行，一定是 label（跨行不可能是命名空间链）*/
+        int la = luaX_lookahead(ls);
+        if (la == TK_NAME) {
+          int la2 = luaX_lookahead2(ls);
+          if (la2 == TK_DBCOLON) {
+            int la3 = luaX_lookahead3(ls);
+            /* 跨行一定是 label */
+            if (la3 != TK_NAME || ls->lookahead3.linenumber != ls->lookahead2.linenumber) {
+              /* 这是 label ::name::，停止 suffixedexp 循环，交由 statement() 处理 */
+              return;
+            }
+          }
+        }
         fieldsel(ls, v);
         break;
       }
@@ -4907,11 +4941,48 @@ static const struct {
    {3, 3},                   /* in */
    {2, 2}, {1, 1},           /* and, or */
    {1, 1},                   /* ?? (null coalescing, right associative) */
-   {1, 1}                    /* => (case operator) */
+   {1, 1},                   /* => (case operator) */
+   {5, 5}                    /* INFIX (infix function call, left associative) */
 };
 
 #define UNARY_PRIORITY	12  /* priority for unary operators */
 #define PRI_CASE        1   /* priority for case arrow '=>' */
+
+
+/**
+ * @brief 判断一个 token 是否可以作为中缀函数调用右侧表达式的起始。
+ * @param token 要检查的 token 类型
+ * @return 1 如果可以开始表达式，否则 0
+ */
+static int is_infix_expr_start (int token) {
+  switch (token) {
+    case TK_INT: case TK_FLT: case TK_NAME:
+    case '(': case TK_STRING: case TK_RAWSTRING: case TK_INTERPSTRING:
+    case TK_TRUE: case TK_FALSE: case TK_NIL:
+    case '{': case TK_NOT: case '-': case '#': case '~':
+    case TK_FUNCTION: case TK_LAMBDA: case TK_IF:
+    case TK_AWAIT: case TK_DOTS:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+
+/**
+ * @brief 检查当前 token 是否与 lookahead 在同一行，用于防止中缀调用跨行。
+ * 
+ * 通过比较当前 token (ls->t) 被词法解析时的行号与最近一次 
+ * luaX_lookahead 调用后 ls->linenumber 的值来判断。
+ * 由于 luaX_lookahead 更新了 ls->linenumber 为 lookahead token 的行号，
+ * 如果两者相同则说明在同一行。
+ * 
+ * @param ls 词法状态
+ * @return 1 如果同一行，0 否则
+ */
+static int is_same_line_infix (LexState *ls) {
+  return ls->t.linenumber == ls->linenumber;
+}
 
 
 /*
@@ -4948,25 +5019,66 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
       TString *ts = luaS_newlstr(ls->L, buf, size);
       luaM_freearray(ls->L, buf, size + 1);
       codestring(v, ts);
+      int embed_expr_line = ls->linenumber;  /* 保存字符串所在行号 */
       luaX_next(ls); /* skip string */
 
       /* parse binary operators */
       op = getbinopr(ls->t.token);
+      if (op == OPR_NOBINOPR && ls->t.token == TK_NAME &&
+          ls->t.linenumber == embed_expr_line &&
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+        op = OPR_INFIX;
+      }
       while (op != OPR_NOBINOPR && priority[op].left > limit) {
         expdesc v2;
         BinOpr nextop;
         int line = ls->linenumber;
-        luaX_next(ls);  /* skip operator */
-        luaK_infix(ls->fs, op, v);
-        /* read sub-expression with higher priority */
-        nextop = subexpr(ls, &v2, priority[op].right);
-        luaK_posfix(ls->fs, op, v, &v2, line);
-        op = nextop;
+        if (op == OPR_INFIX) {
+          TString *method = ls->t.seminfo.ts;
+          luaX_next(ls);  /* 跳过方法名 */
+          {
+            expdesc key;
+            codestring(&key, method);
+            luaK_self(ls->fs, v, &key);
+          }
+          nextop = subexpr(ls, &v2, priority[OPR_INFIX].right);
+          {
+            int base = v->u.info;
+            if (hasmultret(v2.k))
+              luaK_setmultret(ls->fs, &v2);
+            else {
+              if (v2.k != VVOID)
+                luaK_exp2nextreg(ls->fs, &v2);
+            }
+            int nparams = (v2.k == VVOID) ? 2 : (ls->fs->freereg - base);
+            init_exp(v, VCALL, luaK_codeABC(ls->fs, OP_CALL, base, nparams, 2));
+            luaK_fixline(ls->fs, line);
+            ls->fs->freereg = base + 1;
+          }
+          op = nextop;
+          if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+              is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+            op = OPR_INFIX;
+          }
+        } else {
+          luaX_next(ls);  /* skip operator */
+          luaK_infix(ls->fs, op, v);
+          /* read sub-expression with higher priority */
+          nextop = subexpr(ls, &v2, priority[op].right);
+          luaK_posfix(ls->fs, op, v, &v2, line);
+          op = nextop;
+          if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+              is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+            op = OPR_INFIX;
+          }
+        }
       }
       leavelevel(ls);
       return op;  /* return first untreated operator */
   }
 
+  /* 保存表达式起始行号，用于防止跨行中缀检测（必须在 simpleexp/前缀之前保存） */
+  int expr_line = ls->linenumber;
   uop = getunopr(ls->t.token);
   if (uop != OPR_NOUNOPR) {  /* prefix (unary) operator? */
     int line = ls->linenumber;
@@ -5001,19 +5113,100 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
         luaK_prefix(ls->fs, uop, v, line);
     }
   }
-  else simpleexp(ls, v);
+  else {
+    simpleexp(ls, v);
+  }
   /* expand while operators have priorities higher than 'limit' */
   op = getbinopr(ls->t.token);
+  /* 检测中缀函数调用: expr NAME expr => expr:NAME(expr)
+     要求方法名与表达式起始在同一行，防止跨行误检测 */
+  if (op == OPR_NOBINOPR && ls->t.token == TK_NAME &&
+      ls->t.linenumber == expr_line) {
+    int la = luaX_lookahead(ls);
+    if (is_infix_expr_start(la) && is_same_line_infix(ls)) {
+      op = OPR_INFIX;  /* 有参中缀 */
+    } else {
+      /* 无参中缀调用: receiver method => receiver:method() */
+      int is_noarg = (la == TK_EOS || ls->lookahead.linenumber != ls->t.linenumber);
+      if (is_noarg) {
+        int line = ls->t.linenumber;
+        TString *method = ls->t.seminfo.ts;
+        luaX_next(ls);  /* 跳过方法名 */
+        {
+          expdesc key;
+          codestring(&key, method);
+          luaK_self(ls->fs, v, &key);
+        }
+        int base = v->u.info;
+        init_exp(v, VCALL, luaK_codeABC(ls->fs, OP_CALL, base, 2, 2));
+        luaK_fixline(ls->fs, line);
+        ls->fs->freereg = base + 1;
+        /* 重新检测后续运算符（仅在同一行内继续链） */
+        op = getbinopr(ls->t.token);
+        if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+            is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+          op = OPR_INFIX;
+        }
+      }
+    }
+  }
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
     expdesc v2;
     BinOpr nextop;
     int line = ls->linenumber;
-    luaX_next(ls);  /* skip operator */
-    luaK_infix(ls->fs, op, v);
-    /* read sub-expression with higher priority */
-    nextop = subexpr(ls, &v2, priority[op].right);
-    luaK_posfix(ls->fs, op, v, &v2, line);
-    op = nextop;
+    if (op == OPR_INFIX) {
+      /* 中缀函数调用: receiver NAME argument => receiver:NAME(argument) */
+      TString *method = ls->t.seminfo.ts;
+      luaX_next(ls);  /* 跳过方法名 */
+      /* 设置方法调用: v 是 receiver, method 是方法名 */
+      {
+        expdesc key;
+        codestring(&key, method);
+        luaK_self(ls->fs, v, &key);
+      }
+      /* 解析参数表达式 */
+      nextop = subexpr(ls, &v2, priority[OPR_INFIX].right);
+      /* 生成函数调用 */
+      {
+        int base = v->u.info;
+        if (hasmultret(v2.k))
+          luaK_setmultret(ls->fs, &v2);
+        else {
+          if (v2.k != VVOID)
+            luaK_exp2nextreg(ls->fs, &v2);
+        }
+        int nparams = (v2.k == VVOID) ? 2 : (ls->fs->freereg - base);
+        init_exp(v, VCALL, luaK_codeABC(ls->fs, OP_CALL, base, nparams, 2));
+        luaK_fixline(ls->fs, line);
+        ls->fs->freereg = base + 1;
+      }
+      op = nextop;
+      /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
+      if (op == OPR_INFIX && ls->t.linenumber != line) {
+        op = OPR_NOBINOPR;
+      }
+      /* 继续检测中缀调用 */
+      if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+        op = OPR_INFIX;
+      }
+    } else {
+      luaX_next(ls);  /* skip operator */
+      luaK_infix(ls->fs, op, v);
+      /* read sub-expression with higher priority */
+      nextop = subexpr(ls, &v2, priority[op].right);
+      luaK_posfix(ls->fs, op, v, &v2, line);
+      op = nextop;
+      /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
+      if (op == OPR_INFIX && ls->t.linenumber != line) {
+        op = OPR_NOBINOPR;
+      }
+      /* 检测中缀调用 */
+      if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+        op = OPR_INFIX;
+      }
+    }
   }
   leavelevel(ls);
   return op;  /* return first untreated operator */
@@ -5287,6 +5480,8 @@ static BinOpr cond_subexpr (LexState *ls, expdesc *v, int limit) {
   BinOpr op;
   UnOpr uop;
   enterlevel(ls);
+  /* 保存表达式起始行号，用于防止跨行中缀检测 */
+  int cond_expr_line = ls->linenumber;
   uop = getunopr(ls->t.token);
   if (uop != OPR_NOUNOPR) {  /* prefix (unary) operator? */
     int line = ls->linenumber;
@@ -5297,16 +5492,88 @@ static BinOpr cond_subexpr (LexState *ls, expdesc *v, int limit) {
   else cond_simpleexp(ls, v);
   /* expand while operators have priorities higher than 'limit' */
   op = getbinopr(ls->t.token);
+  /* 检测中缀函数调用 */
+  if (op == OPR_NOBINOPR && ls->t.token == TK_NAME &&
+      ls->t.linenumber == cond_expr_line) {
+    int la = luaX_lookahead(ls);
+    if (is_infix_expr_start(la) && is_same_line_infix(ls)) {
+      op = OPR_INFIX;  /* 有参中缀 */
+    } else {
+      /* 无参中缀调用: receiver method => receiver:method() */
+      int is_noarg = (la == TK_EOS || ls->lookahead.linenumber != ls->t.linenumber);
+      if (is_noarg) {
+        int line = ls->t.linenumber;
+        TString *method = ls->t.seminfo.ts;
+        luaX_next(ls);  /* 跳过方法名 */
+        {
+          expdesc key;
+          codestring(&key, method);
+          luaK_self(ls->fs, v, &key);
+        }
+        int base = v->u.info;
+        init_exp(v, VCALL, luaK_codeABC(ls->fs, OP_CALL, base, 2, 2));
+        luaK_fixline(ls->fs, line);
+        ls->fs->freereg = base + 1;
+        /* 重新检测后续运算符（仅在同一行内继续链） */
+        op = getbinopr(ls->t.token);
+        if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+            is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+          op = OPR_INFIX;
+        }
+      }
+    }
+  }
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
     expdesc v2;
     BinOpr nextop;
     int line = ls->linenumber;
-    luaX_next(ls);  /* skip operator */
-    luaK_infix(ls->fs, op, v);
-    /* read sub-expression with higher priority */
-    nextop = cond_subexpr(ls, &v2, priority[op].right);
-    luaK_posfix(ls->fs, op, v, &v2, line);
-    op = nextop;
+    if (op == OPR_INFIX) {
+      TString *method = ls->t.seminfo.ts;
+      luaX_next(ls);  /* 跳过方法名 */
+      {
+        expdesc key;
+        codestring(&key, method);
+        luaK_self(ls->fs, v, &key);
+      }
+      nextop = cond_subexpr(ls, &v2, priority[OPR_INFIX].right);
+      {
+        int base = v->u.info;
+        if (hasmultret(v2.k))
+          luaK_setmultret(ls->fs, &v2);
+        else {
+          if (v2.k != VVOID)
+            luaK_exp2nextreg(ls->fs, &v2);
+        }
+        int nparams = (v2.k == VVOID) ? 2 : (ls->fs->freereg - base);
+        init_exp(v, VCALL, luaK_codeABC(ls->fs, OP_CALL, base, nparams, 2));
+        luaK_fixline(ls->fs, line);
+        ls->fs->freereg = base + 1;
+      }
+      op = nextop;
+      /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
+      if (op == OPR_INFIX && ls->t.linenumber != line) {
+        op = OPR_NOBINOPR;
+      }
+      if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+        op = OPR_INFIX;
+      }
+    } else {
+      luaX_next(ls);  /* skip operator */
+      luaK_infix(ls->fs, op, v);
+      /* read sub-expression with higher priority */
+      nextop = cond_subexpr(ls, &v2, priority[op].right);
+      luaK_posfix(ls->fs, op, v, &v2, line);
+      op = nextop;
+      /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
+      if (op == OPR_INFIX && ls->t.linenumber != line) {
+        op = OPR_NOBINOPR;
+      }
+      if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+        op = OPR_INFIX;
+      }
+    }
   }
   leavelevel(ls);
   return op;  /* return first untreated operator */
@@ -8073,33 +8340,19 @@ static void asm_checkrange_signed (LexState *ls, lua_Integer val,
 }
 
 
-/*
-** 解析汇编指令中的整数参数
-** 支持以下格式：
-**   123       - 整数字面量
-**   -123      - 负整数字面量
-**   $varname  - 局部变量的寄存器编号
-**   ^varname  - upvalue 的索引
-**   #"str"    - 字符串常量的常量池索引
-**   #123      - 整数值（直接返回，用于 LOADI）
-**   #3.14     - 浮点数值（截断为整数，用于 LOADF）
-**   #K123     - 将整数添加到常量池并返回索引
-**   #KF3.14   - 将浮点数添加到常量池并返回索引
-**   @         - 当前 PC 位置
-**   @label    - 标签的 PC 位置（支持前向引用）
-**   !freereg  - 当前空闲寄存器编号
-**   !nactvar  - 当前活跃局部变量数量
-**   !pc       - 当前 PC（与 @ 相同）
-** 参数：
-**   ls - 词法状态
-**   ctx - 汇编上下文（用于标签引用，可为 NULL）
-**   pendingPc - 如果遇到前向标签引用，记录需要修补的PC位置（输出参数）
-**   pendingLabel - 如果遇到前向标签引用，记录标签名称（输出参数）
-** 返回值：
-**   解析到的整数值
-*/
-static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx, 
-                                   int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+/* Forward declarations for inline assembly expression parser */
+static lua_Integer asm_get_expr_ex (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_or (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_xor (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_and (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_shift (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_add (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_mul (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_unary (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+static lua_Integer asm_get_primary (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef);
+
+static lua_Integer asm_get_primary (LexState *ls, AsmContext *ctx, 
+                                    int *pendingPc, TString **pendingLabel, int *isLabelRef) {
   lua_Integer val;
   FuncState *fs = ls->fs;
   
@@ -8107,50 +8360,75 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
   if (pendingLabel) *pendingLabel = NULL;
   if (isLabelRef) *isLabelRef = 0;
   
-  if (ls->t.token == TK_INT) {
-    val = ls->t.seminfo.i;
-    luaX_next(ls);
+  if (ls->t.token == '(') {
+    luaX_next(ls);  /* 跳过 '(' */
+    val = asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    checknext(ls, ')');
     return val;
   }
-  else if (ls->t.token == '-') {
-    luaX_next(ls);
-    check(ls, TK_INT);
-    val = -ls->t.seminfo.i;
+  else if (ls->t.token == TK_INT) {
+    val = ls->t.seminfo.i;
     luaX_next(ls);
     return val;
   }
   else if (ls->t.token == TK_DOLLAR) {
-    /* $varname - 获取局部变量的寄存器编号 */
-    /* 注意: '$' 在词法分析器中被映射为 TK_DOLLAR */
-    expdesc var;
-    TString *varname;
-    int varkind;
+    /* $varname 或 $(varname + offset) */
     luaX_next(ls);  /* 跳过 '$' */
+    int has_paren = testnext(ls, '(');
     check(ls, TK_NAME);
-    varname = ls->t.seminfo.ts;
-    varkind = searchvar(fs, varname, &var);
+    TString *varname = ls->t.seminfo.ts;
+    luaX_next(ls);  /* 跳过变量名 */
+    
+    expdesc var;
+    int varkind = searchvar(fs, varname, &var);
     if (varkind < 0) {
       luaK_semerror(ls, "undefined local variable '%s' in asm", getstr(varname));
     }
-    luaX_next(ls);  /* 跳过变量名 */
-    return var.u.var.ridx;  /* 返回寄存器索引 */
+    val = var.u.var.ridx;
+    
+    if (has_paren) {
+      if (testnext(ls, '+')) {
+        val += asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      }
+      else if (testnext(ls, '-')) {
+        val -= asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      }
+      checknext(ls, ')');
+    }
+    return val;
   }
   else if (ls->t.token == '%') {
-    /* %n - 直接使用寄存器编号（无需预先声明变量） */
+    /* %n 或 %(expression) */
     luaX_next(ls);  /* 跳过 '%' */
-    check(ls, TK_INT);
-    val = ls->t.seminfo.i;
+    if (testnext(ls, '(')) {
+      val = asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      checknext(ls, ')');
+    } else {
+      check(ls, TK_INT);
+      val = ls->t.seminfo.i;
+      luaX_next(ls);
+    }
     if (val < 0 || val > 255) {
       luaK_semerror(ls, "register index out of range (0-255) in asm: %lld", (long long)val);
     }
-    luaX_next(ls);
     return val;
   }
   else if (ls->t.token == TK_NAME) {
-    /* 检查是否是 Rn/rn 格式的寄存器引用 */
+    /* 检查是否是 R(expression) / r(expression) 或 Rn/rn 格式 */
     const char *name = getstr(ls->t.seminfo.ts);
     TString *ts = ls->t.seminfo.ts;
-    if ((name[0] == 'R' || name[0] == 'r') && name[1] >= '0' && name[1] <= '9') {
+    
+    if ((strcmp(name, "R") == 0 || strcmp(name, "r") == 0) && luaX_lookahead(ls) == '(') {
+      luaX_next(ls);  /* 跳过 'R' */
+      luaX_next(ls);  /* 跳过 '(' */
+      val = asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      checknext(ls, ')');
+      if (val < 0 || val > 255) {
+        luaK_semerror(ls, "register index out of range (0-255) in asm: R(%lld)", (long long)val);
+      }
+      return val;
+    }
+    else if ((name[0] == 'R' || name[0] == 'r') && name[1] >= '0' && name[1] <= '9') {
       /* 解析寄存器编号 */
       val = 0;
       int i = 1;
@@ -8176,7 +8454,7 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
       }
     }
     /* 不是寄存器格式也不是定义的常量，报错 */
-    luaX_syntaxerror(ls, "integer expected in asm instruction");
+    luaX_syntaxerror(ls, "integer or expression expected in asm instruction");
     return 0;
   }
   else if (ls->t.token == '^') {
@@ -8204,13 +8482,13 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
       return val;
     }
     else if (ls->t.token == TK_INT) {
-      /* #123 - 整数值本身（用于 LOADI） */
+      /* #123 - 整数值本身 */
       val = ls->t.seminfo.i;
       luaX_next(ls);
       return val;
     }
     else if (ls->t.token == TK_FLT) {
-      /* #3.14 - 浮点数值（截断为整数，用于 LOADF） */
+      /* #3.14 - 浮点数值截断为整数 */
       val = (lua_Integer)ls->t.seminfo.r;
       luaX_next(ls);
       return val;
@@ -8238,7 +8516,6 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
       const char *name = getstr(ls->t.seminfo.ts);
       if (name[0] == 'K' || name[0] == 'k') {
         if (name[1] == 'F' || name[1] == 'f') {
-          /* #KF... - 将浮点数添加到常量池 */
           luaX_next(ls);
           if (ls->t.token == TK_FLT) {
             val = luaK_numberK(fs, ls->t.seminfo.r);
@@ -8267,7 +8544,6 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
           return 0;
         }
         else if (name[1] == 'I' || name[1] == 'i' || name[1] == '\0') {
-          /* #K 或 #KI - 将整数添加到常量池 */
           luaX_next(ls);
           if (ls->t.token == TK_INT) {
             val = luaK_intK(fs, ls->t.seminfo.i);
@@ -8296,58 +8572,44 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
   }
   else if (ls->t.token == '@') {
     /* @ 或 @label - PC 位置或标签引用 */
-    /* 注意: '@' 并不一定被映射为 TK_OR */
-    luaX_next(ls);  /* 跳过 '@' */
-    /* 检查是否是标签引用（必须是纯名称，不能是关键字） */
+    luaX_next(ls);
     if (ls->t.token == TK_NAME && ctx != NULL) {
-      /* @label - 引用标签 */
       TString *labelname = ls->t.seminfo.ts;
-      /* 检查是否是已定义的标签或常量 */
       int labelIdx = asm_findlabel(ctx, labelname);
       int defIdx = asm_finddefine(ctx, labelname);
       if (labelIdx >= 0 || defIdx < 0) {
-        /* 是标签引用（已定义或未定义的标签） */
         int labelpc = asm_reflabel(ls, ctx, labelname);
-        luaX_next(ls);  /* 跳过标签名 */
+        luaX_next(ls);
         if (labelpc < 0) {
-          /* 前向引用，需要后续修补 */
           if (pendingLabel) *pendingLabel = labelname;
-          return 0;  /* 临时返回 0，后续修补 */
+          return 0;
         }
         if (isLabelRef) *isLabelRef = 1;
         return labelpc;
       }
-      /* 如果是已定义的常量而不是标签，回退让其作为当前PC处理 */
     }
-    /* 单独的 @ - 返回当前 PC */
     return fs->pc;
   }
   else if (ls->t.token == TK_NOT) {
     /* !specifier - 特殊值 */
-    /* 注意: '!' 在词法分析器中被映射为 TK_NOT */
-    luaX_next(ls);  /* 跳过 '!' */
+    luaX_next(ls);
     check(ls, TK_NAME);
     const char *specname = getstr(ls->t.seminfo.ts);
-    luaX_next(ls);  /* 跳过标识符 */
+    luaX_next(ls);
     
     if (strcmp(specname, "freereg") == 0) {
-      /* !freereg - 当前空闲寄存器编号 */
       return fs->freereg;
     }
     else if (strcmp(specname, "nactvar") == 0) {
-      /* !nactvar - 当前活跃局部变量数量 */
       return fs->nactvar;
     }
     else if (strcmp(specname, "pc") == 0) {
-      /* !pc - 当前 PC */
       return fs->pc;
     }
     else if (strcmp(specname, "nk") == 0) {
-      /* !nk - 当前常量池大小 */
       return fs->nk;
     }
     else if (strcmp(specname, "np") == 0) {
-      /* !np - 当前子函数原型数量 */
       return fs->np;
     }
     else {
@@ -8356,9 +8618,114 @@ static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx,
     }
   }
   else {
-    luaX_syntaxerror(ls, "integer expected in asm instruction");
-    return 0;  /* never reached */
+    luaX_syntaxerror(ls, "integer or expression expected in asm instruction");
+    return 0;
   }
+}
+
+static lua_Integer asm_get_unary (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  if (testnext(ls, '-')) {
+    return -asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+  else if (testnext(ls, '~')) {
+    return ~asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+  else {
+    return asm_get_primary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+}
+
+static lua_Integer asm_get_mul (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  for (;;) {
+    if (testnext(ls, '*')) {
+      val *= asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    else if (testnext(ls, '/')) {
+      lua_Integer denom = asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      if (denom == 0) luaK_semerror(ls, "division by zero in asm expression");
+      val /= denom;
+    }
+    else if (testnext(ls, '%')) {
+      lua_Integer denom = asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      if (denom == 0) luaK_semerror(ls, "division by zero in asm expression");
+      val %= denom;
+    }
+    else if (testnext(ls, TK_IDIV)) {  /* // */
+      lua_Integer denom = asm_get_unary(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+      if (denom == 0) luaK_semerror(ls, "division by zero in asm expression");
+      val /= denom;
+    }
+    else {
+      break;
+    }
+  }
+  return val;
+}
+
+static lua_Integer asm_get_add (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_mul(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  for (;;) {
+    if (testnext(ls, '+')) {
+      val += asm_get_mul(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    else if (testnext(ls, '-')) {
+      val -= asm_get_mul(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    else {
+      break;
+    }
+  }
+  return val;
+}
+
+static lua_Integer asm_get_shift (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_add(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  for (;;) {
+    if (testnext(ls, TK_SHL)) {  /* << */
+      val <<= asm_get_add(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    else if (testnext(ls, TK_SHR)) {  /* >> */
+      val >>= asm_get_add(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    else {
+      break;
+    }
+  }
+  return val;
+}
+
+static lua_Integer asm_get_and (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_shift(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  while (testnext(ls, '&')) {
+    val &= asm_get_shift(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+  return val;
+}
+
+static lua_Integer asm_get_xor (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_and(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  while (testnext(ls, '~')) {  /* binary XOR */
+    val ^= asm_get_and(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+  return val;
+}
+
+static lua_Integer asm_get_or (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  lua_Integer val = asm_get_xor(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  while (testnext(ls, '|')) {
+    val |= asm_get_xor(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+  }
+  return val;
+}
+
+static lua_Integer asm_get_expr_ex (LexState *ls, AsmContext *ctx, int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  return asm_get_or(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+}
+
+static lua_Integer asm_getint_ex (LexState *ls, AsmContext *ctx, 
+                                   int *pendingPc, TString **pendingLabel, int *isLabelRef) {
+  return asm_get_expr_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
 }
 
 
@@ -8381,16 +8748,20 @@ static lua_Integer asm_getint (LexState *ls) {
 **   解析到的整数值，或默认值
 */
 static lua_Integer asm_trygetint (LexState *ls, lua_Integer defval) {
-  if (ls->t.token == TK_INT || ls->t.token == '-' ||
+  if (ls->t.token == TK_INT || ls->t.token == '-' || ls->t.token == '~' ||
       ls->t.token == TK_DOLLAR || ls->t.token == '^' || 
       ls->t.token == '#' || ls->t.token == TK_OR ||
-      ls->t.token == TK_NOT || ls->t.token == '%') {
+      ls->t.token == TK_NOT || ls->t.token == '%' ||
+      ls->t.token == '(') {
     return asm_getint(ls);
   }
   /* 检查是否是 Rn 格式的寄存器引用 */
   if (ls->t.token == TK_NAME) {
     const char *name = getstr(ls->t.seminfo.ts);
     if ((name[0] == 'R' || name[0] == 'r') && name[1] >= '0' && name[1] <= '9') {
+      return asm_getint(ls);
+    }
+    if (strcmp(name, "R") == 0 || strcmp(name, "r") == 0) {
       return asm_getint(ls);
     }
   }
@@ -8404,16 +8775,20 @@ static lua_Integer asm_trygetint (LexState *ls, lua_Integer defval) {
 static lua_Integer asm_trygetint_ex (LexState *ls, AsmContext *ctx,
                                       lua_Integer defval,
                                       int *pendingPc, TString **pendingLabel, int *isLabelRef) {
-  if (ls->t.token == TK_INT || ls->t.token == '-' ||
+  if (ls->t.token == TK_INT || ls->t.token == '-' || ls->t.token == '~' ||
       ls->t.token == TK_DOLLAR || ls->t.token == '^' || 
       ls->t.token == '#' || ls->t.token == TK_OR ||
-      ls->t.token == TK_NOT || ls->t.token == '%') {
+      ls->t.token == TK_NOT || ls->t.token == '%' ||
+      ls->t.token == '(') {
     return asm_getint_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
   }
   /* 检查是否是 Rn 格式的寄存器引用 */
   if (ls->t.token == TK_NAME) {
     const char *name = getstr(ls->t.seminfo.ts);
     if ((name[0] == 'R' || name[0] == 'r') && name[1] >= '0' && name[1] <= '9') {
+      return asm_getint_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
+    }
+    if (strcmp(name, "R") == 0 || strcmp(name, "r") == 0) {
       return asm_getint_ex(ls, ctx, pendingPc, pendingLabel, isLabelRef);
     }
     /* Check defines */
@@ -8430,9 +8805,38 @@ static lua_Integer asm_trygetint_ex (LexState *ls, AsmContext *ctx,
 }
 
 
+
+
+
+
 /*
 ** 前向声明：递归解析 asm 块主体
 */
+/*
+** 发射一条跳转指令，自动处理前向引用和后向引用
+*/
+static void asm_emit_jmp (LexState *ls, FuncState *fs, AsmContext *ctx, TString *label, int line) {
+  int labelIdx = asm_findlabel(ctx, label);
+  if (labelIdx >= 0 && ctx->labels[labelIdx].pc >= 0) {
+    /* 后向跳转 */
+    int target_pc = ctx->labels[labelIdx].pc;
+    int current_pc = fs->pc;
+    int offset = target_pc - (current_pc + 1);  /* 相对于下一条指令的偏移 */
+    Instruction jmp_inst = CREATE_sJ(OP_JMP, offset + OFFSET_sJ, 0);
+    luaK_code(fs, jmp_inst);
+    luaK_fixline(fs, line);
+  }
+  else {
+    /* 前向跳转 - 添加到待修补列表 */
+    int instpc = fs->pc;
+    Instruction jmp_inst = CREATE_sJ(OP_JMP, OFFSET_sJ, 0);
+    luaK_code(fs, jmp_inst);
+    luaK_fixline(fs, line);
+    asm_addpending(ls, ctx, label, instpc, line, 1);
+  }
+}
+
+
 static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int line);
 
 
@@ -8501,1232 +8905,7 @@ static void asmstat_ex (LexState *ls, int line, AsmContext *parent_ctx) {
   checknext(ls, '(');
   
   /* 解析指令序列直到遇到 ')' */
-  while (ls->t.token != ')') {
-    const char *opname;
-    int opcode;
-    enum OpMode mode;
-    Instruction inst;
-    int instpc;  /* 当前指令的 PC 位置 */
-    TString *pendingLabel = NULL;  /* 待修补的标签 */
-    int needsPatch = 0;  /* 是否需要后续修补 */
-    int isJumpInst = 0;  /* 是否是跳转指令 */
-    
-    /*
-    ** 跳过注释内容
-    ** 支持的注释语法:
-    **   ; "注释内容"     - 分号后跟字符串
-    **   INSTR args; ; "注释"  - 指令后的分号注释
-    **   comment "内容"   - comment/rem 伪指令
-    ** 
-    ** 当遇到 ';' 时跳过它，如果后面是字符串也跳过
-    ** 当遇到单独的字符串时（上一个分号的注释内容），也跳过
-    */
-    for (;;) {
-      if (ls->t.token == ';') {
-        luaX_next(ls);  /* 跳过 ';' */
-        /* 如果后面是字符串，作为注释内容跳过 */
-        if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-          luaX_next(ls);  /* 跳过注释字符串 */
-        }
-      }
-      else if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        /* 单独的字符串，视为上一个分号的注释内容，跳过 */
-        luaX_next(ls);
-      }
-      else {
-        break;  /* 不是注释，退出循环 */
-      }
-    }
-    
-    /* 再次检查是否到达结束 */
-    if (ls->t.token == ')') break;
-    
-    /* 检查是否是标签定义 */
-    if (ls->t.token == ':') {
-      luaX_next(ls);  /* 跳过 ':' */
-      check(ls, TK_NAME);
-      TString *labelname = ls->t.seminfo.ts;
-      asm_deflabel(ls, &ctx, labelname, fs->pc, ls->linenumber);
-      luaX_next(ls);  /* 跳过标签名 */
-      testnext(ls, ';');  /* 可选分号 */
-      continue;
-    }
-    
-    /* 获取操作码名称 */
-    check(ls, TK_NAME);
-    opname = getstr(ls->t.seminfo.ts);
-    
-    /*
-    ** 伪指令处理
-    ** comment "str"         - 注释（被忽略）
-    ** rep count { ... }     - 循环插入指令
-    ** junk "str" / count    - 插入字符串垃圾或随机指令
-    ** _if expr ... _endif   - 条件汇编
-    ** nop [count]           - 插入NOP指令
-    ** raw value             - 直接插入原始指令值
-    ** align N               - 对齐到N条指令边界
-    ** db/dw/dd value        - 直接嵌入字节/字/双字数据
-    ** emit value [,value]   - 发出多个原始指令
-    ** def name value        - 定义汇编常量（仅在当前asm块有效）
-    */
-    
-    /*
-    ** comment 伪指令: comment "str" 或 comment 任意内容
-    ** 用于在 asm 块中添加注释，不生成任何代码
-    */
-    if (strcmp(opname, "comment") == 0 || strcmp(opname, "rem") == 0 ||
-        strcmp(opname, "COMMENT") == 0 || strcmp(opname, "REM") == 0) {
-      luaX_next(ls);  /* 跳过 'comment' */
-      /* 跳过注释内容（如果是字符串） */
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        luaX_next(ls);
-      }
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* nop 伪指令: nop [count] - 插入NOP指令 */
-    if (strcmp(opname, "nop") == 0) {
-      int nop_count = 1;
-      luaX_next(ls);  /* 跳过 'nop' */
-      
-      /* 可选的计数参数 */
-      if (ls->t.token == TK_INT) {
-        nop_count = (int)ls->t.seminfo.i;
-        luaX_next(ls);
-      }
-      
-      /* 生成NOP指令 (MOVE 0 0 0 0) */
-      for (int j = 0; j < nop_count; j++) {
-        Instruction nop_inst = CREATE_ABCk(OP_MOVE, 0, 0, 0, 0);
-        luaK_code(fs, nop_inst);
-        luaK_fixline(fs, line);
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* raw 伪指令: raw value - 直接插入原始32位指令值 */
-    if (strcmp(opname, "raw") == 0) {
-      luaX_next(ls);  /* 跳过 'raw' */
-      
-      lua_Integer raw_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      Instruction raw_inst = (Instruction)raw_val;
-      luaK_code(fs, raw_inst);
-      luaK_fixline(fs, line);
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* emit 伪指令: emit value [, value, ...] - 发出多个原始指令 */
-    if (strcmp(opname, "emit") == 0) {
-      luaX_next(ls);  /* 跳过 'emit' */
-      
-      do {
-        lua_Integer emit_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        Instruction emit_inst = (Instruction)emit_val;
-        luaK_code(fs, emit_inst);
-        luaK_fixline(fs, line);
-      } while (testnext(ls, ','));
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /*
-    ** 嵌套 asm 伪指令: asm( ... )
-    ** 支持在 asm 块内部嵌套另一个 asm 块
-    ** 内层 asm 块继承外层的常量定义（通过 parent 指针）
-    ** 但拥有独立的标签和待修补列表
-    ** 
-    ** 使用递归调用 asm_parse_body 实现真正的嵌套支持
-    */
-    if (strcmp(opname, "asm") == 0) {
-      int nested_line = ls->linenumber;
-      AsmContext nested_ctx;
-      
-      luaX_next(ls);  /* 跳过 'asm' */
-      checknext(ls, '(');
-      
-      /* 创建子上下文，继承父级的常量定义 */
-      asm_initcontext(ls->L, &nested_ctx, &ctx);
-      
-      /* 递归解析嵌套 asm 块的主体 - 使用与主循环相同的逻辑 */
-      asm_parse_body(ls, fs, &nested_ctx, nested_line);
-      
-      /* 修补并释放子上下文 */
-      asm_patchpending(ls, fs, &nested_ctx);
-      asm_freecontext(ls->L, &nested_ctx);
-      
-      checknext(ls, ')');
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /*
-    ** jmpx 伪指令: jmpx @label - 跳转到标签（自动计算相对偏移）
-    ** 解决后向跳转时 @label 返回绝对 PC 的问题
-    ** 参数：
-    **   @label - 目标标签
-    ** 功能：
-    **   自动计算从当前 PC 到目标标签的相对偏移，生成正确的 JMP 指令
-    */
-    if (strcmp(opname, "jmpx") == 0 || strcmp(opname, "JMPX") == 0) {
-      int target_pc;
-      int current_pc;
-      int offset;
-      TString *label = NULL;
-      
-      luaX_next(ls);  /* 跳过 'jmpx' */
-      
-      /* 必须是 @label 格式 */
-      if (ls->t.token != TK_OR) {
-        luaK_semerror(ls, "jmpx requires @label argument");
-      }
-      luaX_next(ls);  /* 跳过 '@' (TK_OR) */
-      
-      check(ls, TK_NAME);
-      label = ls->t.seminfo.ts;
-      
-      /* 查找标签 */
-      int labelIdx = asm_findlabel(&ctx, label);
-      if (labelIdx >= 0 && ctx.labels[labelIdx].pc >= 0) {
-        /* 后向引用：标签已定义，直接计算偏移 */
-        target_pc = ctx.labels[labelIdx].pc;
-        current_pc = fs->pc;
-        offset = target_pc - (current_pc + 1);  /* 相对于下一条指令的偏移 */
-        
-        /* 生成 JMP 指令 */
-        Instruction jmp_inst = CREATE_sJ(OP_JMP, offset + OFFSET_sJ, 0);
-        luaK_code(fs, jmp_inst);
-        luaK_fixline(fs, line);
-      }
-      else {
-        /* 前向引用：标签未定义，需要后续修补 */
-        int instpc = fs->pc;
-        Instruction jmp_inst = CREATE_sJ(OP_JMP, OFFSET_sJ, 0);  /* 临时偏移为0 */
-        luaK_code(fs, jmp_inst);
-        luaK_fixline(fs, line);
-        
-        /* 添加到待修补列表 */
-        asm_addpending(ls, &ctx, label, instpc, ls->linenumber, 1);
-      }
-      
-      luaX_next(ls);  /* 跳过标签名 */
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* align 伪指令: align N - 用NOP对齐到N条指令边界 */
-    if (strcmp(opname, "align") == 0) {
-      int align_val;
-      luaX_next(ls);  /* 跳过 'align' */
-      
-      align_val = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      if (align_val < 1) {
-        luaK_semerror(ls, "align value must be positive");
-      }
-      
-      /* 插入NOP直到PC对齐 */
-      while (fs->pc % align_val != 0) {
-        Instruction nop_inst = CREATE_ABCk(OP_MOVE, 0, 0, 0, 0);
-        luaK_code(fs, nop_inst);
-        luaK_fixline(fs, line);
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* def 伪指令: def name value - 定义汇编常量（仅在当前asm块有效）*/
-    if (strcmp(opname, "def") == 0 || strcmp(opname, "define") == 0) {
-      TString *def_name;
-      lua_Integer def_value;
-      luaX_next(ls);  /* 跳过 'def' */
-      
-      check(ls, TK_NAME);
-      def_name = ls->t.seminfo.ts;
-      luaX_next(ls);  /* 跳过常量名 */
-      
-      /* 获取常量值 */
-      def_value = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      
-      /* 添加到常量定义表 */
-      asm_adddefine(ls, &ctx, def_name, def_value);
-      
-      testnext(ls, ';');
-      continue;
-    }
-
-    /* newreg 伪指令: newreg name - 分配新寄存器并定义常量 */
-    if (strcmp(opname, "newreg") == 0) {
-      TString *reg_name;
-      luaX_next(ls);  /* 跳过 'newreg' */
-
-      check(ls, TK_NAME);
-      reg_name = ls->t.seminfo.ts;
-      luaX_next(ls);  /* 跳过寄存器名 */
-
-      /* 分配新寄存器 */
-      int reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-
-      /* 定义为常量 */
-      asm_adddefine(ls, &ctx, reg_name, reg);
-
-      testnext(ls, ';');
-      continue;
-    }
-
-    /* getglobal 伪指令: getglobal reg "name" - 获取全局变量 */
-    if (strcmp(opname, "getglobal") == 0) {
-      int reg_dest;
-      TString *key_name;
-      luaX_next(ls);  /* 跳过 'getglobal' */
-
-      /* 解析目标寄存器 */
-      reg_dest = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-
-      /* 解析变量名 */
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        key_name = ls->t.seminfo.ts;
-        luaX_next(ls);
-      } else {
-        check(ls, TK_NAME);
-        key_name = ls->t.seminfo.ts;
-        luaX_next(ls);
-      }
-
-      /* 获取 _ENV 上值 */
-      expdesc env_exp;
-      singlevaraux(fs, ls->envn, &env_exp, 1);
-      if (env_exp.k != VUPVAL) {
-        luaK_semerror(ls, "cannot resolve _ENV for getglobal");
-      }
-      int env_idx = env_exp.u.info;
-
-      /* 获取常量索引 */
-      int k = luaK_stringK(fs, key_name);
-
-      /* 生成 GETTABUP 指令 */
-      Instruction inst = CREATE_ABCk(OP_GETTABUP, reg_dest, env_idx, k, 0);
-      luaK_code(fs, inst);
-      luaK_fixline(fs, line);
-
-      /* 更新 freereg */
-      if (reg_dest >= fs->freereg) {
-        int needed = reg_dest + 1 - fs->freereg;
-        luaK_checkstack(fs, needed);
-        fs->freereg = cast_byte(reg_dest + 1);
-      }
-
-      testnext(ls, ';');
-      continue;
-    }
-
-    /* setglobal 伪指令: setglobal reg "name" - 设置全局变量 */
-    if (strcmp(opname, "setglobal") == 0) {
-      int reg_src;
-      TString *key_name;
-      luaX_next(ls);  /* 跳过 'setglobal' */
-
-      /* 解析源寄存器 */
-      reg_src = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-
-      /* 解析变量名 */
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        key_name = ls->t.seminfo.ts;
-        luaX_next(ls);
-      } else {
-        check(ls, TK_NAME);
-        key_name = ls->t.seminfo.ts;
-        luaX_next(ls);
-      }
-
-      /* 获取 _ENV 上值 */
-      expdesc env_exp;
-      singlevaraux(fs, ls->envn, &env_exp, 1);
-      if (env_exp.k != VUPVAL) {
-        luaK_semerror(ls, "cannot resolve _ENV for setglobal");
-      }
-      int env_idx = env_exp.u.info;
-
-      /* 获取常量索引 */
-      int k = luaK_stringK(fs, key_name);
-
-      /* 生成 SETTABUP 指令: UpValue[A][K[B]] := RK(C) */
-      /* A=env_idx, B=k, C=reg_src */
-      Instruction inst = CREATE_ABCk(OP_SETTABUP, env_idx, k, reg_src, 0);
-      luaK_code(fs, inst);
-      luaK_fixline(fs, line);
-
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* 
-    ** 调试辅助伪指令
-    ** _print "msg" [value]  - 编译时打印消息和可选值
-    ** _assert cond ["msg"]  - 编译时断言，条件为假时报错
-    ** _info                 - 打印当前编译状态（PC、寄存器等）
-    */
-    if (strcmp(opname, "_print") == 0 || strcmp(opname, "asmprint") == 0) {
-      luaX_next(ls);  /* 跳过 '_print' */
-      
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        const char *msg = getstr(ls->t.seminfo.ts);
-        luaX_next(ls);
-        
-        /* 检查是否有可选的值参数 */
-        /* 注意: '@' -> TK_OR, '$' -> TK_DOLLAR, '!' -> TK_NOT */
-        /* TK_NAME 用于支持 def 定义的常量 */
-        if (ls->t.token == TK_INT || ls->t.token == '-' ||
-            ls->t.token == TK_DOLLAR || ls->t.token == '%' ||
-            ls->t.token == TK_NOT || ls->t.token == TK_OR ||
-            ls->t.token == TK_NAME) {
-          lua_Integer val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          printf("[ASM] %s: %lld\n", msg, (long long)val);
-        }
-        else {
-          printf("[ASM] %s\n", msg);
-        }
-      }
-      else if (ls->t.token == TK_INT || ls->t.token == '-' ||
-               ls->t.token == TK_DOLLAR || ls->t.token == '%' ||
-               ls->t.token == TK_NOT || ls->t.token == TK_OR ||
-               ls->t.token == TK_NAME) {
-        /* 没有消息，直接打印值 */
-        lua_Integer val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        printf("[ASM] value: %lld\n", (long long)val);
-      }
-      else {
-        luaK_semerror(ls, "_print expects string or value");
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    if (strcmp(opname, "_assert") == 0 || strcmp(opname, "asmassert") == 0) {
-      int cond_result;
-      lua_Integer left_val, right_val;
-      luaX_next(ls);  /* 跳过 '_assert' */
-      
-      /* 解析左操作数 */
-      left_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      
-      /* 检查是否有比较运算符 */
-      if (ls->t.token == TK_EQ) {  /* == */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val == right_val);
-      }
-      else if (ls->t.token == TK_NE) {  /* ~= 或 != */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val != right_val);
-      }
-      else if (ls->t.token == '>') {
-        luaX_next(ls);
-        if (ls->t.token == '=') {  /* >= */
-          luaX_next(ls);
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val >= right_val);
-        }
-        else {  /* > */
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val > right_val);
-        }
-      }
-      else if (ls->t.token == '<') {
-        luaX_next(ls);
-        if (ls->t.token == '=') {  /* <= */
-          luaX_next(ls);
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val <= right_val);
-        }
-        else {  /* < */
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val < right_val);
-        }
-      }
-      else if (ls->t.token == TK_GE) {  /* >= */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val >= right_val);
-      }
-      else if (ls->t.token == TK_LE) {  /* <= */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val <= right_val);
-      }
-      else {
-        /* 没有比较运算符，只检查值是否非零 */
-        cond_result = (left_val != 0);
-      }
-      
-      if (cond_result == 0) {
-        /* 断言失败 */
-        if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-          const char *msg = getstr(ls->t.seminfo.ts);
-          luaX_next(ls);
-          luaK_semerror(ls, "asm assertion failed: %s", msg);
-        }
-        else {
-          luaK_semerror(ls, "asm assertion failed");
-        }
-      }
-      else {
-        /* 断言成功，跳过可选的消息 */
-        if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-          luaX_next(ls);
-        }
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    if (strcmp(opname, "_info") == 0 || strcmp(opname, "asminfo") == 0) {
-      luaX_next(ls);  /* 跳过 '_info' */
-      
-      printf("[ASM INFO] line=%d, pc=%d, freereg=%d, nactvar=%d, nk=%d\n",
-             ls->linenumber, fs->pc, fs->freereg, fs->nactvar, fs->nk);
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* db 伪指令: db byte1 [, byte2, ...] - 嵌入字节数据（4字节打包为一条指令）*/
-    if (strcmp(opname, "db") == 0) {
-      unsigned char bytes[4] = {0, 0, 0, 0};
-      int byte_count = 0;
-      luaX_next(ls);  /* 跳过 'db' */
-      
-      do {
-        lua_Integer byte_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        if (byte_count < 4) {
-          bytes[byte_count++] = (unsigned char)(byte_val & 0xFF);
-        }
-        /* 每4字节发出一条指令 */
-        if (byte_count == 4) {
-          Instruction db_inst = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-          luaK_code(fs, db_inst);
-          luaK_fixline(fs, line);
-          byte_count = 0;
-          memset(bytes, 0, 4);
-        }
-      } while (testnext(ls, ','));
-      
-      /* 剩余字节也发出 */
-      if (byte_count > 0) {
-        Instruction db_inst = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-        luaK_code(fs, db_inst);
-        luaK_fixline(fs, line);
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* dw 伪指令: dw word1 [, word2] - 嵌入16位字数据（2个字打包为一条指令）*/
-    if (strcmp(opname, "dw") == 0) {
-      unsigned short words[2] = {0, 0};
-      int word_count = 0;
-      luaX_next(ls);  /* 跳过 'dw' */
-      
-      do {
-        lua_Integer word_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        if (word_count < 2) {
-          words[word_count++] = (unsigned short)(word_val & 0xFFFF);
-        }
-        /* 每2个字发出一条指令 */
-        if (word_count == 2) {
-          Instruction dw_inst = words[0] | (words[1] << 16);
-          luaK_code(fs, dw_inst);
-          luaK_fixline(fs, line);
-          word_count = 0;
-          memset(words, 0, 4);
-        }
-      } while (testnext(ls, ','));
-      
-      /* 剩余数据也发出 */
-      if (word_count > 0) {
-        Instruction dw_inst = words[0] | (words[1] << 16);
-        luaK_code(fs, dw_inst);
-        luaK_fixline(fs, line);
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* dd 伪指令: dd dword - 嵌入32位双字（直接作为一条指令）*/
-    if (strcmp(opname, "dd") == 0) {
-      luaX_next(ls);  /* 跳过 'dd' */
-      
-      do {
-        lua_Integer dword_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        Instruction dd_inst = (Instruction)(dword_val & 0xFFFFFFFF);
-        luaK_code(fs, dd_inst);
-        luaK_fixline(fs, line);
-      } while (testnext(ls, ','));
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* str 伪指令: str "string" - 将字符串数据添加到常量池（推荐方式）*/
-    if (strcmp(opname, "str") == 0) {
-      luaX_next(ls);  /* 跳过 'str' */
-
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        TString *str_data = ls->t.seminfo.ts;
-        int idx = luaK_stringK(fs, str_data);
-        (void)idx;  /* 字符串已添加到常量池，可供后续指令使用 */
-        luaX_next(ls);
-      }
-      else {
-        luaK_semerror(ls, "str expects a string literal");
-      }
-
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* rep 伪指令: rep count { instructions } */
-    if (strcmp(opname, "rep") == 0 || strcmp(opname, "repeat") == 0) {
-      int rep_count;
-      int rep_start_pc;
-      int rep_end_pc;
-      int instr_count;
-      int i;
-      
-      luaX_next(ls);  /* 跳过 'rep' */
-      
-      /* 获取循环次数 */
-      rep_count = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      if (rep_count < 0) {
-        luaK_semerror(ls, "rep count must be non-negative");
-      }
-      
-      checknext(ls, '{');
-      
-      /* 记录第一次生成指令的起始位置 */
-      rep_start_pc = fs->pc;
-      
-      /* 第一次解析并生成指令 */
-      while (ls->t.token != '}') {
-        const char *inner_opname;
-        int inner_opcode;
-        enum OpMode inner_mode;
-        Instruction inner_inst;
-        int inner_instpc;
-        TString *inner_pendingLabel = NULL;
-        int inner_needsPatch = 0;
-        int inner_isJump = 0;
-        
-        /* 处理内部标签定义 */
-        if (ls->t.token == ':') {
-          luaX_next(ls);
-          check(ls, TK_NAME);
-          TString *inner_labelname = ls->t.seminfo.ts;
-          asm_deflabel(ls, &ctx, inner_labelname, fs->pc, ls->linenumber);
-          luaX_next(ls);
-          testnext(ls, ';');
-          continue;
-        }
-        
-        check(ls, TK_NAME);
-        inner_opname = getstr(ls->t.seminfo.ts);
-        inner_opcode = find_opcode(inner_opname);
-        
-        if (inner_opcode < 0) {
-          luaK_semerror(ls, "unknown opcode '%s' in asm rep block", inner_opname);
-        }
-        
-        luaX_next(ls);
-        inner_mode = getOpMode(inner_opcode);
-        inner_instpc = fs->pc;
-        
-        /* 根据格式解析参数并生成指令 */
-        switch (inner_mode) {
-          case iABC: {
-            int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-            int b = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, &inner_pendingLabel, NULL);
-            if (inner_pendingLabel) inner_needsPatch = 1;
-            int c = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, inner_pendingLabel ? NULL : &inner_pendingLabel, NULL);
-            if (inner_pendingLabel && !inner_needsPatch) inner_needsPatch = 1;
-            int k = (int)asm_trygetint(ls, 0);
-
-            if (inner_opcode == OP_GTI || inner_opcode == OP_GEI ||
-                inner_opcode == OP_LTI || inner_opcode == OP_LEI ||
-                inner_opcode == OP_EQI || inner_opcode == OP_MMBINI) {
-              b = int2sC(b);
-            }
-            else if (inner_opcode == OP_ADDI || inner_opcode == OP_SHLI || inner_opcode == OP_SHRI) {
-              c = int2sC(c);
-            }
-            inner_inst = CREATE_ABCk(inner_opcode, a, b, c, k);
-            break;
-          }
-          case ivABC: {
-            int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-            int vb = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, &inner_pendingLabel, NULL);
-            if (inner_pendingLabel) inner_needsPatch = 1;
-            int vc = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, inner_pendingLabel ? NULL : &inner_pendingLabel, NULL);
-            if (inner_pendingLabel && !inner_needsPatch) inner_needsPatch = 1;
-            int k = (int)asm_trygetint(ls, 0);
-            inner_inst = CREATE_vABCk(inner_opcode, a, vb, vc, k);
-            break;
-          }
-          case iABx: {
-            int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-            int isLabelRef = 0;
-            unsigned int bx = (unsigned int)asm_getint_ex(ls, &ctx, NULL, &inner_pendingLabel, &isLabelRef);
-            if (inner_pendingLabel) {
-              inner_needsPatch = 1;
-              if (inner_opcode == OP_FORLOOP || inner_opcode == OP_TFORLOOP ||
-                  inner_opcode == OP_FORPREP || inner_opcode == OP_TFORPREP) {
-                inner_isJump = 1;
-              }
-            } else if (isLabelRef) {
-               int offset;
-               int target = (int)bx;
-               if (inner_opcode == OP_FORLOOP || inner_opcode == OP_TFORLOOP) {
-                 offset = (inner_instpc + 1) - target;
-                 if (offset <= 0) luaK_semerror(ls, "jump target for loop instruction must be backward");
-                 bx = (unsigned int)offset;
-               } else if (inner_opcode == OP_FORPREP || inner_opcode == OP_TFORPREP) {
-                 offset = target - (inner_instpc + 1);
-                 if (offset < 0) luaK_semerror(ls, "jump target for prep instruction must be forward");
-                 if (inner_opcode == OP_FORPREP) offset--;
-                 bx = (unsigned int)offset;
-               }
-            }
-            inner_inst = CREATE_ABx(inner_opcode, a, bx);
-            break;
-          }
-          case iAsBx: {
-            int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-            int sbx = (int)asm_getint_ex(ls, &ctx, NULL, &inner_pendingLabel, NULL);
-            if (inner_pendingLabel) { inner_needsPatch = 1; inner_isJump = 1; }
-            inner_inst = CREATE_ABx(inner_opcode, a, cast_uint(sbx + OFFSET_sBx));
-            break;
-          }
-          case iAx: {
-            int ax = (int)asm_getint_ex(ls, &ctx, NULL, &inner_pendingLabel, NULL);
-            if (inner_pendingLabel) inner_needsPatch = 1;
-            inner_inst = CREATE_Ax(inner_opcode, ax);
-            break;
-          }
-          case isJ: {
-            int sj = (int)asm_getint_ex(ls, &ctx, NULL, &inner_pendingLabel, NULL);
-            if (inner_pendingLabel) { inner_needsPatch = 1; inner_isJump = 1; }
-            inner_inst = CREATE_sJ(inner_opcode, sj + OFFSET_sJ, 0);
-            break;
-          }
-          default:
-            inner_inst = 0;
-            break;
-        }
-        
-        luaK_code(fs, inner_inst);
-        luaK_fixline(fs, line);
-
-        /* 自动生成 MMBIN 系列指令 */
-        if (inner_opcode >= OP_ADD && inner_opcode <= OP_SHR) {
-          int b = GETARG_B(inner_inst);
-          int c = GETARG_C(inner_inst);
-          TMS tm = cast(TMS, (inner_opcode - OP_ADD) + TM_ADD);
-          luaK_codeABCk(fs, OP_MMBIN, b, c, cast_int(tm), 0);
-          luaK_fixline(fs, line);
-        }
-        else if (inner_opcode == OP_ADDI || inner_opcode == OP_SHLI || inner_opcode == OP_SHRI) {
-          int b = GETARG_B(inner_inst);
-          int sc = GETARG_C(inner_inst);
-          TMS tm = (inner_opcode == OP_ADDI) ? TM_ADD : (inner_opcode == OP_SHLI) ? TM_SHL : TM_SHR;
-          luaK_codeABCk(fs, OP_MMBINI, b, sc, cast_int(tm), 0);
-          luaK_fixline(fs, line);
-        }
-        else if (inner_opcode >= OP_ADDK && inner_opcode <= OP_IDIVK) {
-          int b = GETARG_B(inner_inst);
-          int c = GETARG_C(inner_inst);
-          TMS tm = cast(TMS, (inner_opcode - OP_ADDK) + TM_ADD);
-          luaK_codeABCk(fs, OP_MMBINK, b, c, cast_int(tm), 0);
-          luaK_fixline(fs, line);
-        }
-        
-        if (inner_needsPatch && inner_pendingLabel) {
-          asm_addpending(ls, &ctx, inner_pendingLabel, inner_instpc, ls->linenumber, inner_isJump);
-        }
-        
-        testnext(ls, ';');
-      }
-      
-      rep_end_pc = fs->pc;
-      instr_count = rep_end_pc - rep_start_pc;
-      
-      checknext(ls, '}');
-      
-      /* 复制指令 rep_count - 1 次 */
-      for (i = 1; i < rep_count; i++) {
-        int j;
-        for (j = 0; j < instr_count; j++) {
-          Instruction copied_inst = fs->f->code[rep_start_pc + j];
-          luaK_code(fs, copied_inst);
-          luaK_fixline(fs, line);
-        }
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* junk 伪指令: junk "string" 或 junk count */
-    /*
-    ** junk "string" - 将字符串的原始字节直接编码为 EXTRAARG 指令序列
-    **                 每条 EXTRAARG 指令可以存储 26 位数据（约3.25字节）
-    **                 这样字符串数据直接嵌入字节码，不经过常量池，不受加密影响
-    ** junk count    - 生成 count 条 MOVE 0 0 作为 NOP 填充
-    */
-    if (strcmp(opname, "junk") == 0 || strcmp(opname, "garbage") == 0) {
-      luaX_next(ls);  /* 跳过 'junk' */
-      
-      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
-        /* junk "string" - 将字符串原始字节直接编码为指令序列 */
-        TString *junk_str = ls->t.seminfo.ts;
-        const char *str = getstr(junk_str);
-        size_t len = tsslen(junk_str);
-        size_t i;
-        
-        /*
-        ** 将字符串数据编码为 EXTRAARG 指令序列
-        ** EXTRAARG 指令格式: [opcode:7][Ax:25]
-        ** 我们使用 Ax 字段存储原始数据（每条指令存储3字节 + 1位标记）
-        ** 第一条指令的 Ax 存储字符串长度
-        */
-        
-        /* 首先生成一条存储长度的 EXTRAARG */
-        {
-          Instruction len_inst = CREATE_Ax(OP_EXTRAARG, (int)(len & MAXARG_Ax));
-          luaK_code(fs, len_inst);
-          luaK_fixline(fs, line);
-        }
-        
-        /* 然后每3字节生成一条 EXTRAARG 指令 */
-        for (i = 0; i < len; i += 3) {
-          unsigned int data = 0;
-          /* 打包最多3个字节到 data 中 */
-          data |= ((unsigned char)str[i]) << 0;
-          if (i + 1 < len) data |= ((unsigned char)str[i + 1]) << 8;
-          if (i + 2 < len) data |= ((unsigned char)str[i + 2]) << 16;
-          
-          /* 确保不超过 MAXARG_Ax (25位) */
-          data &= MAXARG_Ax;
-          
-          Instruction data_inst = CREATE_Ax(OP_EXTRAARG, (int)data);
-          luaK_code(fs, data_inst);
-          luaK_fixline(fs, line);
-        }
-        
-        luaX_next(ls);
-      }
-      else if (ls->t.token == TK_INT) {
-        /* junk count - 生成count条NOP指令（MOVE 0 0 0 0）作为填充 */
-        int junk_count = (int)ls->t.seminfo.i;
-        int j;
-        luaX_next(ls);
-        
-        if (junk_count < 0) {
-          luaK_semerror(ls, "junk count must be non-negative");
-        }
-        
-        for (j = 0; j < junk_count; j++) {
-          /* 生成 NOP 指令 */
-          Instruction nop_inst = CREATE_ABCk(OP_NOP, 0, 0, 0, 0);
-          luaK_code(fs, nop_inst);
-          luaK_fixline(fs, line);
-        }
-      }
-      else {
-        luaK_semerror(ls, "junk expects a string or integer count");
-      }
-      
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* _if 伪指令: _if expr [op expr2] ... _endif (编译时条件汇编) */
-    /*
-    ** 支持的条件格式：
-    **   _if value              - 如果value非零则为真
-    **   _if val1 == val2       - 相等比较
-    **   _if val1 != val2       - 不等比较
-    **   _if val1 > val2        - 大于比较
-    **   _if val1 < val2        - 小于比较
-    **   _if val1 >= val2       - 大于等于比较
-    **   _if val1 <= val2       - 小于等于比较
-    */
-    if (strcmp(opname, "_if") == 0 || strcmp(opname, "asmif") == 0) {
-      int cond_result;
-      lua_Integer left_val, right_val;
-      
-      luaX_next(ls);  /* 跳过 '_if' */
-      
-      /* 解析左操作数 */
-      left_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-      
-      /* 检查是否有比较运算符 */
-      if (ls->t.token == TK_EQ) {  /* == */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val == right_val);
-      }
-      else if (ls->t.token == TK_NE) {  /* ~= 或 != */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val != right_val);
-      }
-      else if (ls->t.token == '>') {
-        luaX_next(ls);
-        if (ls->t.token == '=') {  /* >= */
-          luaX_next(ls);
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val >= right_val);
-        }
-        else {  /* > */
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val > right_val);
-        }
-      }
-      else if (ls->t.token == '<') {
-        luaX_next(ls);
-        if (ls->t.token == '=') {  /* <= */
-          luaX_next(ls);
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val <= right_val);
-        }
-        else {  /* < */
-          right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-          cond_result = (left_val < right_val);
-        }
-      }
-      else if (ls->t.token == TK_GE) {  /* >= */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val >= right_val);
-      }
-      else if (ls->t.token == TK_LE) {  /* <= */
-        luaX_next(ls);
-        right_val = asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        cond_result = (left_val <= right_val);
-      }
-      else {
-        /* 没有比较运算符，只检查值是否非零 */
-        cond_result = (left_val != 0);
-      }
-      
-      /* 如果条件为假，跳过直到 _endif */
-      if (!cond_result) {
-        int nest_level = 1;
-        while (nest_level > 0 && ls->t.token != TK_EOS && ls->t.token != ')') {
-          if (ls->t.token == TK_NAME) {
-            const char *name = getstr(ls->t.seminfo.ts);
-            if (strcmp(name, "_if") == 0 || strcmp(name, "asmif") == 0) {
-              nest_level++;
-            }
-            else if (strcmp(name, "_endif") == 0 || strcmp(name, "asmend") == 0) {
-              if (nest_level == 1) {
-                luaX_next(ls);
-                nest_level = 0;
-                break;
-              } else { nest_level--; }
-            }
-            else if (nest_level == 1 && (strcmp(name, "_else") == 0 || strcmp(name, "asmelse") == 0)) {
-              /* 在同级遇到 _else，跳出循环并执行 else 分支 */
-              luaX_next(ls);  /* 跳过 '_else' */
-              testnext(ls, ';');
-              nest_level = 0;  /* 退出跳过循环 */
-              break;
-            }
-          }
-          if (nest_level > 0) luaX_next(ls);
-        }
-      }
-      /* 条件为真则继续正常解析指令 */
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* _else 伪指令 - 跳过到 _endif */
-    if (strcmp(opname, "_else") == 0 || strcmp(opname, "asmelse") == 0) {
-      int nest_level = 1;
-      luaX_next(ls);  /* 跳过 '_else' */
-      /* 条件为真时遇到 _else，需要跳过直到 _endif */
-      while (nest_level > 0 && ls->t.token != TK_EOS && ls->t.token != ')') {
-        if (ls->t.token == TK_NAME) {
-          const char *name = getstr(ls->t.seminfo.ts);
-          if (strcmp(name, "_if") == 0 || strcmp(name, "asmif") == 0) {
-            nest_level++;
-          }
-          else if (strcmp(name, "_endif") == 0 || strcmp(name, "asmend") == 0) {
-            if (nest_level == 1) {
-              luaX_next(ls);
-              break;
-            } else { nest_level--; }
-          }
-        }
-        luaX_next(ls);
-      }
-      testnext(ls, ';');
-      continue;
-    }
-    
-    /* _endif 伪指令 */
-    if (strcmp(opname, "_endif") == 0 || strcmp(opname, "asmend") == 0) {
-      luaX_next(ls);  /* 跳过 '_endif' */
-      testnext(ls, ';');
-      continue;
-    }
-    
-    opcode = find_opcode(opname);
-    
-    if (opcode < 0) {
-      luaK_semerror(ls, "unknown opcode '%s' in asm", opname);
-    }
-    
-    luaX_next(ls);  /* 跳过操作码名称 */
-    
-    /* 根据操作码格式解析参数 */
-    mode = getOpMode(opcode);
-    instpc = fs->pc;  /* 记录当前 PC */
-    
-    switch (mode) {
-      case iABC: {
-        /* iABC 格式: A [B] [C] [k] - B、C、k 参数可选，默认为 0 */
-        int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        int b = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, &pendingLabel, NULL);
-        if (pendingLabel) needsPatch = 1;
-        int c = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, pendingLabel ? NULL : &pendingLabel, NULL);
-        if (pendingLabel && !needsPatch) needsPatch = 1;
-        int k = (int)asm_trygetint(ls, 0);
-        
-        /* 参数范围检查 */
-        asm_checkrange(ls, a, MAXARG_A, "A");
-        asm_checkrange(ls, b, MAXARG_B, "B");
-        asm_checkrange(ls, c, MAXARG_C, "C");
-        asm_checkrange(ls, k, 1, "k");
-        
-        /*
-        ** 某些指令使用带符号的 sB 或 sC 参数，需要进行偏移转换
-        ** sB 指令: GTI, GEI, LTI, LEI, EQI, MMBINI
-        ** sC 指令: ADDI, SHLI, SHRI
-        */
-        if (opcode == OP_GTI || opcode == OP_GEI || 
-            opcode == OP_LTI || opcode == OP_LEI || 
-            opcode == OP_EQI || opcode == OP_MMBINI) {
-          /* B 是 sB (带符号立即数) */
-          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
-          b = int2sC(b);
-          inst = CREATE_ABCk(opcode, a, b, c, k);
-        }
-        else if (opcode == OP_ADDI || opcode == OP_SHLI || opcode == OP_SHRI) {
-          /* C 是 sC (带符号立即数) */
-          asm_checkrange_signed(ls, c, -OFFSET_sC, OFFSET_sC, "sC");
-          c = int2sC(c);
-          inst = CREATE_ABCk(opcode, a, b, c, k);
-        }
-        else {
-          inst = CREATE_ABCk(opcode, a, b, c, k);
-        }
-        break;
-      }
-      case ivABC: {
-        /* ivABC 格式: A [vB] [vC] [k] - vB、vC、k 参数可选，默认为 0 */
-        int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        int vb = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, &pendingLabel, NULL);
-        if (pendingLabel) needsPatch = 1;
-        int vc = (int)asm_trygetint_ex(ls, &ctx, 0, NULL, pendingLabel ? NULL : &pendingLabel, NULL);
-        if (pendingLabel && !needsPatch) needsPatch = 1;
-        int k = (int)asm_trygetint(ls, 0);
-        
-        /* 参数范围检查 */
-        asm_checkrange(ls, a, MAXARG_A, "A");
-        asm_checkrange(ls, vb, MAXARG_vB, "vB");
-        asm_checkrange(ls, vc, MAXARG_vC, "vC");
-        asm_checkrange(ls, k, 1, "k");
-        
-        inst = CREATE_vABCk(opcode, a, vb, vc, k);
-        break;
-      }
-      case iABx: {
-        /* iABx 格式: A Bx */
-        int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        int isLabelRef = 0;
-        unsigned int bx = (unsigned int)asm_getint_ex(ls, &ctx, NULL, &pendingLabel, &isLabelRef);
-        if (pendingLabel) {
-          needsPatch = 1;
-          if (opcode == OP_FORLOOP || opcode == OP_TFORLOOP ||
-              opcode == OP_FORPREP || opcode == OP_TFORPREP) {
-            isJumpInst = 1;
-          }
-        } else if (isLabelRef) {
-          /* 标签已解析，如果是跳转指令，需要计算相对偏移 */
-          int offset;
-          int target = (int)bx;
-          if (opcode == OP_FORLOOP || opcode == OP_TFORLOOP) {
-             /* Backward: Bx = (pc + 1) - target */
-             offset = (instpc + 1) - target;
-             if (offset <= 0) luaK_semerror(ls, "jump target for loop instruction must be backward");
-             bx = (unsigned int)offset;
-          } else if (opcode == OP_FORPREP || opcode == OP_TFORPREP) {
-             /* Forward: Bx = target - (pc + 1) */
-             offset = target - (instpc + 1);
-             if (offset < 0) luaK_semerror(ls, "jump target for prep instruction must be forward");
-             if (opcode == OP_FORPREP) offset--; /* pc += Bx + 1 */
-             bx = (unsigned int)offset;
-          }
-        }
-        
-        /* 参数范围检查 */
-        asm_checkrange(ls, a, MAXARG_A, "A");
-        asm_checkrange(ls, bx, MAXARG_Bx, "Bx");
-        
-        inst = CREATE_ABx(opcode, a, bx);
-        break;
-      }
-      case iAsBx: {
-        /* iAsBx 格式: A sBx (带符号偏移) */
-        int a = (int)asm_getint_ex(ls, &ctx, NULL, NULL, NULL);
-        int sbx = (int)asm_getint_ex(ls, &ctx, NULL, &pendingLabel, NULL);
-        if (pendingLabel) {
-          needsPatch = 1;
-          isJumpInst = 1;  /* FORLOOP, FORPREP 等使用相对偏移 */
-        }
-        
-        /* 参数范围检查 */
-        asm_checkrange(ls, a, MAXARG_A, "A");
-        asm_checkrange_signed(ls, sbx, -OFFSET_sBx, OFFSET_sBx, "sBx");
-        
-        /* sBx 需要加上偏移量 OFFSET_sBx 转换为无符号存储 */
-        inst = CREATE_ABx(opcode, a, cast_uint(sbx + OFFSET_sBx));
-        break;
-      }
-      case iAx: {
-        /* iAx 格式: Ax */
-        int ax = (int)asm_getint_ex(ls, &ctx, NULL, &pendingLabel, NULL);
-        if (pendingLabel) needsPatch = 1;
-        
-        /* 参数范围检查 */
-        asm_checkrange(ls, ax, MAXARG_Ax, "Ax");
-        
-        inst = CREATE_Ax(opcode, ax);
-        break;
-      }
-      case isJ: {
-        /* isJ 格式: sJ (带符号跳转偏移) */
-        int isLabelRef = 0;
-        int sj = (int)asm_getint_ex(ls, &ctx, NULL, &pendingLabel, &isLabelRef);
-        if (pendingLabel) {
-          needsPatch = 1;
-          isJumpInst = 1;  /* JMP 使用相对偏移 */
-        } else if (isLabelRef) {
-          /* 标签已解析: sj 是目标 PC，需转为 offset */
-          /* offset = target - (pc + 1) */
-          sj = sj - (instpc + 1);
-        }
-        
-        /* 参数范围检查 */
-        asm_checkrange_signed(ls, sj, -OFFSET_sJ, OFFSET_sJ, "sJ");
-        
-        /* sJ 需要加上偏移量 OFFSET_sJ 转换为无符号存储 */
-        inst = CREATE_sJ(opcode, sj + OFFSET_sJ, 0);
-        break;
-      }
-      default: {
-        luaK_semerror(ls, "unsupported opcode mode in asm");
-        inst = 0;  /* never reached */
-      }
-    }
-    
-    /* 直接将指令写入代码流 */
-    luaK_code(fs, inst);
-    luaK_fixline(fs, line);
-    
-    /* 如果有前向标签引用，添加到待修补列表 */
-    if (needsPatch && pendingLabel) {
-      asm_addpending(ls, &ctx, pendingLabel, instpc, ls->linenumber, isJumpInst);
-    }
-    
-    /*
-    ** 算术指令需要紧跟 MMBIN/MMBINI/MMBINK 指令
-    ** 因为 Lua 5.4 VM 中算术成功时会 pc++ 跳过下一条指令
-    ** 如果不生成 MMBIN，后续正常代码会被错误跳过
-    */
-    if (opcode >= OP_ADD && opcode <= OP_SHR) {
-      /* 寄存器-寄存器算术: 生成 OP_MMBIN */
-      int b = GETARG_B(inst);
-      int c = GETARG_C(inst);
-      TMS tm = cast(TMS, (opcode - OP_ADD) + TM_ADD);
-      luaK_codeABCk(fs, OP_MMBIN, b, c, cast_int(tm), 0);
-      luaK_fixline(fs, line);
-    }
-    else if (opcode == OP_ADDI) {
-      /* ADDI: 生成 OP_MMBINI，B 参数是已转换的 sC 值 */
-      int b = GETARG_B(inst);
-      int sc = GETARG_C(inst);  /* 直接用 C 字段的值，已经是 int2sC 转换过的 */
-      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_ADD, 0);
-      luaK_fixline(fs, line);
-    }
-    else if (opcode == OP_SHLI) {
-      /* SHLI: 生成 OP_MMBINI */
-      int b = GETARG_B(inst);
-      int sc = GETARG_C(inst);
-      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_SHL, 0);
-      luaK_fixline(fs, line);
-    }
-    else if (opcode == OP_SHRI) {
-      /* SHRI: 生成 OP_MMBINI */
-      int b = GETARG_B(inst);
-      int sc = GETARG_C(inst);
-      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_SHR, 0);
-      luaK_fixline(fs, line);
-    }
-    else if (opcode >= OP_ADDK && opcode <= OP_IDIVK) {
-      /* ADDK-IDIVK: 生成 OP_MMBINK */
-      int b = GETARG_B(inst);
-      int c = GETARG_C(inst);
-      TMS tm = cast(TMS, (opcode - OP_ADDK) + TM_ADD);
-      luaK_codeABCk(fs, OP_MMBINK, b, c, cast_int(tm), 0);
-      luaK_fixline(fs, line);
-    }
-    else if (opcode >= OP_BANDK && opcode <= OP_BXORK) {
-      /* BANDK-BXORK: 生成 OP_MMBINK */
-      int b = GETARG_B(inst);
-      int c = GETARG_C(inst);
-      TMS tm = cast(TMS, (opcode - OP_BANDK) + TM_BAND);
-      luaK_codeABCk(fs, OP_MMBINK, b, c, cast_int(tm), 0);
-      luaK_fixline(fs, line);
-    }
-    
-    /* 如果指令会写入寄存器 A，需要更新 freereg 和 maxstacksize 以防止后续代码覆盖 */
-    if (testAMode(opcode)) {
-      int a = GETARG_A(inst);
-      if (a >= fs->freereg) {
-        /* 计算需要扩展的寄存器数量 */
-        int needed = a + 1 - fs->freereg;
-        /* 检查并更新 maxstacksize */
-        luaK_checkstack(fs, needed);
-        fs->freereg = cast_byte(a + 1);
-      }
-    }
-    
-    /* 可选的分号或换行分隔 */
-    testnext(ls, ';');
-  }
+  asm_parse_body(ls, fs, &ctx, line);
 
   /* 修补所有待处理的前向引用 */
   asm_patchpending(ls, fs, &ctx);
@@ -9754,15 +8933,17 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
     int opcode;
     enum OpMode mode;
     Instruction inst;
-    int instpc;
+    int instpc;  /* 当前指令 of PC */
     TString *pendingLabel = NULL;
     int needsPatch = 0;
     int isJumpInst = 0;
     
-    /* 跳过注释内容 */
+    /*
+    ** 跳过注释内容
+    */
     for (;;) {
       if (ls->t.token == ';') {
-        luaX_next(ls);
+        luaX_next(ls);  /* 跳过 ';' */
         if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
           luaX_next(ls);
         }
@@ -9777,7 +8958,7 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
     
     if (ls->t.token == ')') break;
     
-    /* 标签定义 */
+    /* 检查是否是标签定义 */
     if (ls->t.token == ':') {
       luaX_next(ls);
       check(ls, TK_NAME);
@@ -9791,7 +8972,7 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
     check(ls, TK_NAME);
     opname = getstr(ls->t.seminfo.ts);
     
-    /* comment/rem 伪指令 */
+    /* comment 伪指令 */
     if (strcmp(opname, "comment") == 0 || strcmp(opname, "rem") == 0 ||
         strcmp(opname, "COMMENT") == 0 || strcmp(opname, "REM") == 0) {
       luaX_next(ls);
@@ -9819,26 +9000,93 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       continue;
     }
     
-    /* def 伪指令 */
-    if (strcmp(opname, "def") == 0 || strcmp(opname, "define") == 0) {
-      TString *def_name;
-      lua_Integer def_value;
+    /* raw 伪指令 */
+    if (strcmp(opname, "raw") == 0) {
+      luaX_next(ls);
+      lua_Integer raw_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      Instruction raw_inst = (Instruction)raw_val;
+      luaK_code(fs, raw_inst);
+      luaK_fixline(fs, line);
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* emit 伪指令 */
+    if (strcmp(opname, "emit") == 0) {
+      luaX_next(ls);
+      do {
+        lua_Integer emit_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        Instruction emit_inst = (Instruction)emit_val;
+        luaK_code(fs, emit_inst);
+        luaK_fixline(fs, line);
+      } while (testnext(ls, ','));
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* 嵌套 asm 伪指令 */
+    if (strcmp(opname, "asm") == 0) {
+      int nested_line = ls->linenumber;
+      AsmContext nested_ctx;
+      luaX_next(ls);
+      checknext(ls, '(');
+      asm_initcontext(ls->L, &nested_ctx, ctx);
+      asm_parse_body(ls, fs, &nested_ctx, nested_line);
+      asm_patchpending(ls, fs, &nested_ctx);
+      asm_freecontext(ls->L, &nested_ctx);
+      checknext(ls, ')');
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* jmpx 伪指令 */
+    if (strcmp(opname, "jmpx") == 0 || strcmp(opname, "JMPX") == 0) {
+      luaX_next(ls);
+      if (ls->t.token != TK_OR) {
+        luaK_semerror(ls, "jmpx requires @label argument");
+      }
       luaX_next(ls);
       check(ls, TK_NAME);
-      def_name = ls->t.seminfo.ts;
+      TString *label = ls->t.seminfo.ts;
       luaX_next(ls);
-      def_value = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      asm_emit_jmp(ls, fs, ctx, label, line);
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* align 伪指令 */
+    if (strcmp(opname, "align") == 0) {
+      luaX_next(ls);
+      int align_val = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      if (align_val < 1) {
+        luaK_semerror(ls, "align value must be positive");
+      }
+      while (fs->pc % align_val != 0) {
+        Instruction nop_inst = CREATE_ABCk(OP_MOVE, 0, 0, 0, 0);
+        luaK_code(fs, nop_inst);
+        luaK_fixline(fs, line);
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* def 伪指令 */
+    if (strcmp(opname, "def") == 0 || strcmp(opname, "define") == 0) {
+      luaX_next(ls);
+      check(ls, TK_NAME);
+      TString *def_name = ls->t.seminfo.ts;
+      luaX_next(ls);
+      lua_Integer def_value = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
       asm_adddefine(ls, ctx, def_name, def_value);
       testnext(ls, ';');
       continue;
     }
-
+    
     /* newreg 伪指令 */
     if (strcmp(opname, "newreg") == 0) {
-      TString *reg_name;
       luaX_next(ls);
       check(ls, TK_NAME);
-      reg_name = ls->t.seminfo.ts;
+      TString *reg_name = ls->t.seminfo.ts;
       luaX_next(ls);
       int reg = fs->freereg;
       luaK_reserveregs(fs, 1);
@@ -9846,13 +9094,12 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       testnext(ls, ';');
       continue;
     }
-
+    
     /* getglobal 伪指令 */
     if (strcmp(opname, "getglobal") == 0) {
-      int reg_dest;
-      TString *key_name;
       luaX_next(ls);
-      reg_dest = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      int reg_dest = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      TString *key_name;
       if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
         key_name = ls->t.seminfo.ts;
         luaX_next(ls);
@@ -9879,13 +9126,12 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       testnext(ls, ';');
       continue;
     }
-
+    
     /* setglobal 伪指令 */
     if (strcmp(opname, "setglobal") == 0) {
-      int reg_src;
-      TString *key_name;
       luaX_next(ls);
-      reg_src = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      int reg_src = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      TString *key_name;
       if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
         key_name = ls->t.seminfo.ts;
         luaX_next(ls);
@@ -9908,35 +9154,519 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       continue;
     }
     
-    /* 嵌套 asm 伪指令 - 递归调用 */
-    if (strcmp(opname, "asm") == 0) {
-      int nested_line = ls->linenumber;
-      AsmContext nested_ctx;
-      
-      luaX_next(ls);  /* 跳过 'asm' */
-      checknext(ls, '(');
-      
-      asm_initcontext(ls->L, &nested_ctx, ctx);
-      asm_parse_body(ls, fs, &nested_ctx, nested_line);  /* 递归 */
-      asm_patchpending(ls, fs, &nested_ctx);
-      asm_freecontext(ls->L, &nested_ctx);
-      
-      checknext(ls, ')');
+    /* _print / asmprint */
+    if (strcmp(opname, "_print") == 0 || strcmp(opname, "asmprint") == 0) {
+      luaX_next(ls);
+      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
+        const char *msg = getstr(ls->t.seminfo.ts);
+        luaX_next(ls);
+        if (ls->t.token == TK_INT || ls->t.token == '-' ||
+            ls->t.token == TK_DOLLAR || ls->t.token == '%' ||
+            ls->t.token == TK_NOT || ls->t.token == TK_OR ||
+            ls->t.token == TK_NAME || ls->t.token == '(' || ls->t.token == '~') {
+          lua_Integer val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          printf("[ASM] %s: %lld\n", msg, (long long)val);
+        } else {
+          printf("[ASM] %s\n", msg);
+        }
+      }
+      else if (ls->t.token == TK_INT || ls->t.token == '-' ||
+               ls->t.token == TK_DOLLAR || ls->t.token == '%' ||
+               ls->t.token == TK_NOT || ls->t.token == TK_OR ||
+               ls->t.token == TK_NAME || ls->t.token == '(' || ls->t.token == '~') {
+        lua_Integer val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        printf("[ASM] value: %lld\n", (long long)val);
+      }
+      else {
+        luaK_semerror(ls, "_print expects string or value");
+      }
       testnext(ls, ';');
       continue;
     }
     
-    /* 查找操作码 */
+    /* _assert / asmassert */
+    if (strcmp(opname, "_assert") == 0 || strcmp(opname, "asmassert") == 0) {
+      luaX_next(ls);
+      lua_Integer left_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      int cond_result = 0;
+      lua_Integer right_val;
+      if (ls->t.token == TK_EQ) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val == right_val);
+      }
+      else if (ls->t.token == TK_NE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val != right_val);
+      }
+      else if (ls->t.token == '>') {
+        luaX_next(ls);
+        if (ls->t.token == '=') {
+          luaX_next(ls);
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val >= right_val);
+        } else {
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val > right_val);
+        }
+      }
+      else if (ls->t.token == '<') {
+        luaX_next(ls);
+        if (ls->t.token == '=') {
+          luaX_next(ls);
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val <= right_val);
+        } else {
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val < right_val);
+        }
+      }
+      else if (ls->t.token == TK_GE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val >= right_val);
+      }
+      else if (ls->t.token == TK_LE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val <= right_val);
+      }
+      else {
+        cond_result = (left_val != 0);
+      }
+      
+      if (!cond_result) {
+        if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
+          const char *msg = getstr(ls->t.seminfo.ts);
+          luaX_next(ls);
+          luaK_semerror(ls, "asm assertion failed: %s", msg);
+        } else {
+          luaK_semerror(ls, "asm assertion failed");
+        }
+      } else {
+        if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
+          luaX_next(ls);
+        }
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* _info / asminfo */
+    if (strcmp(opname, "_info") == 0 || strcmp(opname, "asminfo") == 0) {
+      luaX_next(ls);
+      printf("[ASM INFO] line=%d, pc=%d, freereg=%d, nactvar=%d, nk=%d\n",
+             ls->linenumber, fs->pc, fs->freereg, fs->nactvar, fs->nk);
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* db / dw / dd */
+    if (strcmp(opname, "db") == 0) {
+      unsigned char bytes[4] = {0, 0, 0, 0};
+      int byte_count = 0;
+      luaX_next(ls);
+      do {
+        lua_Integer byte_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        if (byte_count < 4) {
+          bytes[byte_count++] = (unsigned char)(byte_val & 0xFF);
+        }
+        if (byte_count == 4) {
+          Instruction db_inst = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+          luaK_code(fs, db_inst);
+          luaK_fixline(fs, line);
+          byte_count = 0;
+          memset(bytes, 0, 4);
+        }
+      } while (testnext(ls, ','));
+      if (byte_count > 0) {
+        Instruction db_inst = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+        luaK_code(fs, db_inst);
+        luaK_fixline(fs, line);
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    if (strcmp(opname, "dw") == 0) {
+      unsigned short words[2] = {0, 0};
+      int word_count = 0;
+      luaX_next(ls);
+      do {
+        lua_Integer word_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        if (word_count < 2) {
+          words[word_count++] = (unsigned short)(word_val & 0xFFFF);
+        }
+        if (word_count == 2) {
+          Instruction dw_inst = words[0] | (words[1] << 16);
+          luaK_code(fs, dw_inst);
+          luaK_fixline(fs, line);
+          word_count = 0;
+          memset(words, 0, 4);
+        }
+      } while (testnext(ls, ','));
+      if (word_count > 0) {
+        Instruction dw_inst = words[0] | (words[1] << 16);
+        luaK_code(fs, dw_inst);
+        luaK_fixline(fs, line);
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    if (strcmp(opname, "dd") == 0) {
+      luaX_next(ls);
+      do {
+        lua_Integer dword_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        Instruction dd_inst = (Instruction)(dword_val & 0xFFFFFFFF);
+        luaK_code(fs, dd_inst);
+        luaK_fixline(fs, line);
+      } while (testnext(ls, ','));
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* str "string" */
+    if (strcmp(opname, "str") == 0) {
+      luaX_next(ls);
+      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
+        TString *str_data = ls->t.seminfo.ts;
+        int idx = luaK_stringK(fs, str_data);
+        (void)idx;
+        luaX_next(ls);
+      } else {
+        luaK_semerror(ls, "str expects a string literal");
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* rep count { ... } */
+    if (strcmp(opname, "rep") == 0 || strcmp(opname, "repeat") == 0) {
+      luaX_next(ls);
+      int rep_count = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      if (rep_count < 0) {
+        luaK_semerror(ls, "rep count must be non-negative");
+      }
+      checknext(ls, '{');
+      int rep_start_pc = fs->pc;
+      
+      asm_parse_body(ls, fs, ctx, line);
+      
+      int rep_end_pc = fs->pc;
+      int instr_count = rep_end_pc - rep_start_pc;
+      checknext(ls, '}');
+      
+      for (int i = 1; i < rep_count; i++) {
+        for (int j = 0; j < instr_count; j++) {
+          Instruction copied_inst = fs->f->code[rep_start_pc + j];
+          luaK_code(fs, copied_inst);
+          luaK_fixline(fs, line);
+        }
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* junk "string" / junk count */
+    if (strcmp(opname, "junk") == 0 || strcmp(opname, "garbage") == 0) {
+      luaX_next(ls);
+      if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING) {
+        TString *junk_str = ls->t.seminfo.ts;
+        const char *str = getstr(junk_str);
+        size_t len = tsslen(junk_str);
+        {
+          Instruction len_inst = CREATE_Ax(OP_EXTRAARG, (int)(len & MAXARG_Ax));
+          luaK_code(fs, len_inst);
+          luaK_fixline(fs, line);
+        }
+        for (size_t i = 0; i < len; i += 3) {
+          unsigned int data = 0;
+          data |= ((unsigned char)str[i]) << 0;
+          if (i + 1 < len) data |= ((unsigned char)str[i + 1]) << 8;
+          if (i + 2 < len) data |= ((unsigned char)str[i + 2]) << 16;
+          data &= MAXARG_Ax;
+          Instruction data_inst = CREATE_Ax(OP_EXTRAARG, (int)data);
+          luaK_code(fs, data_inst);
+          luaK_fixline(fs, line);
+        }
+        luaX_next(ls);
+      }
+      else if (ls->t.token == TK_INT) {
+        int junk_count = (int)ls->t.seminfo.i;
+        luaX_next(ls);
+        if (junk_count < 0) {
+          luaK_semerror(ls, "junk count must be non-negative");
+        }
+        for (int j = 0; j < junk_count; j++) {
+          Instruction nop_inst = CREATE_ABCk(OP_NOP, 0, 0, 0, 0);
+          luaK_code(fs, nop_inst);
+          luaK_fixline(fs, line);
+        }
+      }
+      else {
+        luaK_semerror(ls, "junk expects a string or integer count");
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* _if / _else / _endif */
+    if (strcmp(opname, "_if") == 0 || strcmp(opname, "asmif") == 0) {
+      luaX_next(ls);
+      lua_Integer left_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      int cond_result = 0;
+      lua_Integer right_val;
+      if (ls->t.token == TK_EQ) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val == right_val);
+      }
+      else if (ls->t.token == TK_NE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val != right_val);
+      }
+      else if (ls->t.token == '>') {
+        luaX_next(ls);
+        if (ls->t.token == '=') {
+          luaX_next(ls);
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val >= right_val);
+        } else {
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val > right_val);
+        }
+      }
+      else if (ls->t.token == '<') {
+        luaX_next(ls);
+        if (ls->t.token == '=') {
+          luaX_next(ls);
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val <= right_val);
+        } else {
+          right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+          cond_result = (left_val < right_val);
+        }
+      }
+      else if (ls->t.token == TK_GE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val >= right_val);
+      }
+      else if (ls->t.token == TK_LE) {
+        luaX_next(ls);
+        right_val = asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+        cond_result = (left_val <= right_val);
+      }
+      else {
+        cond_result = (left_val != 0);
+      }
+      
+      if (!cond_result) {
+        int nest_level = 1;
+        while (nest_level > 0 && ls->t.token != TK_EOS && ls->t.token != ')') {
+          if (ls->t.token == TK_NAME) {
+            const char *name = getstr(ls->t.seminfo.ts);
+            if (strcmp(name, "_if") == 0 || strcmp(name, "asmif") == 0) {
+              nest_level++;
+            }
+            else if (strcmp(name, "_endif") == 0 || strcmp(name, "asmend") == 0) {
+              if (nest_level == 1) {
+                luaX_next(ls);
+                nest_level = 0;
+                break;
+              } else { nest_level--; }
+            }
+            else if (nest_level == 1 && (strcmp(name, "_else") == 0 || strcmp(name, "asmelse") == 0)) {
+              luaX_next(ls);
+              testnext(ls, ';');
+              nest_level = 0;
+              break;
+            }
+          }
+          if (nest_level > 0) luaX_next(ls);
+        }
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    if (strcmp(opname, "_else") == 0 || strcmp(opname, "asmelse") == 0) {
+      int nest_level = 1;
+      luaX_next(ls);
+      while (nest_level > 0 && ls->t.token != TK_EOS && ls->t.token != ')') {
+        if (ls->t.token == TK_NAME) {
+          const char *name = getstr(ls->t.seminfo.ts);
+          if (strcmp(name, "_if") == 0 || strcmp(name, "asmif") == 0) {
+            nest_level++;
+          }
+          else if (strcmp(name, "_endif") == 0 || strcmp(name, "asmend") == 0) {
+            if (nest_level == 1) {
+              luaX_next(ls);
+              break;
+            } else { nest_level--; }
+          }
+        }
+        luaX_next(ls);
+      }
+      testnext(ls, ';');
+      continue;
+    }
+    
+    if (strcmp(opname, "_endif") == 0 || strcmp(opname, "asmend") == 0) {
+      luaX_next(ls);
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* -------------------------------------------------------------
+    ** 优化功能：新增条件跳转伪指令 je, jne, jl, jle, jg, jge, jtrue, jfalse
+    ** -------------------------------------------------------------
+    */
+    int is_cj = 0;
+    int cj_type = 0; /* 1: je, 2: jne, 3: jl, 4: jle, 5: jg, 6: jge, 7: jtrue, 8: jfalse */
+    if (strcmp(opname, "je") == 0 || strcmp(opname, "JE") == 0) { is_cj = 1; cj_type = 1; }
+    else if (strcmp(opname, "jne") == 0 || strcmp(opname, "JNE") == 0) { is_cj = 1; cj_type = 2; }
+    else if (strcmp(opname, "jl") == 0 || strcmp(opname, "JL") == 0) { is_cj = 1; cj_type = 3; }
+    else if (strcmp(opname, "jle") == 0 || strcmp(opname, "JLE") == 0) { is_cj = 1; cj_type = 4; }
+    else if (strcmp(opname, "jg") == 0 || strcmp(opname, "JG") == 0) { is_cj = 1; cj_type = 5; }
+    else if (strcmp(opname, "jge") == 0 || strcmp(opname, "JGE") == 0) { is_cj = 1; cj_type = 6; }
+    else if (strcmp(opname, "jtrue") == 0 || strcmp(opname, "JTRUE") == 0) { is_cj = 1; cj_type = 7; }
+    else if (strcmp(opname, "jfalse") == 0 || strcmp(opname, "JFALSE") == 0) { is_cj = 1; cj_type = 8; }
+    
+    if (is_cj) {
+      luaX_next(ls); /* 跳过 opname */
+      
+      /* 1. 解析第一个操作数 a */
+      int a = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      
+      int b = 0;
+      int is_b_const = 0;
+      int is_b_imm = 0;
+      
+      /* jtrue 和 jfalse 只有两个参数: a 和 @label */
+      if (cj_type != 7 && cj_type != 8) {
+        /* 2. 检测并解析第二个操作数 b 的类型 */
+        if (ls->t.token == '#') {
+          int next_tok = luaX_lookahead(ls);
+          if (next_tok == TK_NAME) {
+            is_b_const = 1;
+          } else if (next_tok == TK_STRING || next_tok == TK_RAWSTRING) {
+            is_b_const = 1;
+          } else {
+            is_b_imm = 1;
+          }
+        }
+        else if (ls->t.token == TK_INT || ls->t.token == '-') {
+          is_b_imm = 1;
+        }
+        
+        b = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
+      }
+      
+      /* 3. 解析目标标签 @label */
+      if (ls->t.token != TK_OR) {
+        luaK_semerror(ls, "conditional jump requires @label as target");
+      }
+      luaX_next(ls); /* 跳过 '@' */
+      check(ls, TK_NAME);
+      TString *label = ls->t.seminfo.ts;
+      luaX_next(ls);
+      
+      /* 4. 根据类型生成比较指令 */
+      Instruction comp_inst = 0;
+      if (cj_type == 1) { /* je: equal */
+        if (is_b_const) {
+          comp_inst = CREATE_ABCk(OP_EQK, a, b, 0, 0);
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_EQI, a, int2sC(b), 0, 0);
+        } else {
+          comp_inst = CREATE_ABCk(OP_EQ, a, b, 0, 0);
+        }
+      }
+      else if (cj_type == 2) { /* jne: not equal */
+        if (is_b_const) {
+          comp_inst = CREATE_ABCk(OP_EQK, a, b, 1, 0);
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_EQI, a, int2sC(b), 1, 0);
+        } else {
+          comp_inst = CREATE_ABCk(OP_EQ, a, b, 1, 0);
+        }
+      }
+      else if (cj_type == 3) { /* jl: less than */
+        if (is_b_const) {
+          luaK_semerror(ls, "less-than comparison does not support constant pool operands");
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_LTI, a, int2sC(b), 0, 0);
+        } else {
+          comp_inst = CREATE_ABCk(OP_LT, a, b, 0, 0);
+        }
+      }
+      else if (cj_type == 4) { /* jle: less than or equal */
+        if (is_b_const) {
+          luaK_semerror(ls, "less-equal comparison does not support constant pool operands");
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_LEI, a, int2sC(b), 0, 0);
+        } else {
+          comp_inst = CREATE_ABCk(OP_LE, a, b, 0, 0);
+        }
+      }
+      else if (cj_type == 5) { /* jg: greater than */
+        if (is_b_const) {
+          luaK_semerror(ls, "greater-than comparison does not support constant pool operands");
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_GTI, a, int2sC(b), 0, 0);
+        } else {
+          /* a > b is equivalent to b < a */
+          comp_inst = CREATE_ABCk(OP_LT, b, a, 0, 0);
+        }
+      }
+      else if (cj_type == 6) { /* jge: greater than or equal */
+        if (is_b_const) {
+          luaK_semerror(ls, "greater-equal comparison does not support constant pool operands");
+        } else if (is_b_imm) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
+          comp_inst = CREATE_ABCk(OP_GEI, a, int2sC(b), 0, 0);
+        } else {
+          /* a >= b is equivalent to b <= a */
+          comp_inst = CREATE_ABCk(OP_LE, b, a, 0, 0);
+        }
+      }
+      else if (cj_type == 7) { /* jtrue: test true */
+        comp_inst = CREATE_ABCk(OP_TEST, a, 0, 0, 0);
+      }
+      else if (cj_type == 8) { /* jfalse: test false */
+        comp_inst = CREATE_ABCk(OP_TEST, a, 0, 0, 1);
+      }
+      
+      luaK_code(fs, comp_inst);
+      luaK_fixline(fs, line);
+      
+      /* Emit target jump instruction */
+      asm_emit_jmp(ls, fs, ctx, label, line);
+      
+      testnext(ls, ';');
+      continue;
+    }
+    
+    /* -------------------------------------------------------------
+    ** 正常汇编指令解析
+    ** -------------------------------------------------------------
+    */
     opcode = find_opcode(opname);
     if (opcode < 0) {
       luaK_semerror(ls, "unknown opcode '%s' in asm", opname);
     }
     
-    luaX_next(ls);
+    luaX_next(ls);  /* 跳过操作码名称 */
     mode = getOpMode(opcode);
-    instpc = fs->pc;
+    instpc = fs->pc;  /* 记录当前 PC */
     
-    /* 根据操作码格式解析参数 */
     switch (mode) {
       case iABC: {
         int a = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
@@ -9946,15 +9676,26 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
         if (pendingLabel && !needsPatch) needsPatch = 1;
         int k = (int)asm_trygetint(ls, 0);
         
+        asm_checkrange(ls, a, MAXARG_A, "A");
+        asm_checkrange(ls, b, MAXARG_B, "B");
+        asm_checkrange(ls, c, MAXARG_C, "C");
+        asm_checkrange(ls, k, 1, "k");
+        
         if (opcode == OP_GTI || opcode == OP_GEI || 
             opcode == OP_LTI || opcode == OP_LEI || 
             opcode == OP_EQI || opcode == OP_MMBINI) {
+          asm_checkrange_signed(ls, b, -OFFSET_sC, OFFSET_sC, "sB");
           b = int2sC(b);
+          inst = CREATE_ABCk(opcode, a, b, c, k);
         }
         else if (opcode == OP_ADDI || opcode == OP_SHLI || opcode == OP_SHRI) {
+          asm_checkrange_signed(ls, c, -OFFSET_sC, OFFSET_sC, "sC");
           c = int2sC(c);
+          inst = CREATE_ABCk(opcode, a, b, c, k);
         }
-        inst = CREATE_ABCk(opcode, a, b, c, k);
+        else {
+          inst = CREATE_ABCk(opcode, a, b, c, k);
+        }
         break;
       }
       case ivABC: {
@@ -9964,44 +9705,84 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
         int vc = (int)asm_trygetint_ex(ls, ctx, 0, NULL, pendingLabel ? NULL : &pendingLabel, NULL);
         if (pendingLabel && !needsPatch) needsPatch = 1;
         int k = (int)asm_trygetint(ls, 0);
+        
+        asm_checkrange(ls, a, MAXARG_A, "A");
+        asm_checkrange(ls, vb, MAXARG_vB, "vB");
+        asm_checkrange(ls, vc, MAXARG_vC, "vC");
+        asm_checkrange(ls, k, 1, "k");
+        
         inst = CREATE_vABCk(opcode, a, vb, vc, k);
         break;
       }
       case iABx: {
         int a = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
-        unsigned int bx = (unsigned int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, NULL);
+        int isLabelRef = 0;
+        unsigned int bx = (unsigned int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, &isLabelRef);
         if (pendingLabel) {
           needsPatch = 1;
           if (opcode == OP_FORLOOP || opcode == OP_TFORLOOP ||
               opcode == OP_FORPREP || opcode == OP_TFORPREP) {
             isJumpInst = 1;
           }
+        } else if (isLabelRef) {
+          int offset;
+          int target = (int)bx;
+          if (opcode == OP_FORLOOP || opcode == OP_TFORLOOP) {
+             offset = (instpc + 1) - target;
+             if (offset <= 0) luaK_semerror(ls, "jump target for loop instruction must be backward");
+             bx = (unsigned int)offset;
+          } else if (opcode == OP_FORPREP || opcode == OP_TFORPREP) {
+             offset = target - (instpc + 1);
+             if (offset < 0) luaK_semerror(ls, "jump target for prep instruction must be forward");
+             if (opcode == OP_FORPREP) offset--;
+             bx = (unsigned int)offset;
+          }
         }
+        
+        asm_checkrange(ls, a, MAXARG_A, "A");
+        asm_checkrange(ls, bx, MAXARG_Bx, "Bx");
         inst = CREATE_ABx(opcode, a, bx);
         break;
       }
       case iAsBx: {
         int a = (int)asm_getint_ex(ls, ctx, NULL, NULL, NULL);
         int sbx = (int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, NULL);
-        if (pendingLabel) { needsPatch = 1; isJumpInst = 1; }
+        if (pendingLabel) {
+          needsPatch = 1;
+          isJumpInst = 1;
+        }
+        
+        asm_checkrange(ls, a, MAXARG_A, "A");
+        asm_checkrange_signed(ls, sbx, -OFFSET_sBx, OFFSET_sBx, "sBx");
         inst = CREATE_ABx(opcode, a, cast_uint(sbx + OFFSET_sBx));
         break;
       }
       case iAx: {
         int ax = (int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, NULL);
         if (pendingLabel) needsPatch = 1;
+        
+        asm_checkrange(ls, ax, MAXARG_Ax, "Ax");
         inst = CREATE_Ax(opcode, ax);
         break;
       }
       case isJ: {
-        int sj = (int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, NULL);
-        if (pendingLabel) { needsPatch = 1; isJumpInst = 1; }
+        int isLabelRef = 0;
+        int sj = (int)asm_getint_ex(ls, ctx, NULL, &pendingLabel, &isLabelRef);
+        if (pendingLabel) {
+          needsPatch = 1;
+          isJumpInst = 1;
+        } else if (isLabelRef) {
+          sj = sj - (instpc + 1);
+        }
+        
+        asm_checkrange_signed(ls, sj, -OFFSET_sJ, OFFSET_sJ, "sJ");
         inst = CREATE_sJ(opcode, sj + OFFSET_sJ, 0);
         break;
       }
-      default:
+      default: {
+        luaK_semerror(ls, "unsupported opcode mode in asm");
         inst = 0;
-        break;
+      }
     }
     
     luaK_code(fs, inst);
@@ -10019,11 +9800,22 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       luaK_codeABCk(fs, OP_MMBIN, b, c, cast_int(tm), 0);
       luaK_fixline(fs, line);
     }
-    else if (opcode == OP_ADDI || opcode == OP_SHLI || opcode == OP_SHRI) {
+    else if (opcode == OP_ADDI) {
       int b = GETARG_B(inst);
       int sc = GETARG_C(inst);
-      TMS tm = (opcode == OP_ADDI) ? TM_ADD : (opcode == OP_SHLI) ? TM_SHL : TM_SHR;
-      luaK_codeABCk(fs, OP_MMBINI, b, sc, cast_int(tm), 0);
+      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_ADD, 0);
+      luaK_fixline(fs, line);
+    }
+    else if (opcode == OP_SHLI) {
+      int b = GETARG_B(inst);
+      int sc = GETARG_C(inst);
+      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_SHL, 0);
+      luaK_fixline(fs, line);
+    }
+    else if (opcode == OP_SHRI) {
+      int b = GETARG_B(inst);
+      int sc = GETARG_C(inst);
+      luaK_codeABCk(fs, OP_MMBINI, b, sc, TM_SHR, 0);
       luaK_fixline(fs, line);
     }
     else if (opcode >= OP_ADDK && opcode <= OP_IDIVK) {
@@ -10033,8 +9825,14 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
       luaK_codeABCk(fs, OP_MMBINK, b, c, cast_int(tm), 0);
       luaK_fixline(fs, line);
     }
+    else if (opcode >= OP_BANDK && opcode <= OP_BXORK) {
+      int b = GETARG_B(inst);
+      int c = GETARG_C(inst);
+      TMS tm = cast(TMS, (opcode - OP_BANDK) + TM_BAND);
+      luaK_codeABCk(fs, OP_MMBINK, b, c, cast_int(tm), 0);
+      luaK_fixline(fs, line);
+    }
     
-    /* 更新 freereg */
     if (testAMode(opcode)) {
       int a = GETARG_A(inst);
       if (a >= fs->freereg) {
@@ -10046,10 +9844,7 @@ static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int li
     
     testnext(ls, ';');
   }
-}
-
-
-/*
+}/*
 ** 命令声明语法处理
 ** 语法: command 命令名(参数列表) 代码块 end
 ** 等价于: function 命令名(参数列表) 代码块 end; _CMDS["命令名"] = true
@@ -11889,6 +11684,8 @@ static void exprstat (LexState *ls) {
     return;
   }
 
+  /* 保存语句起始行号，用于中缀链跨行检测（suffixedexp 可能消费多行 token）*/
+  int stmt_line = ls->linenumber;
   suffixedexp(ls, &v.v);
 
   /* 检查是否是海象操作符: suffixedexp := expr (如 t.name := val) */
@@ -11917,7 +11714,62 @@ static void exprstat (LexState *ls) {
     v.prev = NULL;
     restassign(ls, &v, 1);
   }
-  else {  /* stat -> func */
+  else {  /* stat -> func or infix call */
+    /* 中缀调用链: receiver method1 arg1 method2 arg2 ...
+       无参中缀: receiver method => receiver:method() (行尾)
+       关键：使用语句起始行号 stmt_line，防止 suffixedexp 消费了后续行的 token
+       导致 receiver_line 错误地指向后续行 */
+    int receiver_line = stmt_line;
+    while (ls->t.token == TK_NAME) {
+      /* 方法名必须与 receiver 在同一行，防止跨行误检测 */
+      if (ls->t.linenumber != receiver_line)
+        break;
+      int lookahead = luaX_lookahead(ls);
+      int has_arg = is_infix_expr_start(lookahead) && is_same_line_infix(ls);
+      /* 通过行号检测行尾：lookahead 已读下一个 token，如果它不在当前行或已是 EOS，说明方法名在行尾 */
+      int is_eol = (lookahead == TK_EOS || ls->lookahead.linenumber != ls->t.linenumber);
+      /* 既不是同行的有参中缀，也不是行尾的无参中缀，退出 */
+      if (!has_arg && !is_eol)
+        break;
+      TString *method = ls->t.seminfo.ts;
+      int line = ls->linenumber;
+      luaX_next(ls);  /* 跳过方法名 */
+      /* 设置方法调用: receiver:method(arg) */
+      {
+        expdesc key;
+        codestring(&key, method);
+        luaK_self(fs, &v.v, &key);
+      }
+      if (has_arg) {
+        /* 解析参数 (使用 infix 优先级限制) */
+        expdesc v2;
+        BinOpr nextop = subexpr(ls, &v2, priority[OPR_INFIX].right);
+        /* 生成函数调用 */
+        int base = v.v.u.info;
+        if (hasmultret(v2.k))
+          luaK_setmultret(fs, &v2);
+        else {
+          if (v2.k != VVOID)
+            luaK_exp2nextreg(fs, &v2);
+        }
+        int nparams = (v2.k == VVOID) ? 2 : (fs->freereg - base);
+        init_exp(&v.v, VCALL, luaK_codeABC(fs, OP_CALL, base, nparams, 2));
+        luaK_fixline(fs, line);
+        fs->freereg = base + 1;
+        /* 如果被真正的二元运算符终止（非中缀），停止中缀链 */
+        if (nextop != OPR_NOBINOPR && nextop != OPR_INFIX) break;
+        /* 如果当前 token 已跨行，停止中缀链（防止跨越行边界继续解析） */
+        if (ls->t.linenumber != line) break;
+      }
+      else {
+        /* 无参数中缀调用: receiver method => receiver:method() */
+        int base = v.v.u.info;
+        init_exp(&v.v, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 2));
+        luaK_fixline(fs, line);
+        fs->freereg = base + 1;
+        break;  /* 无参数中缀调用后不继续链 */
+      }
+    }
     Instruction *inst;
     check_condition(ls, v.v.k == VCALL, "syntax error");
     inst = &getinstruction(fs, &v.v);
@@ -12025,6 +11877,14 @@ static int try_command_call (LexState *ls) {
       lookahead == '=' || lookahead == ',' || lookahead == '[' ||
       lookahead == TK_PLUSPLUS || getcompoundop(lookahead) != OPR_NOBINOPR) {
     return 0;
+  }
+
+  /* 如果看起来像中缀调用 (Name Name <expr_start>)，不处理 */
+  if (ls->t.seminfo.ts != NULL && lookahead == TK_NAME) {
+    int la2 = luaX_lookahead2(ls);
+    if (is_infix_expr_start(la2)) {
+      return 0;
+    }
   }
   
   /* 如果下一个 token 不能作为命令参数开始，不处理 */
@@ -12787,7 +12647,7 @@ static void usingstat(LexState *ls) {
   luaX_next(ls); /* skip using */
 
   if (ls->t.token == TK_NAMESPACE) {
-     /* using namespace Name; */
+     /* using namespace Name[::Member::...]; */
      luaX_next(ls);
      expdesc ns, env;
      TString *name = str_checkname(ls);
@@ -12804,6 +12664,16 @@ static void usingstat(LexState *ls) {
            codestring(&key, name);
            luaK_indexed(ls->fs, &ns, &key);
         }
+     }
+
+     /* 处理 ::Member 链: using namespace Outer::Inner::Nested */
+     while (testnext(ls, TK_DBCOLON)) {
+        TString *member = str_checkname(ls);
+
+        luaK_exp2anyregup(ls->fs, &ns);
+        expdesc key;
+        codestring(&key, member);
+        luaK_indexed(ls->fs, &ns, &key);
      }
 
      luaK_exp2nextreg(ls->fs, &env);
@@ -13162,9 +13032,19 @@ void statement (LexState *ls) {
         break;
       }
 
-      /* Check for C++ declaration: Type Name */
+      /* Check for C++ declaration: Type Name
+         but NOT if it looks like an infix function call: Name Name <expr_start> */
       if (luaX_lookahead(ls) == TK_NAME) {
-         declaration_stat(ls, line);
+         int receiver_line = ls->t.linenumber;        /* name1 的行号 */
+         int method_line = ls->lookahead.linenumber;   /* name2 的行号 */
+         int la2 = luaX_lookahead2(ls);
+         /* 中缀调用要求 receiver 和 method 在同一行，且 arg 是表达式起始 */
+         if (is_infix_expr_start(la2) && receiver_line == method_line) {
+            /* 可能是中缀调用: name1 name2 expr，交给 exprstat 处理 */
+            exprstat(ls);
+         } else {
+            declaration_stat(ls, line);
+         }
          break;
       }
 

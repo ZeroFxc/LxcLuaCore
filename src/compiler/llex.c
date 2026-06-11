@@ -616,6 +616,7 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->current = firstchar;
   ls->lookahead.token = TK_EOS;  /* no look-ahead token */
   ls->lookahead2.token = TK_EOS; /* no look-ahead token */
+  ls->lookahead3.token = TK_EOS; /* no look-ahead token */
   ls->z = z;
   ls->fs = NULL;
   ls->linenumber = 1;
@@ -1333,8 +1334,10 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           ts = luaX_newstring(ls, luaZ_buffer(ls->buff),
                                   luaZ_bufflen(ls->buff));
           seminfo->ts = ts;
-          if (isreserved(ts))  /* reserved word? */
-            return ts->extra - 1 + FIRST_RESERVED;
+          if (isreserved(ts)) {  /* reserved word? */
+            int tk = ts->extra - 1 + FIRST_RESERVED;
+            return tk;
+          }
           else {
             /* Check for alias */
             Alias *a = ls->aliases;
@@ -1372,31 +1375,61 @@ void luaX_next (LexState *ls) {
   ls->lastbuff = ls->buff;
   ls->tokpos = ls->curpos;
   if (ls->lookahead.token != TK_EOS) {  /* is there a look-ahead token? */
-    ls->t = ls->lookahead;  /* use this one */
+    ls->t = ls->lookahead;  /* use this one (struct copy, includes linenumber) */
     if (ls->lookahead2.token != TK_EOS) {
        ls->lookahead = ls->lookahead2;
-       ls->lookahead2.token = TK_EOS;
+       if (ls->lookahead3.token != TK_EOS) {
+          ls->lookahead2 = ls->lookahead3;
+          ls->lookahead3.token = TK_EOS;
+       } else {
+          ls->lookahead2.token = TK_EOS;
+       }
     } else {
        ls->lookahead.token = TK_EOS;  /* and discharge it */
     }
   }
-  else
+  else {
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
+    ls->t.linenumber = ls->linenumber;  /* 记录token所在行号 */
+  }
 }
 
 
 int luaX_lookahead (LexState *ls) {
-  if (ls->lookahead.token != TK_EOS)
+  if (ls->lookahead.token != TK_EOS) {
     return ls->lookahead.token;
+  }
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
+  ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
   return ls->lookahead.token;
 }
 
 int luaX_lookahead2 (LexState *ls) {
-  if (ls->lookahead.token == TK_EOS)
+  if (ls->lookahead.token == TK_EOS) {
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
-  if (ls->lookahead2.token != TK_EOS)
+    ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
+  }
+  if (ls->lookahead2.token != TK_EOS) {
     return ls->lookahead2.token;
+  }
   ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
+  ls->lookahead2.linenumber = ls->linenumber;  /* 记录token所在行号 */
   return ls->lookahead2.token;
+}
+
+int luaX_lookahead3 (LexState *ls) {
+  if (ls->lookahead.token == TK_EOS) {
+    ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
+    ls->lookahead.linenumber = ls->linenumber;
+  }
+  if (ls->lookahead2.token == TK_EOS) {
+    ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
+    ls->lookahead2.linenumber = ls->linenumber;
+  }
+  if (ls->lookahead3.token != TK_EOS) {
+    return ls->lookahead3.token;
+  }
+  ls->lookahead3.token = llex(ls, &ls->lookahead3.seminfo);
+  ls->lookahead3.linenumber = ls->linenumber;
+  return ls->lookahead3.token;
 }

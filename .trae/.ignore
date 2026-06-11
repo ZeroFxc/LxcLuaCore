@@ -1,0 +1,58 @@
+# Build outputs
+*.o
+*.a
+*.dll
+*.so
+*.dylib
+*.exe
+lua
+luac
+lxclua
+lbcdump
+
+# Editor and IDE
+.vscode/
+luatest/*
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Qoder
+.qoder/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+
+# Compiled Lua bytecode
+*.luac
+*.out
+
+# Debug files
+*.dSYM/
+*.pdb
+
+# Test outputs
+test_output/
+
+# SDK
+emsdk-main/
+wasmtime/
+*.wasm
+*.js
+
+# Koishi
+koishi/
+
+# Release packages
+*.zip
+*.tar.gz
+release/
+
+# Build scripts
+*.bat

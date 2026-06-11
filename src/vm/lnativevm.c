@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
@@ -43,7 +44,7 @@
 
 /* 构造指令 */
 static lua_Integer make_ni(int op, int a, int b, int c, int32_t imm) {
-  return ((lua_Integer)(uint32_t)imm << 32)
+  return ((lua_Integer)((uint64_t)(uint32_t)imm << 32))
        | ((lua_Integer)(c & 0xFF) << 24)
        | ((lua_Integer)(b & 0xFF) << 16)
        | ((lua_Integer)(a & 0xFF) << 8)

@@ -129,6 +129,7 @@ typedef union {
 typedef struct Token {
   int token;
   SemInfo seminfo;
+  int linenumber;  /**< Line number where this token was lexed */
 } Token;
 
 
@@ -171,6 +172,7 @@ typedef struct LexState {
   Token t;  /**< Current token. */
   Token lookahead;  /**< Look ahead token. */
   Token lookahead2; /**< Second look ahead token. */
+  Token lookahead3; /**< Third look ahead token. */
   struct FuncState *fs;  /**< Current function (parser). */
   struct lua_State *L;
   ZIO *z;  /**< Input stream. */
@@ -261,6 +263,14 @@ LUAI_FUNC int luaX_lookahead (LexState *ls);
  * @return The token code.
  */
 LUAI_FUNC int luaX_lookahead2 (LexState *ls);
+
+/**
+ * @brief Looks ahead three tokens.
+ *
+ * @param ls The lexical state.
+ * @return The token code.
+ */
+LUAI_FUNC int luaX_lookahead3 (LexState *ls);
 
 /**
  * @brief Reports a syntax error.

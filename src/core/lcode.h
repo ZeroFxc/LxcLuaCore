@@ -49,6 +49,8 @@ typedef enum BinOpr {
   OPR_NULLCOAL,
   /* pick case operator */
   OPR_CASE,
+  /* infix function call: expr1 NAME expr2 => expr1:NAME(expr2) */
+  OPR_INFIX,
   OPR_NOBINOPR
 } BinOpr;
 

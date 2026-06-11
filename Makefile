@@ -62,7 +62,7 @@ LUA2WASM_LIB_O= $(BUILDDIR)/lua2wasmlib.o
 # CLI 主程序（可选独立编译）
 LUA2WASM_CLI_O= $(BUILDDIR)/lua2wasm_main.o
 WAT2WASM_CLI_O= $(BUILDDIR)/wat2wasm_cli.o
-LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o)
+LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lnativeparser.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lcrypto.o luuid.o lrsa.o lecc.o)
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
 BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O)
@@ -76,6 +76,10 @@ LUAC_O=	$(BUILDDIR)/luac.o
 
 LBCDUMP_T=	lbcdump
 LBCDUMP_O=	$(BUILDDIR)/lbcdump.o
+
+# LSP (Language Server Protocol)
+LSP_SRV_T=	lxclua-lsp
+LSP_SRV_O=	$(addprefix $(BUILDDIR)/,lspsrv_main.o lspsrv_json.o lspsrv_proto.o lspsrv_doc.o lspsrv_lexer.o lspsrv_kwdb.o lspsrv_complete.o lspsrv_hover.o lspsrv_features.o lspsrv_util.o)
 
 ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O)
 QJS_T= qjs
@@ -121,6 +125,41 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 
 $(LBCDUMP_T): $(LBCDUMP_O)
 	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
+
+# ---- LSP Server (lxclua-lsp) ----
+$(LSP_SRV_T): $(LSP_SRV_O)
+	$(CC) -o $@ $(LDFLAGS) $(LSP_SRV_O) $(LIBS)
+
+# LSP object compilation rules (src/lspsrv/*.c)
+$(BUILDDIR)/lspsrv_main.o: src/lspsrv/lspsrv_main.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_json.o: src/lspsrv/lspsrv_json.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_proto.o: src/lspsrv/lspsrv_proto.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_doc.o: src/lspsrv/lspsrv_doc.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_lexer.o: src/lspsrv/lspsrv_lexer.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_kwdb.o: src/lspsrv/lspsrv_kwdb.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_complete.o: src/lspsrv/lspsrv_complete.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_hover.o: src/lspsrv/lspsrv_hover.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_features.o: src/lspsrv/lspsrv_features.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+$(BUILDDIR)/lspsrv_util.o: src/lspsrv/lspsrv_util.c src/lspsrv/lspsrv.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 # --- lua2wasm: Lua-to-WASM 编译器 ---
 # 核心模块已编译进 $(LUA_A)，可在 Lua 中通过 require("lua2wasm") 使用
@@ -180,6 +219,7 @@ clean:
 	$(RM) -r $(BUILDDIR)
 	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
 	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
+	$(RM) lxclua-lsp.exe
 	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
 	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
@@ -247,24 +287,29 @@ Darwin macos macosx:
 mingw:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi" lbcdump.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
+	$(CC) -shared -o lua55.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
+
+lsp:
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
 
 mingw-static:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi" lbcdump.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
 
 
 posix:
@@ -285,7 +330,7 @@ EMRANLIB= $(EMSDK_PATH)/emranlib.bat
 
 wasm:
 	$(MAKE) clean
-	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
+	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
 	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
 	"SYSLIBS=" \
@@ -298,14 +343,14 @@ wasm:
 	"LBCDUMP_T=lbcdump.js" \
 	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
-	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o $(BUILDDIR)/lsmgrlib.o $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o" \
+	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lnativevm.o $(BUILDDIR)/lnativeparser.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o $(BUILDDIR)/lsmgrlib.o $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o $(BUILDDIR)/lcrypto.o $(BUILDDIR)/luuid.o $(BUILDDIR)/lrsa.o $(BUILDDIR)/lecc.o" \
 	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
 
 # WASM 最小化版本（无文件系统，更小体积）
 wasm-minimal:
 	$(MAKE) clean
-	$(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
+	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-Os -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
 	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
 	"SYSLIBS=" \
@@ -317,6 +362,21 @@ wasm-minimal:
 	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
 	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINVOKE_RUN=0"
+
+# WASM LSP Server (lxclua-lsp.js)
+# 用法: make wasmlsp
+wasmlsp:
+	PYTHONUTF8=1 $(MAKE) $(LSP_SRV_O) CC="$(EMCC) -std=c23" \
+	"CFLAGS=-O3 -DNDEBUG -fno-exceptions" \
+	"CMCFLAGS=-Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm" \
+	"SYSCFLAGS=" \
+	"SYSLIBS="
+	$(EMCC) -std=c23 -o lxclua-lsp.js $(LSP_SRV_O) -lm \
+		-sWASM=1 -sSINGLE_FILE=1 \
+		-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS \
+		-sMODULARIZE=1 -sEXPORT_NAME=LuaLSPModule \
+		-sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 \
+		-sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB
 
 # 将 C 文件编译为 WASM 模块（供 wasm3 使用）
 # 用法: 
@@ -486,7 +546,7 @@ LUA_WASM_EXPORTS=\
 	 "_free"]
 
 # Targets that do not create files (not all makes understand .PHONY).
-.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasm-minimal wasm-c wasm-c-all wasm-c-wasi lxclua-wasm release mingw-release linux-release macos-release wasm-release termux-release
+.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasm-minimal wasmlsp wasm-c wasm-c-all wasm-c-wasi lxclua-wasm release mingw-release linux-release macos-release wasm-release termux-release lsp
 
 # 发行版打包配置
 RELEASE_NAME= lxclua

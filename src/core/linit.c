@@ -96,6 +96,21 @@ int luaopen_vmcustom(lua_State *L);
 /* 声明原生 VM 库的初始化函数 */
 int luaopen_nativevm(lua_State *L);
 
+/* 声明 NLang 编译器库的初始化函数 */
+int luaopen_nativeparser(lua_State *L);
+
+/* 声明 crypto 密码算法库的初始化函数 */
+int luaopen_crypto(lua_State *L);
+
+/* 声明 uuid 库的初始化函数 */
+int luaopen_uuid(lua_State *L);
+
+/* 声明 rsa 库的初始化函数 */
+int luaopen_rsa(lua_State *L);
+
+/* 声明 ecc 库的初始化函数 */
+int luaopen_ecc(lua_State *L);
+
 // clang and ffi libraries
 
 /*
@@ -145,11 +160,17 @@ static const luaL_Reg stdlibs[] = {
 #endif
   {"vmcustom", luaopen_vmcustom},
   {"nativevm", luaopen_nativevm},
+  {"nativeparser", luaopen_nativeparser},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
+
+{"crypto", luaopen_crypto},
+  {"uuid", luaopen_uuid},
+  {"rsa", luaopen_rsa},
+  {"ecc", luaopen_ecc},
 
 #ifdef __linux__
   {"process", luaopen_process},
@@ -227,11 +248,17 @@ static const luaL_Reg loadedlibs[] = {
 #endif
   {"vmcustom", luaopen_vmcustom},
   {"nativevm", luaopen_nativevm},
+  {"nativeparser", luaopen_nativeparser},
 
 #ifndef _WIN32
   {LUA_SMGRNAME, luaopen_smgr},
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
+
+  {"crypto", luaopen_crypto},
+  {"uuid", luaopen_uuid},
+  {"rsa", luaopen_rsa},
+  {"ecc", luaopen_ecc},
 
 #ifdef __linux__
   {"process", luaopen_process},

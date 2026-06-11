@@ -71,7 +71,7 @@ do
     print("  [INFO] 内部测试: host.os_time host.os_time_table host.os_clock")
     print("  [INFO] 内部测试: host.os_tmpname host.os_exit host.fs_seek host.fs_close host.read")
 end
-::section_b::
+;;::section_b;::
 
 print("")
 
@@ -175,7 +175,7 @@ do
         check_eq("B8c. identity(3.14159265358979)", fn:call(3.14159265358979), 3.14159265358979)
     end
 end
-::section_c::
+;;::section_c;::
 
 print("")
 
@@ -257,7 +257,7 @@ do
 
     check_ok("D3. 多实例不互相干扰", true)
 end
-::section_e::
+;;::section_e;::
 
 print("")
 
@@ -321,7 +321,7 @@ do
         check_eq("E4. is_prime(1..100) 全正确", ok_count, 100)
     end
 end
-::section_f::
+;;::section_f;::
 
 print("")
 print("=":rep(60))

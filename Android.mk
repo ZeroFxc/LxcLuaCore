@@ -64,6 +64,7 @@ LOCAL_SRC_FILES := \
 	src/vm/lvmlib.c \
 	src/vm/lvmustom.c \
 	src/vm/lnativevm.c \
+	src/vm/lnativeparser.c \
 	src/vm/lvm.c \
 	src/core/lzio.c \
 	src/utils/lnamespace.c\
@@ -145,7 +146,11 @@ LOCAL_SRC_FILES := \
 	src/lua2wasm/builtins.c \
 	src/lua2wasm/wat2wasm.c \
 	src/lua2wasm/xalloc.c \
-	src/lua2wasm/lua2wasmlib.c
+	src/lua2wasm/lua2wasmlib.c \
+	src/utils/lcrypto.c \
+	src/utils/luuid.c \
+	src/utils/lrsa.c \
+	src/utils/lecc.c
 
 LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.0-aarch64-android-c-api/include
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE

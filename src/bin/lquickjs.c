@@ -1,3 +1,6 @@
+/* 启用 POSIX 2008 扩展（emscripten/clang -std=c23 不会默认暴露 strdup 等） */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
