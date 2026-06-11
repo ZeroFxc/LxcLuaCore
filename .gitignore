@@ -13,6 +13,7 @@ lbcdump
 # Editor and IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -21,6 +22,9 @@ Thumbs.db
 
 # Qoder
 .qoder/
+
+# Git rewrite backup
+.git-rewrite/
 
 # Temporary files
 *.tmp
@@ -55,3 +59,38 @@ release/
 
 # Build scripts
 *.bat
+
+# Crash dumps
+*.dmp
+
+# Android build outputs
+app/src/main/jniLibs/
+app/src/main/jni/obj/
+app/src/main/jni/vmp/
+app/src/main/jni/*.zip
+app/src/main/jni/*.tar.gz
+
+# Java archives
+jar/
+
+# Generated HTML
+*.html
+
+# Root temp files
+check_*.py
+clean_*.py
+filter_*.sh
+debug_*.py
+add_features.py
+fix_features.py
+verify_*.py
+lecc_test*.c
+
+# Random temp/trash in root
+1
+sta*
+stY*
+stderr
+
+# Build binary
+lxclua-lsp
