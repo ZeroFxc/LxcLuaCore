@@ -5294,16 +5294,37 @@ static const luaL_Reg lnet_websocket_methods[] = {
     {NULL, NULL}
 };
 
+/* --- 子表: http.url --- */
+static const luaL_Reg lnet_url_funcs[] = {
+    {"encode",   l_http_url_encode},
+    {"decode",   l_http_url_decode},
+    {"parse",    l_http_url_parse},
+    {NULL, NULL}
+};
+
+/* --- 子表: http.base64 --- */
+static const luaL_Reg lnet_base64_funcs[] = {
+    {"encode",   l_http_base64_encode},
+    {"decode",   l_http_base64_decode},
+    {NULL, NULL}
+};
+
+/* --- 子表: http.cookie --- */
+static const luaL_Reg lnet_cookie_funcs[] = {
+    {"parse",    l_http_cookie_parse},
+    {NULL, NULL}
+};
+
+/* --- 子表: http.mime --- */
+static const luaL_Reg lnet_mime_funcs[] = {
+    {"type",     l_http_get_mime},
+    {"from_path", l_http_mime_type},
+    {NULL, NULL}
+};
+
 static const luaL_Reg lnet_http_funcs[] = {
     {"request",         l_http_request},
     {"server",          l_http_server_new},
-    {"url_encode",      l_http_url_encode},
-    {"url_decode",      l_http_url_decode},
-    {"base64_encode",   l_http_base64_encode},
-    {"base64_decode",   l_http_base64_decode},
-    {"url_parse",       l_http_url_parse},
-    {"cookie_parse",    l_http_cookie_parse},
-    {"mime_type",       l_http_get_mime},
     {"websocket",       l_http_websocket_connect},
     {NULL, NULL}
 };
@@ -5355,7 +5376,24 @@ LUAMOD_API int luaopen_http(lua_State *L) {
     luaL_setfuncs(L, lnet_websocket_methods, 0);
     lua_pop(L, 1);
 
-    /* 创建库表 */
+    /* 创建库表 (顶层函数: request, server, websocket) */
     luaL_newlib(L, lnet_http_funcs);
+
+    /* -- http.url 子表 -- */
+    luaL_newlib(L, lnet_url_funcs);
+    lua_setfield(L, -2, "url");
+
+    /* -- http.base64 子表 -- */
+    luaL_newlib(L, lnet_base64_funcs);
+    lua_setfield(L, -2, "base64");
+
+    /* -- http.cookie 子表 -- */
+    luaL_newlib(L, lnet_cookie_funcs);
+    lua_setfield(L, -2, "cookie");
+
+    /* -- http.mime 子表 -- */
+    luaL_newlib(L, lnet_mime_funcs);
+    lua_setfield(L, -2, "mime");
+
     return 1;
 }

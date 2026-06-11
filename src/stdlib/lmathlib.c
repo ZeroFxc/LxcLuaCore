@@ -775,18 +775,16 @@ static int math_array (lua_State *L) {
         lua_pushvalue(L, n);
       }
       lua_rawseti(L, -2, stack[stack_pos].index);
-      
-      /* Move to next index */
       stack[stack_pos].index++;
       
       /* Check if we've filled this dimension */
       if (stack[stack_pos].index > stack[stack_pos].size) {
         /* Move up one level */
+        if (stack_pos > 0) {
+          lua_pop(L, 1);  /* pop the filled table, keep root */
+        }
         stack_pos--;
         if (stack_pos >= 0) {
-          /* Remove the filled table from the stack */
-          lua_remove(L, -1);
-          /* Move to next index in parent dimension */
           stack[stack_pos].index++;
         }
       }
@@ -794,16 +792,20 @@ static int math_array (lua_State *L) {
       /* We need to create a new table for the next dimension */
       if (stack[stack_pos].index > stack[stack_pos].size) {
         /* This dimension is filled, move up */
+        if (stack_pos > 0) {
+          lua_pop(L, 1);  /* pop the filled table, keep root */
+        }
         stack_pos--;
         if (stack_pos >= 0) {
-          lua_remove(L, -1);
           stack[stack_pos].index++;
         }
       } else {
         /* Create a new table for the next dimension */
         lua_newtable(L);
-        /* Set it in the current table */
-        lua_rawseti(L, -2, stack[stack_pos].index);
+        /* Duplicate it so it stays on the stack after rawseti */
+        lua_pushvalue(L, -1);
+        /* Set it in the parent table */
+        lua_rawseti(L, -3, stack[stack_pos].index);
         /* Move down to fill the new table */
         stack_pos++;
       }
@@ -1104,6 +1106,125 @@ static int math_noise(lua_State *L) {
 
 /* }======================================================= */
 
+
+/*
+** {=======================================================
+** 扩展工具函数
+** ========================================================
+*/
+
+/**
+ * 将值限制在指定范围内
+ * math.clamp(x, min, max) -> 返回限制在[min, max]范围内的x
+ */
+static int math_clamp(lua_State *L) {
+  lua_Number x = luaL_checknumber(L, 1);
+  lua_Number lo = luaL_checknumber(L, 2);
+  lua_Number hi = luaL_checknumber(L, 3);
+  if (lo > hi) { lua_Number tmp = lo; lo = hi; hi = tmp; }
+  if (x < lo) x = lo;
+  else if (x > hi) x = hi;
+  lua_pushnumber(L, x);
+  return 1;
+}
+
+/**
+ * 线性插值
+ * math.lerp(a, b, t) -> a + (b - a) * t
+ */
+static int math_lerp(lua_State *L) {
+  lua_Number a = luaL_checknumber(L, 1);
+  lua_Number b = luaL_checknumber(L, 2);
+  lua_Number t = luaL_checknumber(L, 3);
+  lua_pushnumber(L, a + (b - a) * t);
+  return 1;
+}
+
+/**
+ * 四舍五入取整
+ * math.round(x) -> 返回x四舍五入后的整数
+ */
+static int math_round(lua_State *L) {
+  lua_Number x = luaL_checknumber(L, 1);
+  lua_Number r = l_mathop(floor)(x + l_mathop(0.5));
+  if (lua_numbertointeger(r, &(lua_Integer){0})) {
+    lua_Integer n;
+    lua_numbertointeger(r, &n);
+    lua_pushinteger(L, n);
+  } else {
+    lua_pushnumber(L, r);
+  }
+  return 1;
+}
+
+/**
+ * 返回数值的符号
+ * math.sign(x) -> 返回-1, 0, 或1
+ */
+static int math_sign(lua_State *L) {
+  lua_Number x = luaL_checknumber(L, 1);
+  if (x > 0) lua_pushinteger(L, 1);
+  else if (x < 0) lua_pushinteger(L, -1);
+  else lua_pushinteger(L, 0);
+  return 1;
+}
+
+/**
+ * 将一个值从一个范围映射到另一个范围
+ * math.maprange(x, in_min, in_max, out_min, out_max)
+ * 将x从[in_min, in_max]映射到[out_min, out_max]
+ */
+static int math_maprange(lua_State *L) {
+  lua_Number x = luaL_checknumber(L, 1);
+  lua_Number in_min = luaL_checknumber(L, 2);
+  lua_Number in_max = luaL_checknumber(L, 3);
+  lua_Number out_min = luaL_checknumber(L, 4);
+  lua_Number out_max = luaL_checknumber(L, 5);
+  if (in_max == in_min) {
+    lua_pushnumber(L, out_min);
+  } else {
+    lua_pushnumber(L, out_min + (x - in_min) * (out_max - out_min) / (in_max - in_min));
+  }
+  return 1;
+}
+
+/**
+ * 判断是否为2的幂
+ * math.ispow2(x) -> 如果x是2的幂返回true
+ */
+static int math_ispow2(lua_State *L) {
+  lua_Integer x = luaL_checkinteger(L, 1);
+  if (x <= 0) {
+    lua_pushboolean(L, 0);
+  } else {
+    lua_pushboolean(L, (x & (x - 1)) == 0);
+  }
+  return 1;
+}
+
+/**
+ * 返回大于等于x的最小2的幂
+ * math.nextpow2(x) -> 返回>=x的最小2的幂
+ */
+static int math_nextpow2(lua_State *L) {
+  lua_Integer x = luaL_checkinteger(L, 1);
+  if (x <= 0) {
+    lua_pushinteger(L, 1);
+    return 1;
+  }
+  lua_Unsigned u = (lua_Unsigned)x - 1;
+  u |= u >> 1;
+  u |= u >> 2;
+  u |= u >> 4;
+  u |= u >> 8;
+  u |= u >> 16;
+  u |= u >> 32;
+  lua_pushinteger(L, (lua_Integer)(u + 1));
+  return 1;
+}
+
+/* }======================================================= */
+
 static const luaL_Reg mathlib[] = {
   {"abs",   math_abs},
   {"acos",  math_acos},
@@ -1129,6 +1250,13 @@ static const luaL_Reg mathlib[] = {
   {"type", math_type},
   {"array", math_array},
   {"toexpr", math_toexpr},
+  {"clamp", math_clamp},
+  {"lerp", math_lerp},
+  {"round", math_round},
+  {"sign", math_sign},
+  {"maprange", math_maprange},
+  {"ispow2", math_ispow2},
+  {"nextpow2", math_nextpow2},
 #if defined(LUA_COMPAT_MATHLIB)
   {"atan2", math_atan},
   {"cosh",   math_cosh},

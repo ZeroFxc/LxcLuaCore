@@ -19,29 +19,43 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 - **Syntax Extensions**: Modern language features including Classes, Switch, Try-Catch, Arrow Functions, Pipe Operators, and more.
 - **Shell-like Conditions**: Built-in support for shell-style test expressions (e.g., `[ -f "file.txt" ]`).
 - **Code Obfuscation**: Control flow flattening, block shuffling, bogus blocks, VM protection, and string encryption.
-- **JIT Compilation**: Built-in TCC (Tiny C Compiler) integration for runtime C code compilation.
+- **Bytecode-to-C Code Generation (tcc)**: Converts Lua bytecode to C source code, enabling embedding in C projects or external compilation optimization.
 
 ### Extension Modules
 
-| Module | Description |
-|--------|-------------|
-| `json` | Built-in JSON parsing/serialization |
-| `lclass` | OOP support (classes, inheritance, interfaces) |
-| `lbitlib` | Bitwise operations |
-| `lboolib` | Boolean enhancements |
-| `ludatalib` | Binary data serialization |
-| `lsmgrlib` | Memory management utilities |
-| `process` | Process management (Linux only) |
-| `http` | HTTP client/server & Socket |
-| `thread` | Multithreading support with mutex, condition variables, and read-write locks |
-| `fs` | File system operations |
-| `struct` | C-style structs & arrays |
-| `ptr` | Pointer operations library |
-| `vm` | VM introspection and bytecode manipulation |
-| `tcc` | Runtime C code compilation via TCC |
-| `ByteCode` | Bytecode manipulation and analysis |
-| `vmprotect` | VM-based code protection |
-| `translator` | Code translation utilities |
+| Module | require Name | Description |
+|--------|-------------|-------------|
+| `bit` / `bit32` | `require("bit")` | Bitwise operations |
+| `bool` | `require("bool")` | Boolean enhancements |
+| `userdata` | `require("userdata")` | Binary data serialization |
+| `smgr` | `require("smgr")` | Memory management utilities |
+| `process` | `require("process")` | Process management (Linux/Windows) |
+| `http` | `require("http")` | HTTP client/server and Socket |
+| `thread` | `require("thread")` | Multithreading with mutex, condition variables, and read-write locks |
+| `fs` | `require("fs")` | File system operations |
+| `struct` | `require("struct")` | C-style structs and arrays |
+| `ptr` | `require("ptr")` | Pointer operations library |
+| `vm` | `require("vm")` | VM introspection and bytecode manipulation |
+| `jit` | `require("jit")` | Just-in-time compilation (sljit-based JIT) |
+| `tcc` | `require("tcc")` | Bytecode-to-C code generation |
+| `ByteCode` | `require("ByteCode")` | Bytecode manipulation and analysis |
+| `vmprotect` | `require("vmprotect")` | VM-based code protection |
+| `translator` | `require("translator")` | Code translation utilities |
+| `crypto` | `require("crypto")` | Cryptographic library (SHA-256, AES, HMAC, CRC32, CSPRNG) |
+| `uuid` | `require("uuid")` | UUID generation |
+| `rsa` | `require("rsa")` | RSA asymmetric encryption |
+| `ecc` | `require("ecc")` | ECC elliptic curve cryptography |
+| `lexer` | `require("lexer")` | Lexer and AST manipulation |
+| `asyncio` | `require("asyncio")` | Async I/O and Promises |
+| `wasm3` | `require("wasm3")` | WebAssembly runtime (wasm3) |
+| `wasmtime` | `require("wasmtime")` | WebAssembly runtime (wasmtime) |
+| `lua2wasm` | `require("lua2wasm")` | Lua to WASM compiler |
+| `quickjs` | `require("quickjs")` | QuickJS JavaScript engine integration |
+| `vmcustom` | `require("vmcustom")` | Custom opcode extension system |
+| `nativevm` | `require("nativevm")` | Native VM interface |
+| `nativeparser` | `require("nativeparser")` | Native parser interface |
+| `logtable` | `require("logtable")` | Log table support |
+| `libc` | `require("libc")` | C standard library interface (MinGW) |
 
 ---
 
@@ -49,37 +63,48 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 
 LXCLUA-NCore introduces modern language features to extend Lua 5.5.
 
+> Implementation status legend: [Full] [Partial] [Not implemented]
+>
+> Statuses below are verified against actual `lparser.c`, `lcode.c`, `llex.c`, and `lvm.c` source code.
+
 ### 1. Extended Operators
 
-Supports compound assignments, increment/decrement, spaceship operator, null coalescing, optional chaining, pipe operators, and walrus operator.
+Supports compound assignments, increment, spaceship operator, null coalescing, optional chaining, pipe operators, and walrus operator.
 
 ```lua
--- Compound Assignment & Increment
+-- Compound Assignment [Full] (13 types: += -= *= /= //= %= &= |= ^= >>= <<= ..= ??=)
 local a = 10
 a += 5          -- a = 15
+
+-- Increment [Partial: postfix var++ only, statement-level]
 a++             -- a = 16
 
--- Spaceship Operator (-1, 0, 1)
+-- Decrement (--) not implemented: no TK_MINUSMINUS in lexer
+-- Prefix ++var / --var not implemented
+-- a--           -- syntax error
+-- ++a           -- syntax error
+
+-- Spaceship Operator [Full] (-1, 0, 1)
 local cmp = 10 <=> 20  -- -1
 
--- Null Coalescing
+-- Null Coalescing [Full] (includes ??= compound assignment)
 local val = nil
 local res = val ?? "default"  -- "default"
 
--- Optional Chaining
+-- Optional Chaining [Full] (includes ?.() optional call)
 local config = { server = { port = 8080 } }
 local port = config?.server?.port  -- 8080
 local timeout = config?.client?.timeout  -- nil
 
--- Pipe Operator
+-- Pipe Operator [Full] (includes reverse pipe <|)
 local function double(x) return x * 2 end
 local result = 10 |> double  -- 20
 
--- Safe Pipe (skips if nil)
+-- Safe Pipe [Full] (skips if nil)
 local maybe_nil = nil
 local _ = maybe_nil |?> print  -- (does nothing)
 
--- Walrus Operator (Assignment Expression)
+-- Walrus Operator [Full] (Assignment Expression)
 local x
 if (x := 100) > 50 then
     print(x) -- 100
@@ -88,8 +113,8 @@ end
 
 ### 2. Enhanced Strings
 
-- **Interpolation**: `${var}` or `${[expr]}` inside strings.
-- **Raw Strings**: Prefixed with `_raw`, ignores escape sequences.
+- **Interpolation** [Full]: `${var}` or `${[expr]}` inside strings.
+- **Raw Strings** [Full]: Prefixed with `_raw`, ignores escape sequences.
 
 ```lua
 local name = "World"
@@ -105,28 +130,28 @@ local path = _raw"C:\Windows\System32"
 Supports arrow functions, lambdas, C-style definitions, generics, and async/await.
 
 ```lua
--- Arrow Function
+-- Arrow Function [Full]
 local add = (a, b) => a + b
 local log = ->(msg) { print("[LOG]: " .. msg) }
 
--- Lambda Expression
+-- Lambda Expression [Full]
 local sq = lambda(x): x * x
 
--- C-style Function
+-- C-style Function [Full]
 int sum(int a, int b) {
     return a + b;
 }
 
--- Generic Function
+-- Generic Function [Full]
 local function Factory(T)(val)
     return { type = T, value = val }
 end
 local obj = Factory("int")(99)
 
--- Async/Await
+-- Async/Await [Full]
 async function fetchData(url)
-    -- local data = await http.get(url) -- (Requires async runtime)
-    return "data"
+    local data = await(http.get(url))
+    return data
 end
 ```
 
@@ -135,26 +160,26 @@ end
 Complete class and interface system with modifiers (`private`, `public`, `protected`, `static`, `final`, `abstract`, `sealed`) and properties (`get`/`set`).
 
 ```lua
-interface Drawable
+interface Drawable  -- [Full]
     function draw(self)
 end
 
-class Shape implements Drawable
+class Shape implements Drawable  -- [Full]
     function draw(self)
         -- abstract-like behavior
     end
 end
 
--- Sealed Class (cannot be extended)
+-- Sealed Class [Full] (cannot be extended)
 sealed class Circle extends Shape
-    private _radius = 0
-    protected _id = 0
+    private _radius = 0    -- [Full]
+    protected _id = 0      -- [Full]
 
     function __init__(self, r)
         self._radius = r
     end
 
-    -- Property with Getter/Setter
+    -- Property with Getter/Setter [Full]
     get radius(self)
         return self._radius
     end
@@ -164,12 +189,12 @@ sealed class Circle extends Shape
     end
 
     function draw(self)
-        super.draw(self)
+        super.draw(self)   -- [Full] super expression
         return "Drawing circle: " .. self._radius
     end
 
-    static function create(r)
-        return new Circle(r)
+    static function create(r)  -- [Full]
+        return new Circle(r)   -- [Full] new expression
     end
 end
 
@@ -177,16 +202,16 @@ local c = Circle.create(10)
 c.radius = 20
 print(c.radius)  -- 20
 
--- instanceof check
+-- instanceof check [Full] (equivalent to is operator)
 if c instanceof Circle then
     print("c is a Circle")
 end
 ```
 
-### 5. Structs & Types
+### 5. Structs and Types
 
 ```lua
--- Struct
+-- Struct [Full]
 struct Point {
     int x;
     int y;
@@ -194,14 +219,12 @@ struct Point {
 local p = Point()
 p.x = 10
 
--- Concept (Type Predicate)
+-- Concept (Type Predicate) [Full]
 concept IsPositive(x)
     return x > 0
 end
--- Or single expression form
-concept IsEven(x) = x % 2 == 0
 
--- SuperStruct (Enhanced Table Definition)
+-- SuperStruct (Enhanced Table Definition) [Full]
 superstruct MetaPoint [
     x: 0,
     y: 0,
@@ -211,34 +234,31 @@ superstruct MetaPoint [
     end
 ]
 
--- Enum
+-- Enum [Full]
 enum Color {
     Red,
     Green,
     Blue = 10
 }
 
--- Destructuring
+-- Destructuring [Full]
 local data = { x = 1, y = 2 }
 local take { x, y } = data
 
--- Array Destructuring
+-- Array Destructuring [Full]
 local arr = {10, 20, 30}
 local take [first, , third] = arr
 
--- Spread Operator
+-- Spread Operator [Full]
 local arr1 = {1, 2}
 local arr2 = {3, 4}
 local combined = { 0, ...arr1, ...arr2 }
-
-local function sum(a, b, c) return a + b + c end
-print(sum(1, ...arr2))
 ```
 
 ### 6. Control Flow
 
 ```lua
--- Switch Statement
+-- Switch Statement [Full]
 switch (val) do
     case 1:
         print("One")
@@ -247,7 +267,7 @@ switch (val) do
         print("Other")
 end
 
--- When Statement (Pattern Matching)
+-- When Statement [Full]
 do
     when x == 1
         print("x is 1")
@@ -257,7 +277,7 @@ do
         print("other")
 end
 
--- Try-Catch-Finally
+-- Try-Catch-Finally [Full]
 try
     error("Error")
 catch(e)
@@ -266,35 +286,35 @@ finally
     print("Cleanup")
 end
 
--- Defer
+-- Defer [Full]
 defer do print("Executes at scope exit") end
 
--- With Statement
+-- With Statement [Full]
 local ctx = { val = 10 }
 with (ctx) {
     print(val) -- 10
 }
 
--- Namespace & Using
+-- Namespace and Using [Full]
 namespace MyLib {
     function test() return "test" end
 }
-using namespace MyLib; -- Import all
--- using MyLib::test;  -- Import specific member
+using namespace MyLib;
+-- using MyLib::test;
 
--- Ternary Conditional Expression
+-- Ternary Conditional Expression [Full]
 local is_debug = true
 local level = is_debug ? 10 : 0
 
--- List Comprehension
+-- List Comprehension [Full]
 local src = {1, 2, 3, 4, 5}
 local evens = [for _, v in ipairs(src) do v * 2 if v % 2 == 0]
 
--- Dict Comprehension
+-- Dict Comprehension [Full]
 local dict = {a = 1, b = 2}
 local inverted = {for k, v in pairs(dict) do v, k}
 
--- Continue Statement
+-- Continue Statement [Full]
 for i = 1, 10 do
     if i % 2 == 0 then
         continue
@@ -303,7 +323,7 @@ for i = 1, 10 do
 end
 ```
 
-### 7. Shell-like Tests
+### 7. Shell-like Tests [Full]
 
 Built-in conditional tests using `[ ... ]` syntax.
 
@@ -321,23 +341,22 @@ if [ 10 -gt 5 ] then
 end
 ```
 
-### 8. Metaprogramming & Macros
+### 8. Metaprogramming and Macros
 
 ```lua
--- Custom Command
+-- Custom Command [Full]
 command echo(msg)
     print(msg)
 end
 echo "Hello World"
 
--- Custom Operator
+-- Custom Operator [Full]
 operator ++ (x)
     return x + 1
 end
--- Call with $$ prefix
 local res = $$++(10)
 
--- Preprocessor Directives
+-- Preprocessor Directives [Full]
 $define DEBUG 1
 $alias CONST_VAL = 100
 $type MyInt = int
@@ -349,60 +368,42 @@ $else
 $end
 
 $declare g_var: MyInt
-
--- Object Macro
-local x = 10
-local obj = $object(x) -- {x=10}
 ```
 
-### 9. Inline ASM
+### 9. Inline ASM [Full]
 
 Write VM instructions directly. Use `newreg` to allocate registers safely.
-Supports pseudo-instructions like `rep`, `_if`, `_print`.
 
 ```lua
 asm(
     newreg r0
     LOADI r0 100
 
-    -- Compile-time loop
     rep 5 {
         ADDI r0 r0 1
     }
 
-    -- Conditional assembly
     _if 1
        _print "Compiling this block"
     _endif
-
-    _if 0
-    _else
-       _print "Compile this instead"
-    _endif
-
-    -- Embedding data
-    -- db 1, 2, 3, 4
-    -- str "RawData"
 
     RETURN1 r0
 )
 ```
 
-### 10. Slice Operations
+### 10. Slice Operations [Full]
 
 Python-style slice syntax for tables and strings.
 
 ```lua
 local arr = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-
 local slice1 = arr[1:5]      -- {1, 2, 3, 4, 5}
 local slice2 = arr[1:10:2]   -- {1, 3, 5, 7, 9}
 local slice3 = arr[5:]       -- {5, 6, 7, 8, 9, 10}
-local slice4 = arr[:5]       -- {1, 2, 3, 4, 5}
 local slice5 = arr[::-1]     -- {10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
 ```
 
-### 11. `in` Operator
+### 11. `in` Operator [Full]
 
 Check if a value exists in a container.
 
@@ -411,14 +412,9 @@ local arr = {1, 2, 3, 4, 5}
 if 3 in arr then
     print("3 is in arr")
 end
-
-local str = "Hello World"
-if "World" in str then
-    print("Found 'World'")
-end
 ```
 
-### 12. Type Hints
+### 12. Type Hints [Full]
 
 Support for type annotations and type checking.
 
@@ -459,23 +455,43 @@ LXCLUA-NCore provides multiple obfuscation techniques:
 local obfuscated = string.dump(func, false, OBFUSCATE_CFF | OBFUSCATE_STR_ENCRYPT)
 ```
 
-### AES Encryption
+### Cryptographic Library
 
-Built-in AES encryption support (ECB, CBC, CTR modes).
+Built-in unified cryptographic library `crypto` with a sub-table structure organizing all algorithms.
 
 ```lua
-local aes = require("aes")
+local crypto = require("crypto")
+
+-- SHA-256 Hash
+local hash = crypto.sha256("Hello World")         -- returns hex string
+local raw = crypto.sha256.raw("Hello World")      -- returns raw bytes
+
+-- HMAC-SHA256
+local mac = crypto.hmac.sha256("key", "data")     -- returns hex string
+local raw_mac = crypto.hmac.sha256_raw("key", "data")  -- returns raw bytes
+
+-- AES Encryption (ECB/CBC/CTR modes)
 local key = "16-byte-key-1234"
-local iv = "initial-vector-16"
-local encrypted = aes.encrypt_cbc(plaintext, key, iv)
-local decrypted = aes.decrypt_cbc(encrypted, key, iv)
+local iv = "initial-vector-16"                    -- required for CBC/CTR
+local encrypted = crypto.aes.encrypt(key, plaintext, "CBC", iv)
+local decrypted = crypto.aes.decrypt(key, encrypted, "CBC", iv)
+
+-- CRC32 Checksum
+local checksum = crypto.crc32(data)
+
+-- Secure Random Numbers
+local rand_hex = crypto.random.hex(16)            -- 16 bytes random hex
+local rand_bytes = crypto.random.bytes(32)        -- 32 bytes random raw
+local rand_int = crypto.random.int(1, 100)        -- [1, 100] random integer
+crypto.random.seed(12345)                         -- manually set seed
 ```
 
-### SHA-256 Hashing
+### UUID Generation
 
 ```lua
-local sha256 = require("sha256")
-local hash = sha256.hash("Hello World")
+local uuid = require("uuid")
+local id = uuid.v4()          -- Random UUID (version 4)
+local id2 = uuid.v7()         -- Time-ordered UUID (version 7)
 ```
 
 ---
@@ -514,23 +530,33 @@ t:join()
 
 ---
 
-## TCC Integration (JIT Compilation)
+## Bytecode-to-C Code Generation (tcc)
 
-Compile and execute C code at runtime.
+The `tcc` module compiles Lua source code to bytecode, then converts bytecode to C source code. The generated C code can be compiled separately with an external C compiler into native executables or shared libraries. The module name is a historical artifact and is unrelated to Tiny C Compiler.
 
 ```lua
 local tcc = require("tcc")
 
-local code = [[
-    int add(int a, int b) {
-        return a + b;
-    }
-]]
+-- Convert Lua code to C source code
+local c_code = tcc.compile([[
+    local function add(a, b)
+        return a + b
+    end
+    return add
+]])
 
-local state = tcc.new()
-state:compile(code)
-local add = state:get_symbol("add")
-print(add(1, 2))  -- 3
+-- c_code is a C source code string, can be written to file and compiled with GCC
+```
+
+### Real JIT Compilation (`jit`)
+
+The project includes a separate `jit` module, based on sljit, which provides actual just-in-time compilation (JIT) at runtime -- compiling hot bytecode directly into native machine code:
+
+```lua
+local jit = require("jit")
+jit.on()   -- enable JIT
+jit.off()  -- disable JIT
+print(jit.status())  -- check JIT status
 ```
 
 ---
@@ -564,7 +590,7 @@ print(c:tostring())  -- 111111111011111111100
 
 ---
 
-## HTTP & Networking
+## HTTP and Networking
 
 ```lua
 local http = require("http")
@@ -632,7 +658,7 @@ print("Constants:", info.num_constants)
 
 ---
 
-## Build & Test
+## Build and Test
 
 ### Build
 
@@ -643,9 +669,36 @@ make linux
 # Windows (MinGW)
 make mingw
 
-# Android
-make android
+# Windows static (MinGW)
+make mingw-static
+
+# Android (Termux)
+make termux
+
+# WebAssembly (main)
+make wasm
+
+# WebAssembly (LSP server)
+make wasmlsp
+
+# WebAssembly (minimal)
+make wasm-minimal
+
+# WebAssembly (C library)
+make wasm-c
 ```
+
+### Build Outputs
+
+| File | Description |
+|------|-------------|
+| `lxclua` / `lxclua.exe` | LXCLUA interpreter |
+| `luac` / `luac.exe` | Lua bytecode compiler |
+| `lbcdump` / `lbcdump.exe` | Bytecode analysis tool |
+| `lxclua-lsp.exe` | LXCLUA LSP language server |
+| `liblua.a` / `lua55.dll` | Lua static library / dynamic library |
+| `lxclua.js` / `lxclua.wasm` | WebAssembly build outputs |
+| `lxclua-lsp.js` / `lxclua-lsp.wasm` | LSP WebAssembly build outputs |
 
 ### Verification
 
@@ -657,23 +710,22 @@ Run the test suite to verify all features:
 ./lxclua tests/test_advanced_parser.lua
 ```
 
+### Clean
+
+```bash
+make clean
+```
+
 ---
 
 ## API Reference
 
-### Object-Oriented API
+### Enhanced Memory API
 
 ```c
-// Class creation and manipulation
-void lua_newclass(lua_State *L, const char *name);
-void lua_inherit(lua_State *L, int child_idx, int parent_idx);
-void lua_newobject(lua_State *L, int class_idx, int nargs);
-void lua_setmethod(lua_State *L, int class_idx, const char *name, int func_idx);
-void lua_setstatic(lua_State *L, int class_idx, const char *name, int value_idx);
-void lua_getprop(lua_State *L, int obj_idx, const char *key);
-void lua_setprop(lua_State *L, int obj_idx, const char *key, int value_idx);
-int  lua_instanceof(lua_State *L, int obj_idx, int class_idx);
-void lua_implement(lua_State *L, int class_idx, int interface_idx);
+size_t lua_getmemoryusage(lua_State *L);
+void   lua_gc_force(lua_State *L);
+void   lua_table_iextend(lua_State *L, int idx, int n);
 ```
 
 ### Obfuscation API
@@ -684,17 +736,9 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
                         const char *log_path);
 ```
 
-### Enhanced Memory API
-
-```c
-size_t lua_getmemoryusage(lua_State *L);
-void   lua_gc_force(lua_State *L);
-void   lua_table_iextend(lua_State *L, int idx, int n);
-```
-
 ---
 
 ## License
 
 [MIT License](../LICENSE).
-Lua original code Copyright © PUC-Rio.
+Lua original code Copyright (c) PUC-Rio.

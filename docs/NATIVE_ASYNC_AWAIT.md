@@ -1,6 +1,6 @@
 # LXCLUA-NCore LParser 原生 Async/Await 语法糖
 
-## 📖 概述
+## 概述
 
 LXCLUA-NCore 的 **lparser.c**（Lua 核心解析器）直接支持 **async/await** 语法糖，无需外部编译器（如 llexer_compiler）。这是最底层的语法支持，在代码解析阶段就完成转换。
 
@@ -54,7 +54,7 @@ LXCLUA-NCore 的 **lparser.c**（Lua 核心解析器）直接支持 **async/awai
 └─────────────────────────────────────────────────────┘
 ```
 
-## 🎯 支持的语法形式
+## 支持的语法形式
 
 ### 1. 全局异步函数声明
 
@@ -134,7 +134,7 @@ coroutine.yield(expression)  -- 单目操作符 OPR_AWAIT
 4. Promise 完成时，回调恢复协程并传入结果值
 5. `await` 表达式的返回值就是 Promise 的结果
 
-## 🔧 关键组件详解
+## 关键组件详解
 
 ### 1. __async_wrap 全局函数
 
@@ -347,7 +347,7 @@ static void laio_promise_settled(promise *p) {
 }
 ```
 
-## 📊 数据流图
+## 数据流图
 
 ### 完整的 Async/Await 执行流程
 
@@ -403,43 +403,43 @@ return 21 * 2              │                         ▼
 result_p = fulfilled(42)
 ```
 
-## 🆚 与其他方式的对比
+## 与其他方式的对比
 
 ### 方式 1: LParser 原生语法糖（本文档）
 
 **优点**:
-- ✅ **零预编译步骤**：直接写 `async function` / `await`
-- ✅ **性能最优**：编译时就生成优化字节码
-- ✅ **IDE 友好**：语法高亮、错误检查开箱即用
-- ✅ **官方支持**：核心解析器原生集成
+- **零预编译步骤**：直接写 `async function` / `await`
+- **性能最优**：编译时就生成优化字节码
+- **IDE 友好**：语法高亮、错误检查开箱即用
+- **官方支持**：核心解析器原生集成
 
 **缺点**:
-- ❌ 需要修改 Lua 核心解析器（已由 LXCLUA-NCore 完成）
+- 需要修改 Lua 核心解析器（已由 LXCLUA-NCore 完成）
 
 ### 方式 2: LLexer Compiler 外部编译
 
 **优点**:
-- ✅ 不修改核心解析器
-- ✅ 可选启用/禁用
-- ✅ 支持代码混淆
+- 不修改核心解析器
+- 可选启用/禁用
+- 支持代码混淆
 
 **缺点**:
-- ❌ 需要预编译步骤
-- ❌ IDE 无法提供实时语法检查
-- ❌ 调试困难（看到的是脱糖后的代码）
+- 需要预编译步骤
+- IDE 无法提供实时语法检查
+- 调试困难（看到的是脱糖后的代码）
 
 ### 方式 3: 运行时 API（asyncio.wrap / asyncio.wait）
 
 **优点**:
-- ✅ 标准 Lua 语法，任何编辑器都支持
-- ✅ 无需特殊工具链
-- ✅ 兼容性最好
+- 标准 Lua 语法，任何编辑器都支持
+- 无需特殊工具链
+- 兼容性最好
 
 **缺点**:
-- ❌ 代码较冗长
-- ❌ 不够"现代"
+- 代码较冗长
+- 不够"现代"
 
-## 🧪 测试验证
+## 测试验证
 
 ### 测试文件
 
@@ -456,30 +456,30 @@ lua tests/test_native_async_await.lua
 ### 测试覆盖范围
 
 1. **基础功能**
-   - ✅ `__async_wrap` 注册验证
-   - ✅ 全局/局部 `async function` 声明
-   - ✅ 多参数支持
+   - `__async_wrap` 注册验证
+   - 全局/局部 `async function` 声明
+   - 多参数支持
 
 2. **Await 表达式**
-   - ✅ `await(Promise)` 基本用法
-   - ✅ 多个 await 顺序执行
-   - ✅ await 返回值传递
+   - `await(Promise)` 基本用法
+   - 多个 await 顺序执行
+   - await 返回值传递
 
 3. **完整流程**
-   - ✅ 异步数据获取模拟
-   - ✅ 嵌套 async 函数
-   - ✅ 错误处理和传播
+   - 异步数据获取模拟
+   - 嵌套 async 函数
+   - 错误处理和传播
 
 4. **混合使用**
-   - ✅ 与运行时 API (`asyncio.wait`) 混合
-   - ✅ Promise 链式调用
+   - 与运行时 API (`asyncio.wait`) 混合
+   - Promise 链式调用
 
 5. **边界情况**
-   - ✅ 空 async 函数
-   - ✅ 无 await 的 async 函数
-   - ✅ 性能基准测试
+   - 空 async 函数
+   - 无 await 的 async 函数
+   - 性能基准测试
 
-## ⚙️ 配置选项
+## 配置选项
 
 ### 默认行为
 
@@ -505,9 +505,9 @@ function _G.__async_wrap(func)
 end
 ```
 
-> ⚠️ 注意：简化版本不支持 `await`，仅用于语法兼容性测试。
+> 注意：简化版本不支持 `await`，仅用于语法兼容性测试。
 
-## 🔍 调试技巧
+## 调试技巧
 
 ### 查看 __async_wrap 是否生效
 
@@ -559,18 +559,18 @@ local result = p:await_sync()
 print(type(result), result)  --> "string", "something went wrong!"
 ```
 
-## 🚀 最佳实践
+## 最佳实践
 
 ### 1. 总是在 async 函数中使用 await
 
 ```lua
-✅ 正确:
+正确:
 async function good()
     local data = await(fetchData())
     return process(data)
 end
 
-❌ 错误:
+错误:
 async function bad()
     local p = fetchData()  -- 得到 Promise 但没有 await
     return p  -- 返回 Promise 而不是数据
@@ -621,7 +621,7 @@ async function fetchAll(urls)
 end
 ```
 
-## 📚 相关文档
+## 相关文档
 
 - [ASYNC_AWAIT_SUGAR.md](ASYNC_AWAIT_SUGAR.md) - 完整 API 文档
 - [lpromise.h](../src/utils/lpromise.h) - Promise C API

@@ -1006,6 +1006,187 @@ static int f_readline_n (lua_State *L) {
 
 
 /**
+ * 文件句柄：写入一行（自动加换行）
+ * 功能描述：向文件写入字符串并自动添加换行符
+ * 参数说明：line - 要写入的字符串
+ * 返回值说明：成功返回true
+ */
+static int f_writeline (lua_State *L) {
+  FILE *f = tofile(L);
+  size_t len;
+  const char *line = luaL_checklstring(L, 2, &len);
+  fwrite(line, 1, len, f);
+  fputc('\n', f);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+/**
+ * 文件句柄：统计行数
+ * 功能描述：统计文件中的总行数
+ * 返回值说明：返回行数整数
+ */
+static int f_linecount (lua_State *L) {
+  FILE *f = tofile(L);
+  long saved_pos = ftell(f);
+  int count = 0;
+  int c;
+  int last = 0;
+  
+  rewind(f);
+  while ((c = fgetc(f)) != EOF) {
+    last = c;
+    if (c == '\n') count++;
+  }
+  
+  /* 如果文件有内容但最后一行没有换行符，也算一行 */
+  if (last != 0 && last != '\n') count++;
+  
+  fseek(f, saved_pos, SEEK_SET);
+  lua_pushinteger(L, count);
+  return 1;
+}
+
+
+/**
+ * 文件句柄：读取指定范围的行
+ * 功能描述：从文件中读取指定行号范围的所有行
+ * 参数说明：start - 起始行(从1开始), end - 结束行, mode - 可选,"b"为二进制
+ * 返回值说明：返回包含所有行的table
+ */
+static int f_readlines_range (lua_State *L) {
+  FILE *f = tofile(L);
+  lua_Integer start_line = luaL_checkinteger(L, 2);
+  lua_Integer end_line = luaL_checkinteger(L, 3);
+  const char *mode = luaL_optstring(L, 4, "t");
+  int binary_mode = (mode[0] == 'b' || mode[0] == 'B');
+  int current_line = 1;
+  int c;
+  int result_idx = 1;
+  long saved_pos = ftell(f);
+  luaL_Buffer b;
+  
+  if (start_line < 1) {
+    luaL_pushfail(L);
+    lua_pushliteral(L, "起始行号必须大于0");
+    return 2;
+  }
+  if (end_line < start_line) {
+    luaL_pushfail(L);
+    lua_pushliteral(L, "结束行号必须大于等于起始行号");
+    return 2;
+  }
+  
+  /* 创建结果table */
+  lua_newtable(L);
+  
+  rewind(f);
+  /* 跳过前面的行 */
+  while (current_line < start_line) {
+    c = fgetc(f);
+    if (c == EOF) {
+      fseek(f, saved_pos, SEEK_SET);
+      return 1;  /* 返回空table */
+    }
+    if (c == '\n') current_line++;
+  }
+  
+  /* 读取范围内的所有行 */
+  while (current_line <= end_line) {
+    if (binary_mode) {
+      /* 二进制模式：每行为字节table */
+      lua_newtable(L);
+      int idx = 1;
+      while ((c = fgetc(f)) != EOF && c != '\n') {
+        lua_pushinteger(L, (unsigned char)c);
+        lua_rawseti(L, -2, idx++);
+      }
+      lua_rawseti(L, -2, result_idx++);
+    } else {
+      /* 文本模式：每行为字符串 */
+      luaL_buffinit(L, &b);
+      while ((c = fgetc(f)) != EOF && c != '\n') {
+        luaL_addchar(&b, c);
+      }
+      luaL_pushresult(&b);
+      lua_remove(L, -2);  /* 移除luaL_pushresult留下的新占位符 */
+      lua_rawseti(L, -2, result_idx++);
+    }
+    if (c == EOF) break;
+    current_line++;
+  }
+  
+  fseek(f, saved_pos, SEEK_SET);
+  return 1;
+}
+
+
+/**
+ * 文件句柄：写入指定范围的行
+ * 功能描述：向文件中写入指定行号范围的字符串行
+ * 参数说明：start - 起始行, end - 结束行, lines - 包含所有行的table
+ * 返回值说明：成功返回true
+ */
+static int f_writelines_range (lua_State *L) {
+  FILE *f = tofile(L);
+  lua_Integer start_line = luaL_checkinteger(L, 2);
+  lua_Integer end_line = luaL_checkinteger(L, 3);
+  luaL_checktype(L, 4, LUA_TTABLE);
+  
+  if (start_line < 1 || end_line < start_line) {
+    luaL_pushfail(L);
+    lua_pushliteral(L, "无效的行号范围");
+    return 2;
+  }
+  
+  for (lua_Integer i = start_line; i <= end_line; i++) {
+    lua_geti(L, 4, i - start_line + 1);
+    if (lua_isstring(L, -1)) {
+      size_t len;
+      const char *s = lua_tolstring(L, -1, &len);
+      fwrite(s, 1, len, f);
+    }
+    fputc('\n', f);
+    lua_pop(L, 1);
+  }
+  
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+/**
+ * 文件句柄：读取全部内容
+ * 功能描述：从文件当前位置读取到文件末尾的全部内容
+ * 返回值说明：返回文件内容的字符串
+ */
+static int f_saveall (lua_State *L) {
+  FILE *f = tofile(L);
+  long saved_pos = ftell(f);
+  long file_size;
+  luaL_Buffer b;
+  
+  /* 获取文件大小 */
+  fseek(f, 0, SEEK_END);
+  file_size = ftell(f);
+  fseek(f, saved_pos, SEEK_SET);
+  
+  /* 读取剩余全部内容 */
+  long remaining = file_size - saved_pos;
+  if (remaining <= 0) {
+    lua_pushliteral(L, "");
+    return 1;
+  }
+  
+  char *buf = (char *)luaL_buffinitsize(L, &b, (size_t)remaining);
+  size_t read = fread(buf, 1, (size_t)remaining, f);
+  luaL_pushresultsize(&b, read);
+  return 1;
+}
+
+
+/**
  * 获取文件总行数
  * 功能描述：统计文件中的总行数
  * 参数说明：filename - 文件名
@@ -1104,6 +1285,7 @@ static int io_readlines_range (lua_State *L) {
         luaL_addchar(&b, c);
       }
       luaL_pushresult(&b);
+      lua_remove(L, -2);  /* 移除luaL_pushresult留下的新占位符 */
       lua_rawseti(L, -2, result_idx++);
     }
     
@@ -1414,6 +1596,11 @@ static const luaL_Reg meth[] = {
   {"seek", f_seek},
   {"close", f_close},
   {"setvbuf", f_setvbuf},
+  {"writeline", f_writeline},
+  {"linecount", f_linecount},
+  {"readlines", f_readlines_range},
+  {"writelines", f_writelines_range},
+  {"saveall", f_saveall},
   {NULL, NULL}
 };
 

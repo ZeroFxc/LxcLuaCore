@@ -1,13 +1,13 @@
 # LXCLUA-NCore Async/Await 语法糖完整文档
 
-## 📚 概述
+## 概述
 
 LXCLUA-NCore 提供了完整的 **async/await** 异步编程语法糖系统，包含两个层面：
 
 1. **编译时脱糖（Compile-time Desugaring）**：通过 `llexer_compiler` 将现代语法转换为标准 Lua 代码
 2. **运行时支持（Runtime Support）**：通过 `asyncio` 库提供 Promise、协程调度和异步 I/O
 
-## 🎯 支持的语法形式
+## 支持的语法形式
 
 ### 1. Async 函数声明
 
@@ -81,7 +81,7 @@ local calculate = asyncio.wrap(function(a, b, c)
 end)
 ```
 
-## 🔧 运行时 API 参考
+## 运行时 API 参考
 
 ### 核心函数
 
@@ -305,7 +305,7 @@ clearInterval(id)  -- 停止定时器
 clearInterval(timer_id)
 ```
 
-## 💡 使用模式
+## 使用模式
 
 ### 模式 1: 基础异步函数
 
@@ -412,7 +412,7 @@ end)
 local result = retry(riskyOperation, 5):await_sync()
 ```
 
-## ⚙️ 编译时脱糖规则
+## 编译时脱糖规则
 
 当使用 `llexer_compiler` 处理 `.lua` 文件时，以下转换会自动发生：
 
@@ -444,7 +444,7 @@ await(expression)
 asyncio.wait(expression)
 ```
 
-## 🔍 调试技巧
+## 调试技巧
 
 ### 1. 查看 Promise 状态
 
@@ -480,7 +480,7 @@ someAsyncOp()
     :finally(function() print("结束") end)
 ```
 
-## 📊 性能建议
+## 性能建议
 
 1. **并发优于串行**: 使用 `all()` 或手动并发多个 Promise
 2. **合理使用 defer**: 在长时间计算中使用 `nexttick()` 让出控制权
@@ -488,7 +488,7 @@ someAsyncOp()
 4. **控制并发数**: `map()` 的第三个参数限制最大并发
 5. **复用 async 函数**: 使用 `wrap()` 创建可复用的异步函数
 
-## 🎓 与其他语言的对比
+## 与其他语言的对比
 
 ### JavaScript (ES2017+)
 
@@ -510,7 +510,7 @@ someAsyncOp()
 | `asyncio.gather(*tasks)` | `asyncio.gather(...)` |
 | `asyncio.wait(tasks)` | `asyncio.all(...)` |
 
-## ❓ 常见问题
+## 常见问题
 
 ### Q: 为什么需要 `wait()` 而不是直接用 `await`?
 

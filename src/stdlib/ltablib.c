@@ -625,13 +625,14 @@ static int tcreate (lua_State *L) {
 static int tkeys (lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   lua_Integer n = 0;
-  lua_newtable(L);
+  lua_newtable(L);  /* 结果表在索引2 */
   lua_pushnil(L);
   while (lua_next(L, 1)) {
+    /* 栈: t, result, k, v */
     n++;
-    lua_pushvalue(L, -2);
-    lua_rawseti(L, -2, n);
-    lua_pop(L, 1);
+    lua_pushvalue(L, -2);  /* 压入key */
+    lua_rawseti(L, 2, n);  /* result[n] = key */
+    lua_pop(L, 1);  /* 弹出v, 留下k给lua_next */
   }
   return 1;
 }
@@ -640,13 +641,14 @@ static int tkeys (lua_State *L) {
 static int tvals (lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   lua_Integer n = 0;
-  lua_newtable(L);
+  lua_newtable(L);  /* 结果表在索引2 */
   lua_pushnil(L);
   while (lua_next(L, 1)) {
+    /* 栈: t, result, k, v */
     n++;
-    lua_pushvalue(L, -1);
-    lua_rawseti(L, -2, n);
-    lua_pop(L, 1);
+    lua_pushvalue(L, -1);  /* 压入value */
+    lua_rawseti(L, 2, n);  /* result[n] = value */
+    lua_pop(L, 1);  /* 弹出v, 留下k给lua_next */
   }
   return 1;
 }
@@ -786,6 +788,192 @@ static int tmerge (lua_State *L) {
   return 0;
 }
 
+
+/*
+** {===========================================
+** 函数式编程扩展
+** ============================================
+*/
+
+/**
+ * 过滤表中的元素
+ * table.filter(t, predicate) -> 返回满足条件的新表
+ * predicate(key, value) 返回 true 则保留该元素
+ * 数组部分保持索引顺序，哈希部分保持键名
+ */
+static int tfilter (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  lua_newtable(L);  /* 结果表在索引3 */
+  lua_Integer idx = 1;  /* 顺序索引 */
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    /* 栈: t, func, result, k, v */
+    lua_pushvalue(L, 2);  /* 压入函数 */
+    lua_pushvalue(L, -3);  /* 压入key */
+    lua_pushvalue(L, -3);  /* 压入value */
+    lua_call(L, 2, 1);  /* 调用predicate(key, value) */
+    if (lua_toboolean(L, -1)) {
+      lua_pop(L, 1);  /* 弹出结果 */
+      /* 栈: t, func, result, k, v */
+      lua_pushvalue(L, -1);  /* 压入value */
+      lua_rawseti(L, 3, idx++);  /* result[idx++] = value */
+      /* 栈: t, func, result, k, v */
+      lua_pop(L, 1);  /* 弹出v, 留下k给lua_next */
+    } else {
+      lua_pop(L, 2);  /* 弹出结果和value, 留下k给lua_next */
+    }
+  }
+  return 1;
+}
+
+/**
+ * 映射表中的元素
+ * table.map(t, transform) -> 返回变换后的新表
+ * transform(key, value) 返回新的value
+ * 数组部分保持索引顺序，哈希部分保持键名
+ */
+static int tmap (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  lua_newtable(L);  /* 结果表 */
+  lua_pushnil(L);
+  while (lua_next(L, 1)) {
+    /* 栈: t, func, result, k, v */
+    lua_pushvalue(L, 2);  /* 压入函数 */
+    lua_pushvalue(L, -3);  /* 压入key */
+    lua_pushvalue(L, -3);  /* 压入value */
+    lua_call(L, 2, 1);  /* 调用transform(key, value) */
+    /* 栈: t, func, result, k, v, mapped */
+    lua_pushvalue(L, -3);  /* 压入key */
+    lua_pushvalue(L, -2);  /* 压入mapped值 */
+    lua_rawset(L, 3);  /* result[key] = mapped */
+    /* 栈: t, func, result, k, v, mapped -- lua_rawset pops the pushed key/mapped */
+    lua_pop(L, 2);  /* 弹出mapped和v, 留下k给lua_next */
+  }
+  return 1;
+}
+
+/**
+ * 归约表中的元素（仅数组部分）
+ * table.reduce(t, reducer [, initial]) -> 归约结果
+ * reducer(accumulator, value [, key]) 返回新的累加值
+ */
+static int treduce (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  lua_Integer len = luaL_len(L, 1);
+  lua_Integer start = 1;
+
+  /* 初始化累加器 */
+  if (lua_gettop(L) >= 3) {
+    lua_pushvalue(L, 3);  /* 使用提供的初始值 */
+  } else {
+    if (len == 0) {
+      return luaL_error(L, "空表且没有提供初始值");
+    }
+    lua_geti(L, 1, 1);  /* 使用第一个元素作为初始值 */
+    start = 2;
+  }
+
+  for (lua_Integer i = start; i <= len; i++) {
+    lua_geti(L, 1, i);  /* 获取value */
+    /* 栈: t, func, [initial], accum, value */
+    lua_pushvalue(L, 2);  /* 压入函数 */
+    lua_pushvalue(L, -3);  /* 压入accum */
+    lua_pushvalue(L, -3);  /* 压入value */
+    lua_pushinteger(L, i);  /* 压入key */
+    lua_call(L, 3, 1);  /* 调用reducer(accum, value, key) */
+    lua_replace(L, -3);  /* accum = result */
+    lua_pop(L, 1);  /* 弹出value */
+    /* 栈: t, func, [initial], accum */
+  }
+  return 1;
+}
+
+/**
+ * 反转表中的数组部分
+ * table.reverse(t) -> 返回反转后的新表
+ */
+static int treverse (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_Integer len = luaL_len(L, 1);
+  lua_newtable(L);
+  for (lua_Integer i = 1; i <= len; i++) {
+    lua_geti(L, 1, len - i + 1);
+    lua_seti(L, -2, i);
+  }
+  return 1;
+}
+
+/**
+ * 切片表中的数组部分
+ * table.slice(t, start [, end]) -> 返回切片后的新表
+ * start从1开始，负数从末尾计数
+ */
+static int tslice (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_Integer len = luaL_len(L, 1);
+  lua_Integer start = luaL_checkinteger(L, 2);
+  lua_Integer stop = luaL_optinteger(L, 3, len);
+
+  /* 负索引处理 */
+  if (start < 0) start = len + start + 1;
+  if (stop < 0) stop = len + stop + 1;
+
+  if (start < 1) start = 1;
+  if (stop > len) stop = len;
+
+  lua_newtable(L);
+  lua_Integer idx = 1;
+  for (lua_Integer i = start; i <= stop; i++) {
+    lua_geti(L, 1, i);
+    lua_seti(L, -2, idx++);
+  }
+  return 1;
+}
+
+/**
+ * 展平多层嵌套表为一层
+ * table.flatten(t [, depth]) -> 返回展平后的新表
+ * depth默认为1，设为-1表示完全展平，设为0表示不展平
+ */
+static int tflatten (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_Integer max_depth = luaL_optinteger(L, 2, 1);
+  lua_newtable(L);  /* 结果表 */
+  int result_pos = lua_gettop(L);  /* 保存结果表的绝对位置 */
+  lua_Integer seq_idx = 1;  /* 顺序索引 */
+
+  /* 迭代源表 */
+  lua_pushnil(L);  /* 栈: t, [depth], result, nil */
+  while (lua_next(L, 1)) {
+    /* 栈: t, [depth], result, k, v */
+    int is_table = lua_istable(L, -1);
+    if (max_depth != 0 && is_table) {
+      /* 展平子表一层 */
+      int sub_table_pos = lua_gettop(L);  /* 保存子表位置 */
+      lua_pushnil(L);  /* 栈: t, [depth], result, k, v, nil */
+      while (lua_next(L, sub_table_pos)) {
+        /* 栈: t, [depth], result, k, v, sub_k, sub_v */
+        lua_pushvalue(L, -1);  /* 压入sub_v */
+        lua_rawseti(L, result_pos, seq_idx++);  /* 弹出sub_v, result[seq_idx++]=sub_v */
+        lua_pop(L, 1);  /* 弹出sub_v, 留下sub_k给lua_next */
+        /* 栈: t, [depth], result, k, v, sub_k */
+      }
+      /* 栈: t, [depth], result, k, v */
+    } else {
+      /* 直接添加到结果 */
+      lua_pushvalue(L, -1);  /* 压入v */
+      lua_rawseti(L, result_pos, seq_idx++);  /* 弹出v, result[seq_idx++]=v */
+    }
+    lua_pop(L, 1);  /* 弹出v, 留下k给lua_next */
+  }
+  return 1;
+}
+
+/* }=========================================== */
+
 static const luaL_Reg tab_funcs[] = {
 	{"share", t_share},
 	{"concat", tconcat},
@@ -813,6 +1001,12 @@ static const luaL_Reg tab_funcs[] = {
 	{"remove", tremove},
 	{"move", tmove},
   {"merge", tmerge},
+  {"filter", tfilter},
+  {"map", tmap},
+  {"reduce", treduce},
+  {"reverse", treverse},
+  {"slice", tslice},
+  {"flatten", tflatten},
   {"sort", sort},
 	{NULL, NULL}
 };

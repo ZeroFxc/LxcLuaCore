@@ -564,7 +564,7 @@ static TString *str_checkname (LexState *ls) {
      return ts;
   }
   check(ls, TK_NAME);
-  return NULL;
+  return NULL;  /* unreachable */
 }
 
 
@@ -720,6 +720,8 @@ int new_localvar (LexState *ls, TString *name) {
   var->vd.kind = VDKREG;  /* default */
   var->vd.name = name;
   var->vd.used = 0;
+  var->vd.hint = NULL;  /* 初始化类型提示为NULL，防止未初始化内存导致野指针 */
+  var->vd.nodiscard = 0;  /* 初始化nodiscard标志 */
   return dyd->actvar.n - 1 - fs->firstlocal;
 }
 
@@ -2345,7 +2347,6 @@ static void body (LexState *ls, expdesc *e, int ismethod, int line) {
       new_localvarliteral(ls, "self");
       adjustlocalvars(ls, 1);
       luaK_reserveregs(&new_fs, 1);
-      new_fs.f->numparams = cast_byte(new_fs.nactvar);
     }
     while (ls->t.token != '}' && ls->t.token != TK_EOS) {
 
@@ -7015,17 +7016,19 @@ static lu_byte getvarattribute (LexState *ls, lu_byte df) {
       attr = "const";
       luaX_next(ls);
     }
-    else
-      attr = getstr(str_checkname(ls));
+    else {
+      TString *ts = str_checkname(ls);
+      attr = getstr(ts);
+    }
     checknext(ls, '>');
     if (strcmp(attr, "const") == 0)
-      return RDKCONST;  /* read-only variable */
+      return RDKCONST;  /* 只读变量 */
     else if (strcmp(attr, "close") == 0)
-      return RDKTOCLOSE;  /* to-be-closed variable */
+      return RDKTOCLOSE;  /* 待关闭变量 */
     else
       luaK_semerror(ls, "unknown attribute '%s'", attr);
   }
-  return df;  /* return default value */
+  return df;  /* 返回默认值 */
 }
 
 
@@ -7753,7 +7756,7 @@ static void localstat (LexState *ls, int isexport) {
   /* stat -> LOCAL ATTRIB NAME ATTRIB { ',' NAME ATTRIB } ['=' explist] */
   /* stat -> CONST NAME ATTRIB { ',' NAME ATTRIB } ['=' explist] */
   FuncState *fs = ls->fs;
-  int base_nactvar = fs->nactvar;
+  int toclose = -1;  /* index of to-be-closed variable (if any) */
   Vardesc *var;  /* last variable */
   int vidx, kind;
   int nvars = 0;
@@ -7788,6 +7791,11 @@ static void localstat (LexState *ls, int isexport) {
     }
     kind = getvarattribute(ls, defkind);
     getlocalvardesc(fs, vidx)->vd.kind = kind;
+    if (kind == RDKTOCLOSE) {  /* to-be-closed? */
+      if (toclose != -1)  /* one already present? */
+        luaK_semerror(ls, "multiple to-be-closed variables in local list");
+      toclose = fs->nactvar + nvars;
+    }
     nvars++;
   } while (testnext(ls, ','));
   if (testnext(ls, '=')) {
@@ -7816,14 +7824,7 @@ static void localstat (LexState *ls, int isexport) {
     adjust_assign(ls, nvars, nexps, &e);
     adjustlocalvars(ls, nvars);
   }
-  /* handle to-be-closed variables */
-  for (int i = 0; i < nvars; i++) {
-    int idx = base_nactvar + i;
-    Vardesc *vd = getlocalvardesc(fs, idx);
-    if (vd->vd.kind == RDKTOCLOSE) {
-      checktoclose(fs, idx);
-    }
-  }
+  checktoclose(fs, toclose);
 }
 
 
@@ -11761,10 +11762,9 @@ static void exprstat (LexState *ls) {
       if (has_arg) {
         /* 解析参数 (使用 infix 优先级限制) */
         expdesc v2;
-        BinOpr nextop;
         int old_ifx4 = ls->expr_flags;
         ls->expr_flags |= E_INFIX_ARG;
-        nextop = subexpr(ls, &v2, priority[OPR_INFIX].right);
+        BinOpr nextop = subexpr(ls, &v2, priority[OPR_INFIX].right);
         ls->expr_flags = old_ifx4;
         /* 生成函数调用 */
         int base = v.v.u.info;
