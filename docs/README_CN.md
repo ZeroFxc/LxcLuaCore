@@ -865,6 +865,19 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 
 ---
 
+---
+
+## 详细文档
+
+- [语法参考手册](SYNTAX_REFERENCE.md) -- 基于源码的完整语法特性说明，涵盖所有扩展语法及其编译方式
+- [API 参考手册](API_REFERENCE.md) -- 所有标准库和扩展库的完整函数 API 列表
+- [异步编程指南](NATIVE_ASYNC_AWAIT.md) -- async/await 原生支持详解
+- [异步语法糖说明](ASYNC_AWAIT_SUGAR.md) -- 异步语法糖脱糖规则
+- [内联汇编教程](ASM_TUTORIAL_CN.md) -- 内联汇编使用指南
+- [开发计划](PLAN.md) -- 项目现状与未来规划
+- [安全说明](SECURITY.md) -- 安全特性与注意事项
+- [贡献指南](CONTRIBUTING.md) -- 参与贡献的方式
+
 ## 许可证
 
 [MIT License](../LICENSE).
