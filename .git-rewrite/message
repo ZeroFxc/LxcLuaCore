@@ -1,9 +1,0 @@
-Fix macOS compilation error in loslib.c
-
-- Guard Linux-specific headers <sys/prctl.h> and <linux/seccomp.h> with #if defined(__linux__).
-- Add #include <pthread.h> for macOS support.
-- Implement macOS-compatible os_tid using pthread_threadid_np.
-- Implement macOS-compatible os_aname returning "Darwin".
-- Explicitly disable os_seccomp and os_prctl on macOS (return "not supported").
-
-Co-authored-by: OxenFxc <211793895+OxenFxc@users.noreply.github.com>
