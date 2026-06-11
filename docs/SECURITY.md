@@ -30,7 +30,6 @@ This project includes several security mechanisms for bytecode protection:
 - Dynamic OPcode mapping
 - Timestamp-based encryption
 - SHA-256 integrity verification
-- PNG image encapsulation
 
 **Disclaimer**: These features increase reverse engineering difficulty but do not guarantee absolute security.
 

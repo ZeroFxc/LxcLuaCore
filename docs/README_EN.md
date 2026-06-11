@@ -12,35 +12,51 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 
 | Platform | Status | Bytecode Interop |
 |----------|--------|------------------|
-| Windows (MinGW) | ✅ Passed | ✅ |
-| Arch Linux | ✅ Passed | ✅ |
-| Ubuntu | ✅ Passed | ✅ |
-| Android (Termux) | ✅ Passed | ✅ |
-| Android (LXCLUA JNI) | ✅ Passed | ✅ |
+| Windows (MinGW) | Passed | Supported |
+| Arch Linux | Passed | Supported |
+| Ubuntu | Passed | Supported |
+| Android (Termux) | Passed | Supported |
+| Android (LXCLUA JNI) | Passed | Supported |
+| WebAssembly (Emscripten) | Passed | Supported |
 
 ## Features
 
 ### Core Enhancements
 
 - **Secure Compilation** - Bytecode uses dynamic OPcode mapping, timestamp encryption, and SHA-256 integrity verification
-- **PNG Encapsulation** - Compiled bytecode embedded in PNG image format for enhanced obfuscation
 - **Anti-Reverse Protection** - Multi-layer encryption mechanisms effectively prevent decompilation and tampering
+- **Syntax Extensions** - Modern language features: OOP (classes, interfaces), generics, async/await, pipe operators, optional chaining, null coalescing, and more
+- **Code Obfuscation** - Control flow flattening, block shuffling, VM protection, and string encryption
+- **Bytecode-to-C Code Generation (tcc)** - Converts Lua bytecode to C source code for external compilation
+- **JIT Compilation (jit)** - Real JIT compilation via sljit, compiling hot bytecode to native machine code at runtime
 
 ### Extension Modules
 
 | Module | Description |
 |--------|-------------|
-| `json` | Built-in JSON parsing and serialization |
-| `sha256` | SHA-256 hash computation |
-| `lclass` | Object-oriented programming support (classes, inheritance, polymorphism) |
-| `lbitlib` | Bitwise operations library |
-| `lboolib` | Boolean type enhancements |
-| `ludatalib` | Binary data serialization |
-| `lsmgrlib` | Memory management utilities |
-| `ltranslator` | Code translator |
-| `logtable` | Log table support |
-| `lptrlib` | Pointer operations library |
-| `lvmlib` | Virtual machine extension interface |
+| `crypto` | Unified cryptographic library (SHA-256, AES, HMAC, CRC32, CSPRNG) |
+| `uuid` | UUID generation (v4, v7) |
+| `rsa` | RSA asymmetric encryption |
+| `ecc` | ECC elliptic curve cryptography (ECDSA, ECDH) |
+| `bit` / `bit32` | Bitwise operations |
+| `struct` | C-style structs and arrays |
+| `ptr` | Pointer operations library |
+| `thread` | Multithreading with mutex, condition variables, and read-write locks |
+| `http` | HTTP client/server and Socket |
+| `fs` | File system operations |
+| `process` | Process management |
+| `vm` | VM introspection and bytecode manipulation |
+| `tcc` | Bytecode-to-C code generation |
+| `ByteCode` | Bytecode manipulation and analysis |
+| `vmprotect` | VM-based code protection |
+| `lexer` | Lexer and AST manipulation |
+| `asyncio` | Async I/O and Promises |
+| `wasm3` | WebAssembly runtime (wasm3) |
+| `wasmtime` | WebAssembly runtime (wasmtime) |
+| `lua2wasm` | Lua to WASM compiler |
+| `quickjs` | QuickJS JavaScript engine integration |
+| `vmcustom` | Custom opcode extension system |
+| `translator` | Code translation utilities |
 
 ### Compilation Optimizations
 
@@ -51,8 +67,8 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 
 ## System Requirements
 
-- **Compiler**: GCC (with C11/C23 standard support)
-- **Platform**: Windows / Linux / Android (Termux)
+- **Compiler**: GCC or Clang (with C11/C23 standard support)
+- **Platform**: Windows / Linux / Android (Termux) / WebAssembly (Emscripten)
 
 ## Quick Start
 
@@ -67,6 +83,9 @@ make linux
 
 # Android (Termux)
 make termux
+
+# WebAssembly
+make wasm
 ```
 
 ### Verify Installation
@@ -85,16 +104,19 @@ make clean
 
 | File | Description |
 |------|-------------|
-| `liblua.a` / `lua55.dll` | Lua static library / dynamic library |
-| `lua` / `lua.exe` | Lua interpreter |
+| `lxclua` / `lxclua.exe` | LXCLUA interpreter |
 | `luac` / `luac.exe` | Lua bytecode compiler |
+| `lbcdump` / `lbcdump.exe` | Bytecode analysis tool |
+| `lxclua-lsp.exe` | LXCLUA LSP language server |
+| `liblua.a` / `lua55.dll` | Lua static library / dynamic library |
+| `lxclua.js` / `lxclua.wasm` | WebAssembly build outputs |
 
 ## Usage Examples
 
 ### Run Lua Script
 
 ```bash
-./lua script.lua
+./lxclua script.lua
 ```
 
 ### Compile to Bytecode
@@ -113,9 +135,9 @@ make clean
 int main() {
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
-    
+
     luaL_dofile(L, "script.lua");
-    
+
     lua_close(L);
     return 0;
 }
@@ -125,13 +147,16 @@ int main() {
 
 ```
 .
-├── l*.c / l*.h      # Lua core source files
-├── json_parser.*    # JSON parsing module
-├── sha256.*         # SHA-256 hash module
-├── lclass.*         # Object-oriented class system
-├── stb_image*.h     # Image processing (stb library)
-├── Makefile         # Build script
-└── lua/             # Sub-version (secondary logic)
+├── src/
+│   ├── core/         # Lua core (lapi, lcode, ldebug, ldo, lgc, lobject, lparser, lstate, lstring, ltable, ltm, lvm, etc.)
+│   ├── compiler/     # Compiler extensions (lbctc - bytecode-to-C, llex - lexer, lparser extensions)
+│   ├── stdlib/       # Standard libraries (lbaselib, lcorolib, liolib, lmathlib, loslib, lstrlib, ltablib, etc.)
+│   ├── utils/        # Utility modules (http, fs, crypto, thread, struct, uuid, rsa, ecc, bigint, etc.)
+│   └── lspsrv/       # LSP server implementation
+├── tests/            # Test suites
+├── docs/             # Documentation
+├── Makefile          # Build script
+└── LICENSE           # MIT License
 ```
 
 ## Security Notes
@@ -141,7 +166,6 @@ The bytecode compilation in this project employs multiple security mechanisms:
 1. **Dynamic OPcode Mapping** - Generates unique instruction mapping table for each compilation
 2. **Timestamp Encryption** - Uses compilation time as encryption key
 3. **SHA-256 Verification** - Ensures bytecode integrity
-4. **PNG Image Encapsulation** - Embeds encrypted data in image format
 
 > Note: These protective measures are designed to increase reverse engineering difficulty but cannot guarantee absolute security.
 
@@ -162,4 +186,4 @@ Issues and Pull Requests are welcome. Please refer to the [Contributing Guidelin
 ## Acknowledgments
 
 - [Lua](https://www.lua.org/) - Original Lua language
-- [stb](https://github.com/nothings/stb) - Single-header image processing library
+- [wasm3](https://github.com/wasm3/wasm3) - WebAssembly interpreter

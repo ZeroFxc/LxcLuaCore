@@ -139,6 +139,7 @@ int luaO_isBlockTerminator (OpCode op) {
     case OP_TEST:
     case OP_TESTSET:
     case OP_TESTNIL:
+    case OP_LFALSESKIP:
     case OP_RETURN:
     case OP_RETURN0:
     case OP_RETURN1:
@@ -190,6 +191,7 @@ static int isPairedInstruction (OpCode op) {
     case OP_EQK: case OP_EQI: case OP_LTI:
     case OP_LEI: case OP_GTI: case OP_GEI:
     case OP_TEST: case OP_TESTSET: case OP_TESTNIL:
+    case OP_LFALSESKIP:
     case OP_IS: case OP_INSTANCEOF:
       return 1;
       
@@ -236,6 +238,7 @@ static int isConditionalTest (OpCode op) {
     case OP_TEST:
     case OP_TESTSET:
     case OP_TESTNIL:
+    case OP_LFALSESKIP:
       return 1;
     default:
       return 0;
@@ -1174,6 +1177,60 @@ static int luaO_emitBlocksAndStubs (CFFContext *ctx, int *all_block_jmp_pcs, int
       SETARG_sJ(ctx->new_code[skip_jump_pc], ctx->new_code_size - skip_jump_pc - 1);
       SETARG_Bx(ctx->new_code[prep_pc], skip_stub_start - prep_pc - 1);
       
+    } else if (isConditionalTest(last_op)) {
+      /* 条件测试指令作为块终止符（没有后续 JMP，因块拆分或 LFALSESKIP）：
+       * C代码会生成 goto 跳过下一条指令，在扁平化代码中下一条是 LOADI 状态转换，
+       * 导致 goto 路径不设置状态而产生无限循环。
+       * 修复：将状态转换放在 goto 目标位置，确保两条路径都经过状态转换。
+       */
+      if (last_op == OP_LFALSESKIP) {
+        /* LFALSESKIP: 两条路径都去同一目标（cond_target），只需单路状态转换。
+         * LFALSESKIP C代码生成 goto pc+2，即跳过一条指令到 pc+2 位置。
+         * 布局: LFALSESKIP(pc) -> JMP(pc+1, offset=0) -> LOADI(pc+2, next_state) -> JMP(dispatcher)
+         *       goto 路径: LFALSESKIP(false) -> goto pc+2 -> LOADI (设置状态)
+         *       fall through: LFALSESKIP(true) -> set false -> JMP -> LOADI (设置状态)
+         * 注意: JMP 偏移必须为 0，即跳到下一条指令 LOADI，而不是跳过 LOADI。
+         */
+        int next_block = (block->cond_target >= 0) ? block->cond_target : block->fall_through;
+        if (next_block >= 0) {
+          int next_state = ctx->blocks[next_block].state_id;
+          if (ctx->obfuscate_flags & OBFUSCATE_STATE_ENCODE) next_state = luaO_encodeState(next_state, ctx->initial_seed);
+          /* JMP offset=0: 跳到下一条指令 LOADI。CREATE_sJ 不添加 OFFSET_sJ，
+            GETARG_sJ 会减去 OFFSET_sJ，所以存 OFFSET_sJ 才能得到实际偏移 0 */
+          emitInstruction(ctx, CREATE_sJ(OP_JMP, OFFSET_sJ, 0));
+          emitStateTransition(ctx, state_reg, next_state);
+          emitInstruction(ctx, CREATE_sJ(OP_JMP, (ctx->dispatcher_pc - ctx->new_code_size - 1) + OFFSET_sJ, 0));
+          emitDeadJunk(ctx);
+          emitDeadJunk(ctx);
+        }
+      } else {
+        /* 其他条件测试（EQ/LT/TEST等）：两条路径去不同目标，需双路状态转换。
+         * 布局: cond_test -> JMP(skip_then) -> LOADI(then_state) -> JMP(disp)
+         *                                      LOADI(else_state) -> JMP(disp)
+         *       goto 路径(真) ->->->->->->->->  LOADI(then_state)
+         *       fall through(假) ->->->->->->->  LOADI(else_state)
+         */
+        int target_then = block->cond_target;
+        int target_else = block->fall_through;
+        if (target_then >= 0 && target_else >= 0) {
+          int state_then = ctx->blocks[target_then].state_id;
+          int state_else = ctx->blocks[target_else].state_id;
+          if (ctx->obfuscate_flags & OBFUSCATE_STATE_ENCODE) {
+            state_then = luaO_encodeState(state_then, ctx->initial_seed);
+            state_else = luaO_encodeState(state_else, ctx->initial_seed);
+          }
+          int skip_then_pc = emitInstruction(ctx, CREATE_sJ(OP_JMP, 0, 0));
+          emitStateTransition(ctx, state_reg, state_then);
+          emitInstruction(ctx, CREATE_sJ(OP_JMP, (ctx->dispatcher_pc - ctx->new_code_size - 1) + OFFSET_sJ, 0));
+          emitDeadJunk(ctx);
+          emitDeadJunk(ctx);
+          SETARG_sJ(ctx->new_code[skip_then_pc], ctx->new_code_size - skip_then_pc - 1);
+          emitStateTransition(ctx, state_reg, state_else);
+          emitInstruction(ctx, CREATE_sJ(OP_JMP, (ctx->dispatcher_pc - ctx->new_code_size - 1) + OFFSET_sJ, 0));
+          emitDeadJunk(ctx);
+          emitDeadJunk(ctx);
+        }
+      }
     } else {
       int next_block = (block->original_target >= 0) ? block->original_target : block->fall_through;
       if (next_block >= 0) {
@@ -1651,8 +1708,8 @@ int luaO_flatten (lua_State *L, Proto *f, int flags, unsigned int seed,
   memcpy(f->code, ctx->new_code, sizeof(Instruction) * ctx->new_code_size);
   f->sizecode = ctx->new_code_size;
   
-  /* 更新栈大小（增加状态寄存器） */
-  int max_state_reg = ctx->state_reg;
+  /* 更新栈大小（增加状态寄存器和比较寄存器） */
+  int max_state_reg = ctx->state_reg + 2;  /* 比较寄存器需要 state_reg+2 */
   if (flags & OBFUSCATE_NESTED_DISPATCHER) {
     /* 嵌套模式需要两个状态寄存器 */
     if (ctx->outer_state_reg > max_state_reg) {

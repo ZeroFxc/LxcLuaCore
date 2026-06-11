@@ -162,8 +162,7 @@ static const luaL_Reg stdlibs[] = {
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
 
-#ifndef _WIN32
-  {LUA_SMGRNAME, luaopen_smgr},
+{LUA_SMGRNAME, luaopen_smgr},
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
 
@@ -179,8 +178,6 @@ static const luaL_Reg stdlibs[] = {
   // 仅安卓额外加 libc
 #ifdef __ANDROID__
   {"libc", luaopen_libc},
-#endif
-
 #endif
 
   {NULL, NULL}
@@ -250,8 +247,7 @@ static const luaL_Reg loadedlibs[] = {
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
 
-#ifndef _WIN32
-  {LUA_SMGRNAME, luaopen_smgr},
+{LUA_SMGRNAME, luaopen_smgr},
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
 
@@ -267,8 +263,6 @@ static const luaL_Reg loadedlibs[] = {
   // 仅安卓额外加载 libc
 #ifdef __ANDROID__
   {"libc", luaopen_libc},
-#endif
-
 #endif
 
   {NULL, NULL}

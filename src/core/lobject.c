@@ -499,7 +499,7 @@ static int tostringbuffFloat (lua_Number n, char *buff) {
   lua_Number check = lua_str2number(buff, NULL);  /* read it back */
   if (check != n) {  /* not enough precision? */
     /* convert again with more precision */
-    len = l_sprintf(buff, LUA_N2SBUFFSZ, LUA_NUMBER_FMT,
+    len = l_sprintf(buff, LUA_N2SBUFFSZ, "%.17g",
                           (LUAI_UACNUMBER)n);
   }
   /* looks like an integer? */

@@ -146,10 +146,10 @@ static void add_fmt(luaL_Buffer *B, const char *fmt, ...) {
 
 /* Helper to get an obfuscated integer expression as a string */
 static const char *obf_int(int val, unsigned int *seed, int obfuscate) {
-    static char bufs[16][128];
+    static char bufs[32][128];
     static int idx = 0;
     char *buf = bufs[idx];
-    idx = (idx + 1) % 16;
+    idx = (idx + 1) % 32;
     if (!obfuscate) {
         snprintf(buf, 128, "%d", val);
     } else {
@@ -220,6 +220,9 @@ typedef struct ProtoInfo {
     Proto *p;
     int id;
     char name[16];
+    int *boxed_slots;    /* 哪些局部变量槽位被装箱了（大小 = maxstacksize + 1） */
+    int *boxed_upvals;   /* 哪些 upvalue 被装箱了（大小 = sizeupvalues） */
+    int maxstack;        /* proto 的 maxstacksize */
 } ProtoInfo;
 
 static void collect_protos(Proto *p, int *count, ProtoInfo **list, int *capacity, unsigned int *seed, int obfuscate) {
@@ -295,6 +298,11 @@ static void emit_quoted_string(luaL_Buffer *B, const char *s, size_t len) {
 
 /* Emit code to push a constant */
 static void emit_loadk(luaL_Buffer *B, Proto *p, int k_index, int str_encrypt, int seed, int obfuscate) {
+    /* 边界检查：防止 k_index 越界访问常量表 */
+    if (k_index < 0 || k_index >= p->sizek) {
+        add_fmt(B, "    lua_pushnil(L); /* INVALID CONSTANT INDEX %d */\n", k_index);
+        return;
+    }
     TValue *k = &p->k[k_index];
     unsigned int obf_seed = seed + k_index;
     switch (ttype(k)) {
@@ -328,7 +336,35 @@ static void emit_loadk(luaL_Buffer *B, Proto *p, int k_index, int str_encrypt, i
     }
 }
 
-static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate) {
+/* 检查子 Proto 中指定 upvalue 是否被 SETUPVAL 修改 */
+static int is_upval_modified(Proto *p, int upval_idx) {
+    for (int i = 0; i < p->sizecode; i++) {
+        if (GET_OPCODE(p->code[i]) == OP_SETUPVAL && GETARG_B(p->code[i]) == upval_idx) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 读取局部变量（自动处理 boxed 变量） */
+static void emit_read_local(luaL_Buffer *B, int slot, int *boxed_slots, unsigned int *obf_seed, int obfuscate) {
+    if (boxed_slots && boxed_slots[slot]) {
+        add_fmt(B, "    lua_getfield(L, %s, \"_v\");\n", obf_int(slot, obf_seed, obfuscate));
+    } else {
+        add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(slot, obf_seed, obfuscate));
+    }
+}
+
+/* 写入局部变量（自动处理 boxed 变量） */
+static void emit_write_local(luaL_Buffer *B, int slot, int *boxed_slots, unsigned int *obf_seed, int obfuscate) {
+    if (boxed_slots && boxed_slots[slot]) {
+        add_fmt(B, "    lua_setfield(L, %s, \"_v\");\n", obf_int(slot, obf_seed, obfuscate));
+    } else {
+        add_fmt(B, "    lua_replace(L, %s);\n", obf_int(slot, obf_seed, obfuscate));
+    }
+}
+
+static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate, int *boxed_slots, int *boxed_upvals) {
     OpCode op = GET_OPCODE(i);
     int a = GETARG_A(i);
 
@@ -341,8 +377,8 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
     switch (op) {
         case OP_MOVE: {
             int b = GETARG_B(i);
-            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
-            add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate);
+            emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
             break;
         }
         case OP_LOADK: {
@@ -369,12 +405,14 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         }
         case OP_LOADI: {
             int sbx = GETARG_sBx(i);
-            add_fmt(B, "    lua_tcc_loadk_int(L, %s, %d);\n", obf_int(a + 1, &obf_seed, obfuscate), sbx);
+            add_fmt(B, "    lua_pushinteger(L, %d);\n", sbx);
+            emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
             break;
         }
          case OP_LOADF: {
             int sbx = GETARG_sBx(i);
-            add_fmt(B, "    lua_tcc_loadk_flt(L, %s, (lua_Number)%d);\n", obf_int(a + 1, &obf_seed, obfuscate), sbx);
+            add_fmt(B, "    lua_pushnumber(L, (lua_Number)%d);\n", sbx);
+            emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
             break;
         }
         case OP_LOADNIL: {
@@ -407,7 +445,12 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
         case OP_GETUPVAL: {
             int b = GETARG_B(i);
-            add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s));\n", obf_int(b + 1, &obf_seed, obfuscate));
+            if (boxed_upvals && boxed_upvals[b]) {
+                /* boxed upvalue：读取 box table 的 _v 字段 */
+                add_fmt(B, "    lua_getfield(L, lua_upvalueindex(%s), \"_v\");\n", obf_int(b + 1, &obf_seed, obfuscate));
+            } else {
+                add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s));\n", obf_int(b + 1, &obf_seed, obfuscate));
+            }
             add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
             break;
         }
@@ -435,8 +478,14 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         }
         case OP_SETUPVAL: {
             int b = GETARG_B(i);
-            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "    lua_replace(L, lua_upvalueindex(%s));\n", obf_int(b + 1, &obf_seed, obfuscate));
+            if (boxed_upvals && boxed_upvals[b]) {
+                /* boxed upvalue：设置 box table 的 _v 字段 */
+                add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                add_fmt(B, "    lua_setfield(L, lua_upvalueindex(%s), \"_v\");\n", obf_int(b + 1, &obf_seed, obfuscate));
+            } else {
+                add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                add_fmt(B, "    lua_replace(L, lua_upvalueindex(%s));\n", obf_int(b + 1, &obf_seed, obfuscate));
+            }
             break;
         }
         case OP_GETTABUP: { // R[A] := UpValue[B][K[C]]
@@ -828,7 +877,27 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             for (int k = 0; k < child->sizeupvalues; k++) {
                  Upvaldesc *uv = &child->upvalues[k];
                  if (uv->instack) {
-                     add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local) */\n", obf_int(uv->idx + 1, &obf_seed, obfuscate), k);
+                     int slot = uv->idx + 1;
+                     if (is_upval_modified(child, k)) {
+                         if (boxed_slots && boxed_slots[slot]) {
+                             /* 已被其他闭包 boxed，直接推送 box table */
+                             add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, already boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
+                         } else {
+                             /* 创建 box table 实现共享引用 */
+                             add_fmt(B, "    {\n");
+                             add_fmt(B, "        lua_createtable(L, 0, 1);\n");
+                             add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
+                             add_fmt(B, "        lua_setfield(L, -2, \"_v\");\n");
+                             add_fmt(B, "        lua_replace(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
+                             add_fmt(B, "    }\n");
+                             /* 推送 box table 作为闭包的 upvalue */
+                             add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
+                             /* 标记该 slot 已被 boxed */
+                             if (boxed_slots) boxed_slots[slot] = 1;
+                         }
+                     } else {
+                         add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local) */\n", obf_int(slot, &obf_seed, obfuscate), k);
+                     }
                  } else {
                      add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s)); /* upval %d (upval) */\n", obf_int(uv->idx + 1, &obf_seed, obfuscate), k);
                  }
@@ -1020,7 +1089,6 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         }
 
         case OP_VARARG: {
-            int a = GETARG_A(i);
             int nneeded = GETARG_C(i) - 1;
 
             if (nneeded >= 0) {
@@ -1223,15 +1291,30 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             add_fmt(B, "        if (lua_isinteger(L, %s) && lua_isinteger(L, %s)) {\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(a + 3, &obf_seed, obfuscate));
             add_fmt(B, "            lua_Integer step = lua_tointeger(L, %s);\n", obf_int(a + 3, &obf_seed, obfuscate));
             add_fmt(B, "            lua_Integer init = lua_tointeger(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "            lua_pushinteger(L, init - step);\n");
+            add_fmt(B, "            lua_pushinteger(L, init);\n");
+            add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 4, &obf_seed, obfuscate));
+            add_fmt(B, "            lua_pushinteger(L, init);\n");
             add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "            if (lua_isinteger(L, %s)) {\n", obf_int(a + 2, &obf_seed, obfuscate));
+            add_fmt(B, "                lua_Integer limit = lua_tointeger(L, %s);\n", obf_int(a + 2, &obf_seed, obfuscate));
+            add_fmt(B, "                if ((step > 0) ? (init > limit) : (init < limit)) goto %s;\n", target_label);
+            add_fmt(B, "            } else {\n");
+            add_fmt(B, "                lua_Number flim = lua_tonumber(L, %s);\n", obf_int(a + 2, &obf_seed, obfuscate));
+            add_fmt(B, "                if (flim > 0 && step < 0) goto %s;\n", target_label);
+            add_fmt(B, "                if (flim < 0 && step > 0) goto %s;\n", target_label);
+            add_fmt(B, "                lua_Integer limit = (step > 0) ? LUA_MAXINTEGER : LUA_MININTEGER;\n");
+            add_fmt(B, "                if ((step > 0) ? (init > limit) : (init < limit)) goto %s;\n", target_label);
+            add_fmt(B, "            }\n");
             add_fmt(B, "        } else {\n");
             add_fmt(B, "            lua_Number step = lua_tonumber(L, %s);\n", obf_int(a + 3, &obf_seed, obfuscate));
             add_fmt(B, "            lua_Number init = lua_tonumber(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "            lua_pushnumber(L, init - step);\n");
+            add_fmt(B, "            lua_Number limit = lua_tonumber(L, %s);\n", obf_int(a + 2, &obf_seed, obfuscate));
+            add_fmt(B, "            lua_pushnumber(L, init);\n");
+            add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 4, &obf_seed, obfuscate));
+            add_fmt(B, "            lua_pushnumber(L, init);\n");
             add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "            if ((step > 0) ? (limit < init) : (init < limit)) goto %s;\n", target_label);
             add_fmt(B, "        }\n");
-            add_fmt(B, "        goto %s;\n", target_label);
             add_fmt(B, "    }\n");
             break;
         }
@@ -1560,16 +1643,17 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
         case OP_ERRNNIL: {
             int bx = GETARG_Bx(i);
-            emit_loadk(B, p, bx - 1, str_encrypt, seed, obfuscate); // global name
-            add_fmt(B, "    lua_errnnil(L, %s, lua_tostring(L, %s));\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate));
-            add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
+            if (bx > 0) {
+                emit_loadk(B, p, bx - 1, str_encrypt, seed, obfuscate);
+                add_fmt(B, "    lua_errnnil(L, %s, lua_tostring(L, %s));\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate));
+                add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
+            } else {
+                add_fmt(B, "    /* ERRNNIL: invalid bx=%d, skipping */\n", bx);
+            }
             break;
         }
 
-        case OP_TBC: {
-            add_fmt(B, "    lua_toclose(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            break;
-        }
+        case OP_TBC: {    }
 
         case OP_CASE: {
             int b = GETARG_B(i);
@@ -1637,10 +1721,88 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
     }
 }
 
-static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate, int inline_opt) {
+/**
+ * @brief 扫描字节码，计算实际使用的最大寄存器索引
+ * 用于修正 obfuscate 后 maxstacksize 可能不准确的问题
+ * @param p Proto 指针
+ * @return 实际最大寄存器索引
+ */
+static int compute_max_reg(Proto *p) {
+    int max_reg = 0;
+    for (int i = 0; i < p->sizecode; i++) {
+        Instruction instr = p->code[i];
+        OpCode op = GET_OPCODE(instr);
+        int a = GETARG_A(instr);
+        int b = GETARG_B(instr);
+        int c = GETARG_C(instr);
+        int bx = GETARG_Bx(instr);
+        int sbx = GETARG_sBx(instr);
+
+        /* A 寄存器 */
+        if (a > max_reg) max_reg = a;
+
+        switch (op) {
+            /* 使用 A+B 的指令 */
+            case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
+            case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR:
+            case OP_MOD: case OP_POW: case OP_CONCAT:
+                if (b > max_reg) max_reg = b;
+                if (c > max_reg) max_reg = c;
+                break;
+            /* 使用 A+B 但 B 是寄存器 */
+            case OP_MOVE: case OP_NOT: case OP_UNM: case OP_LEN: case OP_BNOT:
+            case OP_LOADFALSE: case OP_LOADTRUE: case OP_LFALSESKIP:
+            case OP_GETTABLE: case OP_GETTABUP: case OP_GETI:
+            case OP_GETFIELD: case OP_SELF:
+            case OP_SETTABLE: case OP_SETTABUP: case OP_SETI:
+            case OP_SETFIELD:
+            case OP_GETSUPER: case OP_INHERIT:
+                if (b > max_reg) max_reg = b;
+                if (c > max_reg) max_reg = c;
+                break;
+            /* NEWTABLE 只有 A */
+            case OP_NEWTABLE:
+                break;
+            /* LOADK/LOADKX: Bx 是常量表索引，不是寄存器，A 已在上方追踪 */
+            /* 比较指令 */
+            case OP_EQ: case OP_LT: case OP_LE:
+                if (b > max_reg) max_reg = b;
+                break;
+            /* CALL 指令 */
+            case OP_CALL: case OP_TAILCALL:
+                if (a + c > max_reg) max_reg = a + c;
+                break;
+            /* VARARG */
+            case OP_VARARG:
+                if (a + c > max_reg) max_reg = a + c;
+                break;
+            /* RETURN */
+            case OP_RETURN: case OP_RETURN0: case OP_RETURN1:
+                if (a + b > max_reg) max_reg = a + b;
+                break;
+            /* SETLIST */
+            case OP_SETLIST:
+                if (a + c > max_reg) max_reg = a + c;
+                break;
+            /* TFORCALL, TFORLOOP */
+            case OP_TFORCALL:
+                if (a + 3 > max_reg) max_reg = a + 3;
+                break;
+            case OP_TFORLOOP:
+                if (a + 2 > max_reg) max_reg = a + 2;
+                break;
+            default:
+                /* 大多数指令只需要 A */
+                break;
+        }
+    }
+    return max_reg;
+}
+
+static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate, int inline_opt, int *boxed_slots, int *boxed_upvals) {
     char L_name[16] = "L";
     char vtab_name[16] = "vtab_idx";
-    unsigned int obf_seed = (unsigned int)seed + id;
+    unsigned int obf_seed = (unsigned int)seed + id + 1000000;  /* 偏移避免与 proto 名冲突 */
 
     if (obfuscate) {
         get_random_name(L_name, sizeof(L_name), &obf_seed);
@@ -1659,17 +1821,26 @@ static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, i
         add_fmt(B, "#define vtab_idx %s\n", vtab_name);
     }
 
+    /* 使用 p->maxstacksize（luaO_flatten 已更新） */
+    int effective_maxstack = p->maxstacksize;
+
+    /* 分配 boxed_slots 用于跟踪装箱的局部变量 */
+    if (boxed_slots == NULL) {
+        boxed_slots = (int *)calloc(effective_maxstack + 1, sizeof(int));
+        protos[id].boxed_slots = boxed_slots;  /* 记录以便后续释放 */
+    }
+
     if (p->is_vararg) {
-        add_fmt(B, "    int %s = %s;\n", vtab_name, obf_int(p->maxstacksize + 1, &obf_seed, obfuscate));
-        add_fmt(B, "    lua_tcc_prologue(%s, %s, %s);\n", L_name, obf_int(p->numparams, &obf_seed, obfuscate), obf_int(p->maxstacksize, &obf_seed, obfuscate));
+        add_fmt(B, "    int %s = %s;\n", vtab_name, obf_int(effective_maxstack + 1, &obf_seed, obfuscate));
+        add_fmt(B, "    lua_tcc_prologue(%s, %s, %s);\n", L_name, obf_int(p->numparams, &obf_seed, obfuscate), obf_int(effective_maxstack, &obf_seed, obfuscate));
     } else {
-        add_fmt(B, "    lua_settop(%s, %s); /* Max Stack Size */\n", L_name, obf_int(p->maxstacksize, &obf_seed, obfuscate));
+        add_fmt(B, "    lua_settop(%s, %s); /* Max Stack Size */\n", L_name, obf_int(effective_maxstack, &obf_seed, obfuscate));
     }
 
     // Iterate instructions
     for (int i = 0; i < p->sizecode; i++) {
         if (obfuscate && (my_rand(&obf_seed) % 4 == 0)) emit_junk_code(B, &obf_seed);
-        emit_instruction(B, p, i, p->code[i], protos, proto_count, use_pure_c, str_encrypt, seed, obfuscate);
+        emit_instruction(B, p, i, p->code[i], protos, proto_count, use_pure_c, str_encrypt, seed, obfuscate, boxed_slots, boxed_upvals);
     }
 
     if (obfuscate) {
@@ -1871,6 +2042,24 @@ static int tcc_compile(lua_State *L) {
     ProtoInfo *protos = (ProtoInfo *)malloc(capacity * sizeof(ProtoInfo));
     collect_protos(p, &count, &protos, &capacity, &obf_seed, obfuscate);
 
+    /* 预计算每个 proto 的 boxed_upvals：哪些 upvalue 被修改了需要装箱 */
+    for (int i = 0; i < count; i++) {
+        Proto *pp = protos[i].p;
+        protos[i].maxstack = pp->maxstacksize;
+        if (pp->sizeupvalues > 0) {
+            protos[i].boxed_upvals = (int *)calloc(pp->sizeupvalues, sizeof(int));
+            for (int k = 0; k < pp->sizeupvalues; k++) {
+                if (is_upval_modified(pp, k)) {
+                    protos[i].boxed_upvals[k] = 1;
+                }
+            }
+        } else {
+            protos[i].boxed_upvals = NULL;
+        }
+        /* boxed_slots 在 process_proto 中动态分配 */
+        protos[i].boxed_slots = NULL;
+    }
+
     // Apply obfuscation if requested
     int obfuscate_flags = provided_flags;
     if (flatten) obfuscate_flags |= OBFUSCATE_CFF;
@@ -1882,6 +2071,10 @@ static int tcc_compile(lua_State *L) {
         for (int i = 0; i < count; i++) {
              /* Use different seed for each proto to vary obfuscation */
              if (luaO_flatten(L, protos[i].p, obfuscate_flags, seed + protos[i].id, NULL) != 0) {
+                 for (int j = 0; j < count; j++) {
+                     free(protos[j].boxed_upvals);
+                     free(protos[j].boxed_slots);
+                 }
                  free(protos);
                  return luaL_error(L, "Failed to obfuscate proto %d", protos[i].id);
              }
@@ -1951,7 +2144,7 @@ static int tcc_compile(lua_State *L) {
 
     // Implementations
     for (int i = 0; i < count; i++) {
-        process_proto(&B, protos[i].p, protos[i].id, protos, count, use_pure_c, str_encrypt, seed, obfuscate, inline_opt);
+        process_proto(&B, protos[i].p, protos[i].id, protos, count, use_pure_c, str_encrypt, seed, obfuscate, inline_opt, protos[i].boxed_slots, protos[i].boxed_upvals);
     }
 
     // Main entry point
@@ -1977,6 +2170,10 @@ static int tcc_compile(lua_State *L) {
     add_fmt(&B, "}\n");
 
     luaL_pushresult(&B);
+    for (int i = 0; i < count; i++) {
+        free(protos[i].boxed_upvals);
+        free(protos[i].boxed_slots);
+    }
     free(protos);
     return 1;
 }

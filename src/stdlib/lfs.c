@@ -457,6 +457,191 @@ static int fs_dirname (lua_State *L) {
   return 1;
 }
 
+/*
+** fs.copyfile(src, dst) - 复制文件
+** 成功返回true，失败返回nil和错误信息
+*/
+static int fs_copyfile (lua_State *L) {
+  const char *src = luaL_checkstring(L, 1);
+  const char *dst = luaL_checkstring(L, 2);
+  check_permission(L, src, "read");
+  check_permission(L, dst, "write");
+
+  FILE *fin, *fout;
+  char buf[8192];
+  size_t nread;
+
+  fin = fopen(src, "rb");
+  if (fin == NULL) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "无法打开源文件: %s", strerror(errno));
+    return 2;
+  }
+
+  fout = fopen(dst, "wb");
+  if (fout == NULL) {
+    fclose(fin);
+    lua_pushnil(L);
+    lua_pushfstring(L, "无法创建目标文件: %s", strerror(errno));
+    return 2;
+  }
+
+  while ((nread = fread(buf, 1, sizeof(buf), fin)) > 0) {
+    if (fwrite(buf, 1, nread, fout) != nread) {
+      fclose(fin);
+      fclose(fout);
+      remove(dst);
+      lua_pushnil(L);
+      lua_pushstring(L, "写入目标文件失败");
+      return 2;
+    }
+  }
+
+  fclose(fin);
+  fclose(fout);
+
+  if (nread == 0 && ferror(fin)) {
+    remove(dst);
+    lua_pushnil(L);
+    lua_pushstring(L, "读取源文件失败");
+    return 2;
+  }
+
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/*
+** fs.movefile(src, dst) - 移动/重命名文件或目录
+** 成功返回true，失败返回nil和错误信息
+*/
+static int fs_movefile (lua_State *L) {
+  const char *src = luaL_checkstring(L, 1);
+  const char *dst = luaL_checkstring(L, 2);
+  check_permission(L, src, "write");
+  check_permission(L, dst, "write");
+
+  if (rename(src, dst) == 0) {
+    lua_pushboolean(L, 1);
+  } else {
+    lua_pushnil(L);
+    lua_pushstring(L, strerror(errno));
+    return 2;
+  }
+  return 1;
+}
+
+/*
+** fs.rmtree(path) - 递归删除目录及其所有内容
+** 成功返回true，失败返回nil和错误信息
+*/
+static int fs_rmtree_helper(lua_State *L, const char *dirpath);
+
+static int fs_rmtree (lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  check_permission(L, path, "write");
+
+  struct stat sb;
+  if (stat(path, &sb) != 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, strerror(errno));
+    return 2;
+  }
+
+  if (S_ISDIR(sb.st_mode)) {
+    if (fs_rmtree_helper(L, path)) {
+      lua_pushboolean(L, 1);
+    } else {
+      lua_pushnil(L);
+      lua_pushstring(L, strerror(errno));
+      return 2;
+    }
+  } else {
+    if (remove(path) == 0) {
+      lua_pushboolean(L, 1);
+    } else {
+      lua_pushnil(L);
+      lua_pushstring(L, strerror(errno));
+      return 2;
+    }
+  }
+  return 1;
+}
+
+static int fs_rmtree_helper(lua_State *L, const char *dirpath) {
+#if defined(_WIN32)
+  WIN32_FIND_DATAW ffd;
+  char search_path[MAX_PATH];
+  char full_path[MAX_PATH];
+  sprintf(search_path, "%s\\*", dirpath);
+  wchar_t wsearch_path[MAX_PATH] = {0};
+  MultiByteToWideChar(CP_ACP, 0, search_path, -1, wsearch_path, MAX_PATH);
+  HANDLE hFind = FindFirstFileW(wsearch_path, &ffd);
+
+  if (hFind == INVALID_HANDLE_VALUE) {
+    return 0;
+  }
+
+  do {
+    char name[256] = {0};
+    WideCharToMultiByte(CP_ACP, 0, ffd.cFileName, -1, name, sizeof(name) - 1, NULL, NULL);
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+
+    snprintf(full_path, sizeof(full_path), "%s\\%s", dirpath, name);
+
+    if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      if (!fs_rmtree_helper(L, full_path)) {
+        FindClose(hFind);
+        return 0;
+      }
+    } else {
+      if (remove(full_path) != 0) {
+        FindClose(hFind);
+        return 0;
+      }
+    }
+  } while (FindNextFileW(hFind, &ffd) != 0);
+
+  FindClose(hFind);
+  rmdir(dirpath);
+  return 1;
+#else
+  DIR *d = opendir(dirpath);
+  if (!d) return 0;
+
+  struct dirent *entry;
+  char full_path[PATH_MAX];
+
+  while ((entry = readdir(d)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+    snprintf(full_path, sizeof(full_path), "%s/%s", dirpath, entry->d_name);
+
+    struct stat sb;
+    if (lstat(full_path, &sb) == -1) {
+      closedir(d);
+      return 0;
+    }
+
+    if (S_ISDIR(sb.st_mode)) {
+      if (!fs_rmtree_helper(L, full_path)) {
+        closedir(d);
+        return 0;
+      }
+    } else {
+      if (remove(full_path) != 0) {
+        closedir(d);
+        return 0;
+      }
+    }
+  }
+
+  closedir(d);
+  rmdir(dirpath);
+  return 1;
+#endif
+}
+
 static const luaL_Reg fslib[] = {
   {"ls", fs_ls},
   {"isdir", fs_isdir},
@@ -471,6 +656,9 @@ static const luaL_Reg fslib[] = {
   {"basename", fs_basename},
   {"dirname", fs_dirname},
   {"set_permissions", fs_set_permissions},
+  {"copyfile", fs_copyfile},
+  {"movefile", fs_movefile},
+  {"rmtree", fs_rmtree},
   {NULL, NULL}
 };
 
