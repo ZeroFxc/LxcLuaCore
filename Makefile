@@ -127,39 +127,43 @@ $(LBCDUMP_T): $(LBCDUMP_O)
 	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
 
 # ---- LSP Server (lxclua-lsp) ----
+# LSP 服务器不需要 wasmtime 运行时，仅链接基础数学库
+# 禁用 FORTIFY_SOURCE 避免 GCC 15 的 _chk 符号链接失败
+LSP_CFLAGS = $(CFLAGS) -U_FORTIFY_SOURCE
+LSP_LIBS = -lm
 $(LSP_SRV_T): $(LSP_SRV_O)
-	$(CC) -o $@ $(LDFLAGS) $(LSP_SRV_O) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(LSP_SRV_O) $(LSP_LIBS)
 
 # LSP object compilation rules (src/lspsrv/*.c)
 $(BUILDDIR)/lspsrv_main.o: src/lspsrv/lspsrv_main.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_json.o: src/lspsrv/lspsrv_json.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_proto.o: src/lspsrv/lspsrv_proto.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_doc.o: src/lspsrv/lspsrv_doc.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_lexer.o: src/lspsrv/lspsrv_lexer.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_kwdb.o: src/lspsrv/lspsrv_kwdb.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_complete.o: src/lspsrv/lspsrv_complete.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_hover.o: src/lspsrv/lspsrv_hover.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_features.o: src/lspsrv/lspsrv_features.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 $(BUILDDIR)/lspsrv_util.o: src/lspsrv/lspsrv_util.c src/lspsrv/lspsrv.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
 
 # --- lua2wasm: Lua-to-WASM 编译器 ---
 # 核心模块已编译进 $(LUA_A)，可在 Lua 中通过 require("lua2wasm") 使用

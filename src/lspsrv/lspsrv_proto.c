@@ -970,7 +970,7 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                             tok->type == TOK_CHAR || tok->type == TOK_DOUBLE || tok->type == TOK_LONG ||
                             tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM)
                             token_type = 1;
-                        else if (tok->type >= TOK_AND && tok->type <= TOK_LET)
+                        else if (tok->type >= TOK_AND && tok->type <= TOK_MATCH)
                             token_type = 15;
                         else if (tok->type >= TOK_IDIV && tok->type <= TOK_DOLLDOLL)
                             token_type = 21;
@@ -1019,15 +1019,65 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
         LspDiagnostic *diag_list = NULL;
         int ndiag = 0;
         if (doc) lsp_code_action(doc, line, col, &diag_list, &ndiag);
-        /* 为每个诊断生成 CodeAction */
+        
+        /* 为每个诊断生成带实际修复文本的 CodeAction */
         JsonValue *arr = json_new_array();
         for (int i = 0; i < ndiag; i++) {
+            const char *msg = diag_list[i].message;
+            const char *fix_text = NULL;
+            int is_trailing_ws = 0;
+            char *line_text = NULL;
+            
+            /* 根据诊断消息确定修复文本 */
+            if (msg && strstr(msg, "行尾有多余空白字符")) {
+                /* 获取该行去掉尾部空白后的内容 */
+                int offset = lsp_linecol_to_offset(doc->text, diag_list[i].line_start, 0);
+                line_text = lsp_get_line_text(doc->text, offset);
+                if (line_text) {
+                    /* 去掉尾部空白 */
+                    int end = (int)strlen(line_text) - 1;
+                    while (end >= 0 && (line_text[end] == ' ' || line_text[end] == '\t')) end--;
+                    line_text[end + 1] = '\0';
+                    fix_text = line_text;
+                    is_trailing_ws = 1;
+                }
+            } else if (msg && strstr(msg, "多余的逗号")) {
+                fix_text = "";
+            } else if (msg && strstr(msg, "末尾多余逗号")) {
+                fix_text = "";
+            } else if (msg && strstr(msg, "未闭合的长字符串")) {
+                fix_text = "]]";
+            } else if (msg && strstr(msg, "未闭合的字符串")) {
+                fix_text = "\"";
+            } else if (msg && strstr(msg, "Unclosed block")) {
+                fix_text = "end";
+            } else if (msg && strstr(msg, "Unexpected 'end'")) {
+                fix_text = "";
+            } else {
+                /* 默认：将问题区域替换为空 */
+                fix_text = "";
+            }
+            
             JsonValue *action = json_new_object();
+            
             /* title */
             char title[512];
-            const char *prefix = diag_list[i].severity == SEVERITY_ERROR ? "Fix error" : 
-                                 diag_list[i].severity == SEVERITY_WARNING ? "Fix warning" : "Fix";
-            snprintf(title, sizeof(title), "%s: %s", prefix, diag_list[i].message);
+            const char *prefix = diag_list[i].severity == SEVERITY_ERROR ? "修复错误" : 
+                                 diag_list[i].severity == SEVERITY_WARNING ? "修复警告" : "修复";
+            if (is_trailing_ws) {
+                snprintf(title, sizeof(title), "%s: 移除行尾空白", prefix);
+            } else if (strstr(msg ? msg : "", "多余的逗号") || strstr(msg ? msg : "", "末尾多余逗号")) {
+                snprintf(title, sizeof(title), "%s: 移除多余逗号", prefix);
+            } else if (msg && strstr(msg, "未闭合的")) {
+                snprintf(title, sizeof(title), "%s: 补全%s", prefix, 
+                         strstr(msg, "长字符串") ? "长字符串 ]] " : "字符串引号");
+            } else if (msg && strstr(msg, "Unclosed block")) {
+                snprintf(title, sizeof(title), "%s: 添加缺失的 end", prefix);
+            } else if (msg && strstr(msg, "Unexpected 'end'")) {
+                snprintf(title, sizeof(title), "%s: 移除多余的 end", prefix);
+            } else {
+                snprintf(title, sizeof(title), "%s: %s", prefix, msg ? msg : "");
+            }
             json_object_set(action, "title", json_new_string(title));
             json_object_set(action, "kind", json_new_string("quickfix"));
             
@@ -1051,29 +1101,46 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
             json_array_add(diags_arr, d);
             json_object_set(action, "diagnostics", diags_arr);
             
-            /* edit: 标记问题范围，newText 留空让用户手动修复 */
+            /* edit: 包含实际修复文本的 WorkspaceEdit */
             JsonValue *edit = json_new_object();
             JsonValue *changes = json_new_object();
             JsonValue *edits_arr = json_new_array();
             JsonValue *te = json_new_object();
-            /* 复用上面创建的 dr range */
-            JsonValue *te_r = json_new_object();
-            JsonValue *te_s = json_new_object();
-            json_object_set(te_s, "line", json_new_number(diag_list[i].line_start));
-            json_object_set(te_s, "character", json_new_number(diag_list[i].col_start));
-            JsonValue *te_e = json_new_object();
-            json_object_set(te_e, "line", json_new_number(diag_list[i].line_end));
-            json_object_set(te_e, "character", json_new_number(diag_list[i].col_end));
-            json_object_set(te_r, "start", te_s);
-            json_object_set(te_r, "end", te_e);
-            json_object_set(te, "range", te_r);
-            json_object_set(te, "newText", json_new_string(""));
+            
+            if (is_trailing_ws) {
+                /* 尾部空白：替换整行为去掉空白后的内容 */
+                JsonValue *te_r = json_new_object();
+                JsonValue *te_s = json_new_object();
+                json_object_set(te_s, "line", json_new_number(diag_list[i].line_start));
+                json_object_set(te_s, "character", json_new_number(0));
+                JsonValue *te_e = json_new_object();
+                json_object_set(te_e, "line", json_new_number(diag_list[i].line_start));
+                json_object_set(te_e, "character", json_new_number(diag_list[i].col_end));
+                json_object_set(te_r, "start", te_s);
+                json_object_set(te_r, "end", te_e);
+                json_object_set(te, "range", te_r);
+            } else {
+                /* 精确范围替换 */
+                JsonValue *te_r = json_new_object();
+                JsonValue *te_s = json_new_object();
+                json_object_set(te_s, "line", json_new_number(diag_list[i].line_start));
+                json_object_set(te_s, "character", json_new_number(diag_list[i].col_start));
+                JsonValue *te_e = json_new_object();
+                json_object_set(te_e, "line", json_new_number(diag_list[i].line_end));
+                json_object_set(te_e, "character", json_new_number(diag_list[i].col_end));
+                json_object_set(te_r, "start", te_s);
+                json_object_set(te_r, "end", te_e);
+                json_object_set(te, "range", te_r);
+            }
+            json_object_set(te, "newText", json_new_string(fix_text));
             json_array_add(edits_arr, te);
             json_object_set(changes, uri, edits_arr);
             json_object_set(edit, "changes", changes);
             json_object_set(action, "edit", edit);
             
             json_array_add(arr, action);
+            
+            lsp_free(line_text);
         }
         /* 清理 */
         for (int i = 0; i < ndiag; i++) {
@@ -1823,7 +1890,7 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                             tok->type == TOK_CHAR || tok->type == TOK_DOUBLE || tok->type == TOK_LONG ||
                             tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM)
                             token_type = 1;
-                        else if (tok->type >= TOK_AND && tok->type <= TOK_LET)
+                        else if (tok->type >= TOK_AND && tok->type <= TOK_MATCH)
                             token_type = 15;
                         else if (tok->type >= TOK_IDIV && tok->type <= TOK_DOLLDOLL)
                             token_type = 21;

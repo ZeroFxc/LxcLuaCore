@@ -37,13 +37,20 @@ int lsp_diagnostic(LspDocument *doc, LspDiagnostic **diags) {
     if (doc->tokens && doc->ntokens > 0) {
         /* === 1. 不平衡块检测 === */
         int depth = 0;
+        int last_block = 0;
         for (int i = 0; i < doc->ntokens; i++) {
             LspToken *tok = &doc->tokens[i];
+            /* DO 在 WHILE/FOR/MATCH 之后不应单独作为块起始（避免双重计数） */
+            if (tok->type == TOK_DO && (last_block == TOK_WHILE ||
+                last_block == TOK_FOR || last_block == TOK_MATCH)) {
+                continue;
+            }
             if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                 tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                 tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
                 tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
                 depth++;
+                last_block = tok->type;
             } else if (tok->type == TOK_END) {
                 depth--;
                 if (depth < 0) {
@@ -165,6 +172,106 @@ int lsp_diagnostic(LspDocument *doc, LspDiagnostic **diags) {
         }
     }
     
+    /* === 7. 未定义变量检测 === */
+    if (doc->tokens && doc->ntokens > 0) {
+        /* 收集所有已知标识符：关键词 + 内置函数 + 局部变量 + 标准库函数 + 导入模块 */
+        #define MAX_KNOWN 512
+        const char *known[MAX_KNOWN];
+        int nknown = 0;
+        
+        /* 添加局部变量 */
+        for (int i = 0; i < doc->nvars && nknown < MAX_KNOWN; i++) {
+            known[nknown++] = doc->vars[i].name;
+        }
+        /* 添加导入模块 */
+        for (int i = 0; i < doc->nimports && nknown < MAX_KNOWN; i++) {
+            known[nknown++] = doc->imports[i];
+        }
+        /* 添加内置函数 */
+        LspKeywordEntry *builtins;
+        int nbuiltins = lsp_kwdb_get_builtins(&builtins);
+        for (int i = 0; i < nbuiltins && builtins[i].name && nknown < MAX_KNOWN; i++) {
+            known[nknown++] = builtins[i].name;
+        }
+        /* 添加关键字 */
+        LspKeywordEntry *keywords;
+        int nkw = lsp_kwdb_get_keywords(&keywords);
+        for (int i = 0; i < nkw && keywords[i].name && nknown < MAX_KNOWN; i++) {
+            known[nknown++] = keywords[i].name;
+        }
+        /* 添加标准库函数 */
+        LspKeywordEntry *stdlib;
+        int nstdlib = lsp_kwdb_get_stdlib(&stdlib);
+        for (int i = 0; i < nstdlib && stdlib[i].name && nknown < MAX_KNOWN; i++) {
+            known[nknown++] = stdlib[i].name;
+        }
+        
+        /* 跳过定义位置的 token 检查（定义行的变量名不算未定义） */
+        int skip_tokens[256] = {0};
+        int nskip = 0;
+        for (int i = 0; i < doc->nvars && nskip < 256; i++) {
+            /* 在变量的定义位置，标记为已跳过 */
+            for (int j = 0; j < doc->ntokens && nskip < 256; j++) {
+                if (doc->tokens[j].type == TOK_NAME &&
+                    doc->tokens[j].line == doc->vars[i].def_line &&
+                    doc->tokens[j].col == doc->vars[i].def_col &&
+                    strcmp(doc->tokens[j].text, doc->vars[i].name) == 0) {
+                    skip_tokens[nskip++] = j;
+                    break;
+                }
+            }
+        }
+        
+        /* 扫描所有 TOK_NAME，检查是否在已知列表中 */
+        for (int i = 0; i < doc->ntokens; i++) {
+            if (doc->tokens[i].type != TOK_NAME) continue;
+            
+            /* 跳过定义位置的 token */
+            int is_skip = 0;
+            for (int s = 0; s < nskip; s++) {
+                if (skip_tokens[s] == i) { is_skip = 1; break; }
+            }
+            if (is_skip) continue;
+            
+            /* 跳过单字符名称（通常是循环变量等） */
+            if (doc->tokens[i].len <= 1) continue;
+            
+            const char *name = doc->tokens[i].text;
+            if (!name || !*name) continue;
+            
+            /* 检查是否在已知列表中 */
+            int is_known = 0;
+            for (int k = 0; k < nknown; k++) {
+                if (known[k] && strcmp(name, known[k]) == 0) {
+                    is_known = 1;
+                    break;
+                }
+            }
+            /* 也检查 table.field 格式（如 string.format 中的 string 是模块名） */
+            if (!is_known && doc->tokens[i].len >= 2) {
+                /* 检查是否以已知模块名开头 */
+                for (int k = 0; k < nknown; k++) {
+                    if (known[k]) {
+                        int klen = (int)strlen(known[k]);
+                        if (klen > 0 && doc->tokens[i].len > klen &&
+                            strncmp(name, known[k], klen) == 0 &&
+                            name[klen] == '.') {
+                            is_known = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (!is_known) {
+                ADD_DIAG(SEVERITY_WARNING, doc->tokens[i].line, doc->tokens[i].col,
+                         doc->tokens[i].line, doc->tokens[i].col + doc->tokens[i].len,
+                         "未定义的变量");
+            }
+        }
+        #undef MAX_KNOWN
+    }
+    
     #undef ADD_DIAG
     *diags = list;
     return n;
@@ -193,6 +300,7 @@ char *lsp_format(LspDocument *doc, int tab_size, int insert_spaces) {
     if (doc->tokens && doc->ntokens > 0) {
         int cur_indent = 0;
         int last_line = -1;
+        int last_block_type = 0;  /* 上一个块起始token类型，用于跳过 while/for/match 后的 do */
         for (int i = 0; i < doc->ntokens; i++) {
             LspToken *tok = &doc->tokens[i];
             int line = tok->line;
@@ -220,13 +328,20 @@ char *lsp_format(LspDocument *doc, int tab_size, int insert_spaces) {
                 continue;
             }
             
+            /* DO 在 WHILE/FOR/MATCH 之后不应单独作为块起始（避免双重缩进） */
+            if (tok->type == TOK_DO && (last_block_type == TOK_WHILE ||
+                last_block_type == TOK_FOR || last_block_type == TOK_MATCH)) {
+                continue;
+            }
+            
             /* 块起始关键字：后续行缩进增加 */
             /* 注意：THEN 不在此列表 —— 它和 IF 同属一行，不应再次递增 */
             if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                 tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                 tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
                 cur_indent++;
+                last_block_type = tok->type;
             }
         }
     }
@@ -568,11 +683,11 @@ int lsp_document_symbol(LspDocument *doc, LspSymbol ***out_symbols) {
                 LspToken *tok = &doc->tokens[t];
                 if (tok->line < start_line) continue;
                 
-                /* 块起始关键字 */
+                /* 块起始关键字（包含 match 语法） */
                 if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                     tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                     tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
                     depth++;
                 }
                 else if (tok->type == TOK_END) {
@@ -696,18 +811,26 @@ int lsp_folding_range(LspDocument *doc, int **out_start_lines, int **out_end_lin
     int *ends = (int *)lsp_alloc(cap * sizeof(int));
     int nfolds = 0;
     
+    int last_block_type = 0;  /* 上一个块起始token类型，用于跳过 while/for/match 后的 do */
     for (int i = 0; i < doc->ntokens; i++) {
         LspToken *tok = &doc->tokens[i];
+        
+        /* DO 在 WHILE/FOR/MATCH 之后不应单独作为块起始（避免双重计数） */
+        if (tok->type == TOK_DO && (last_block_type == TOK_WHILE ||
+            last_block_type == TOK_FOR || last_block_type == TOK_MATCH)) {
+            continue;
+        }
         
         if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
             tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
             tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-            tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+            tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
             if (depth < max_depth) {
                 stack_lines[depth] = tok->line;
                 stack_types[depth] = tok->type;
                 depth++;
             }
+            last_block_type = tok->type;
         } else if (tok->type == TOK_END || tok->type == TOK_UNTIL) {
             if (depth > 0) {
                 depth--;
@@ -831,7 +954,7 @@ int lsp_prepare_rename(LspDocument *doc, int line, int col, int *out_line, int *
         "defer","enum","export","global","import","let","namespace","struct",
         "switch","case","default","try","catch","finally","throw","requires",
         "using","concept","superstruct","is","instanceof","take","with","when",
-        "lambda","command","keyword","operator","void","bool","char","double",
+        "match","lambda","command","keyword","operator","void","bool","char","double",
         "float","int","long",NULL};
     for (int i = 0; reserved[i]; i++) {
         if (strcmp(word, reserved[i]) == 0) { is_keyword = 1; break; }
@@ -1117,7 +1240,7 @@ int lsp_selection_range(LspDocument *doc, int npositions, int *lines, int *cols,
                 if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                     tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                     tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
                     if (sptr < 128) stack[sptr++] = tok->line;
                 } else if (tok->type == TOK_END) {
                     if (sptr > 0) {
