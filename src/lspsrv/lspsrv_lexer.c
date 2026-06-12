@@ -37,7 +37,7 @@ static LspKeyword lsp_keywords[] = {
     {"is",        TOK_IS},        {"instanceof",TOK_INSTANCEOF},
     {"keyword",   TOK_KEYWORD},   {"lambda",    TOK_LAMBDA},
     {"local",     TOK_LOCAL},     {"long",      TOK_LONG},
-    {"namespace", TOK_NAMESPACE}, {"nil",       TOK_NIL},
+    {"match",     TOK_MATCH},     {"namespace", TOK_NAMESPACE}, {"nil",       TOK_NIL},
     {"not",       TOK_NOT},       {"operator",  TOK_OPERATOR},
     {"or",        TOK_OR},        {"repeat",    TOK_REPEAT},
     {"requires",  TOK_REQUIRES},  {"return",    TOK_RETURN},
