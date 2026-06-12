@@ -69,6 +69,7 @@ static void buildglobal (LexState *ls, TString *varname, expdesc *var);
 static int new_varkind (LexState *ls, TString *name, lu_byte kind);
 static void switchstat (LexState *ls, int line);  /* switch语句的前向声明 */
 static void matchstat (LexState *ls, int line);
+static void matchexpr (LexState *ls, expdesc *v);  /* match表达式的前向声明 */
 static void trystat (LexState *ls, int line);     /* try语句的前向声明 */
 static void withstat (LexState *ls, int line);    /* with语句的前向声明 */
 static void classstat (LexState *ls, int line, int class_flags, int isexport);   /* class语句的前向声明 */
@@ -194,8 +195,8 @@ typedef struct {
   const char *name;           /* 关键字名称 */
   SoftKWID id;                /* 关键字 ID */
   unsigned int contexts;      /* 允许的上下文（位掩码） */
-  int lookahead_tokens[8];    /* 前瞻匹配列表（以 0 结尾，后面跟这些时识别为关键字） */
-  int exclude_tokens[8];      /* 排除列表（以 0 结尾，后面跟这些时不识别为关键字） */
+  int lookahead_tokens[16];    /* 前瞻匹配列表（以 0 结尾，后面跟这些时识别为关键字） */
+  int exclude_tokens[16];      /* 排除列表（以 0 结尾，后面跟这些时不识别为关键字） */
   unsigned int hash;          /* 名称哈希值（运行时计算） */
 } SoftKWDef;
 
@@ -234,7 +235,7 @@ static SoftKWDef soft_keywords[] = {
   {"set",        SKW_SET,        SOFTKW_CTX_CLASS_BODY,    {TK_NAME, 0}, {'=', 0}, 0},
   /* static - 类体内，后面跟function或标识符名 */
   {"static",     SKW_STATIC,     SOFTKW_CTX_CLASS_BODY,    {TK_FUNCTION, TK_NAME, 0}, {'=', 0}, 0},
-  {"match",      SKW_MATCH,      SOFTKW_CTX_STMT_BEGIN,    {TK_NAME, '{', '[', TK_STRING, TK_INT, TK_FLT, 0}, {'=', '.', ':', '(', 0}, 0},
+  {"match",      SKW_MATCH,      SOFTKW_CTX_STMT_BEGIN | SOFTKW_CTX_EXPR,    {TK_NAME, '{', '[', TK_STRING, TK_INT, TK_FLT, TK_TRUE, TK_FALSE, TK_NIL, '(', TK_NOT, '-', '#', TK_FUNCTION, 0}, {'=', '.', ':', '(', 0}, 0},
   /* 结束标记 */
   {NULL,         SKW_NONE,       0,                         {0}, {0}, 0}
 };
@@ -725,6 +726,42 @@ int new_localvar (LexState *ls, TString *name) {
   return dyd->actvar.n - 1 - fs->firstlocal;
 }
 
+/*
+** 在 nactvar 指示的位置插入一个新的局部变量描述符（Vardesc），
+** 确保 actvar 数组和 nactvar 激活顺序一致。
+** 与 new_localvar 不同，此函数将变量插入到当前 nactvar 位置，
+** 而不是追加到 actvar 末尾。这解决了延迟 activate（如 localstat）
+** 导致的 actvar/nactvar 不对齐问题。
+** 参数：
+**   ls - 词法分析状态
+**   name - 变量名
+**   reg - 变量所在的寄存器编号
+** 返回值：变量的 vidx（相对于 firstlocal 的索引）
+*/
+static int insert_localvar (LexState *ls, TString *name, int reg) {
+  FuncState *fs = ls->fs;
+  Dyndata *dyd = ls->dyd;
+  int insert_pos = fs->firstlocal + fs->nactvar;  /* 插入位置 = 当前激活位置 */
+
+  luaM_growvector(ls->L, dyd->actvar.arr, dyd->actvar.n + 1,
+                  dyd->actvar.size, Vardesc, USHRT_MAX, "local variables");
+  /* 将插入位置之后的元素后移一位，为新变量腾出空间 */
+  if (insert_pos < dyd->actvar.n) {
+    memmove(&dyd->actvar.arr[insert_pos + 1], &dyd->actvar.arr[insert_pos],
+            (dyd->actvar.n - insert_pos) * sizeof(Vardesc));
+  }
+  dyd->actvar.n++;
+
+  Vardesc *var = &dyd->actvar.arr[insert_pos];
+  memset(var, 0, sizeof(Vardesc));
+  var->vd.kind = VDKREG;
+  var->vd.name = name;
+  var->vd.ridx = reg;
+  var->vd.pidx = registerlocalvar(ls, fs, name);
+  fs->nactvar++;  /* 激活该变量 */
+  return fs->nactvar - 1 - fs->firstlocal;  /* 返回 vidx */
+}
+
 
 /*
 ** Return the "variable description" (Vardesc) of a given variable.
@@ -842,7 +879,8 @@ void adjustlocalvars (LexState *ls, int nvars) {
 ** (debug info.)
 */
 static void removevars (FuncState *fs, int tolevel) {
-  fs->ls->dyd->actvar.n -= (fs->nactvar - tolevel);
+  int nremove = fs->nactvar - tolevel;
+  if (nremove <= 0) return;
   while (fs->nactvar > tolevel) {
     LocVar *var = localdebuginfo(fs, --fs->nactvar);
     if (var)  /* does it have debug information? */
@@ -855,6 +893,19 @@ static void removevars (FuncState *fs, int tolevel) {
        lua_pop(fs->ls->L, 1);
     }
   }
+  /* 将剩余未激活的变量 shift 到前面填补空隙（而不是直接 truncate 丢弃） */
+  /* 注意：actvar.arr 是全局数组，需要用 fs->firstlocal 转换为全局索引 */
+  {
+    int remove_start = fs->firstlocal + tolevel;
+    int remaining = (int)(fs->ls->dyd->actvar.n) - (remove_start + nremove);
+    if (remaining > 0) {
+      memmove(&fs->ls->dyd->actvar.arr[remove_start],
+              &fs->ls->dyd->actvar.arr[remove_start + nremove],
+              remaining * sizeof(Vardesc));
+    }
+    fs->ls->dyd->actvar.n -= nremove;
+  }
+  fs->nactvar = tolevel;
 }
 
 
@@ -3232,6 +3283,11 @@ static void primaryexp (LexState *ls, expdesc *v) {
       return;
     }
     case TK_NAME: {
+      /* 使用软关键字系统检查 match 表达式 */
+      if (softkw_test(ls, SKW_MATCH, SOFTKW_CTX_EXPR)) {
+        matchexpr(ls, v);
+        return;
+      }
       /* 使用软关键字系统检查 new */
       if (softkw_test(ls, SKW_NEW, SOFTKW_CTX_EXPR)) {
         /* onew ClassName(args...) - 创建类实例 */
@@ -4957,6 +5013,7 @@ static const struct {
 
 #define UNARY_PRIORITY	12  /* priority for unary operators */
 #define PRI_CASE        1   /* priority for case arrow '=>' */
+#define PRI_RANGE_EXPR  9   /* priority to stop before '..' for range pattern parsing */
 
 
 /**
@@ -6382,88 +6439,218 @@ static void whenstat (LexState *ls, int line) {
 
 
 //===================================== SWITCH =============================================
-static void parse_pattern(LexState *ls, expdesc *ctrl, int *next_check_jump) {
+/*
+** 解析单个模式匹配分支（支持多值、类型、范围、解构等模式）
+** 参数：
+**   ls - 词法分析状态
+**   ctrl - 控制表达式（被匹配的值）
+**   next_check_jump - 失败跳转链表（用于串联多个case的失败跳转）
+** 说明：
+**   支持的模式类型：
+**   1. 通配符 _ ：匹配任意值
+**   2. 变量绑定 name ：匹配任意值并绑定到局部变量
+**   3. 表解构 {a, b, c} ：匹配表并解构字段
+**   4. 类型模式 is TypeName ：检查值的类型
+**   5. 范围模式 low..high ：检查值是否在范围内
+**   6. 字面量模式 expr ：相等性比较
+**   7. 多值模式 pat1, pat2, pat3 ：匹配任意一个模式（OR逻辑）
+*/
+static void parse_pattern(LexState *ls, expdesc *ctrl, int *next_check_jump, int *success_jump, int allow_multi) {
   FuncState *fs = ls->fs;
+  int first_pattern = 1;
+  int prev_false_jumps = NO_JUMP;  /* 前一个子模式的失败跳转（用于多值模式） */
 
-  if (ls->t.token == TK_NAME && strcmp(getstr(ls->t.seminfo.ts), "_") == 0) {
-     luaX_next(ls);
-  } else if (ls->t.token == TK_NAME && luaX_lookahead(ls) != '=') {
-     TString *name = str_checkname(ls);
-     new_localvar(ls, name);
-     int reg = fs->nactvar;
-     adjustlocalvars(ls, 1);
-     if (fs->freereg < fs->nactvar) fs->freereg = fs->nactvar;
-     if (reg != ctrl->u.info) {
-        luaK_codeABC(fs, OP_MOVE, reg, ctrl->u.info, 0);
-     }
-  } else if (ls->t.token == '{') {
-     luaX_next(ls);
-     int idx = 1;
-     while (ls->t.token != '}' && ls->t.token != TK_EOS) {
-        expdesc key;
+  /* 循环处理多值模式（逗号分隔） */
+  do {
+    if (!first_pattern) {
+      luaX_next(ls); /* skip ',' */
+      /* 确保 ctrl 保持 VNONRELOC 状态 */
+      ctrl->k = VNONRELOC;
+      /* 将前一个子模式的失败跳转修补到当前位置（即下一个子模式检查的开始） */
+      /* 多值模式：case 1, 2, 3 -> 中，1 失败后应继续尝试 2，而不是直接跳到 next_check */
+      luaK_patchtohere(fs, prev_false_jumps);
+      prev_false_jumps = NO_JUMP;
+    }
+    first_pattern = 0;
 
-        if (ls->t.token == '[') {
-           luaX_next(ls);
-           expr(ls, &key);
-           checknext(ls, ']');
-           checknext(ls, '=');
-        } else if (ls->t.token == TK_NAME) {
-           int la = luaX_lookahead(ls);
-           if (la == '=') {
-               codestring(&key, str_checkname(ls));
-               luaX_next(ls);
-           } else {
-               init_exp(&key, VKINT, idx++);
-           }
-        } else {
-           init_exp(&key, VKINT, idx++);
-        }
+    int current_false_jump = NO_JUMP;
 
-        luaK_exp2anyregup(fs, &key);
+    /* --- 通配符模式：_ 匹配任意值 --- */
+    if (ls->t.token == TK_NAME && strcmp(getstr(ls->t.seminfo.ts), "_") == 0) {
+       luaX_next(ls);
+       /* 通配符总是匹配成功，跳转到分支体（如果提供了success_jump） */
+       if (success_jump != NULL)
+         luaK_concat(fs, success_jump, luaK_jump(fs));
+    }
+    /* --- 变量绑定模式：name (后面不是 =) --- */
+    else if (ls->t.token == TK_NAME && luaX_lookahead(ls) != '=') {
+       TString *name = str_checkname(ls);
+       int reg = luaY_nvarstack(fs);  /* actual register */
+       /* 使用 insert_localvar 在 nactvar 位置插入变量，确保 actvar/nactvar 对齐 */
+       int vidx = insert_localvar(ls, name, reg);
+       if (fs->freereg < fs->nactvar) fs->freereg = fs->nactvar;
+       if (reg != ctrl->u.info) {
+          luaK_codeABC(fs, OP_MOVE, reg, ctrl->u.info, 0);
+       }
+       /* 变量绑定总是匹配成功，跳转到分支体（如果提供了success_jump） */
+       if (success_jump != NULL)
+         luaK_concat(fs, success_jump, luaK_jump(fs));
+    }
+    /* --- 类型模式：is TypeName --- */
+    else if (ls->t.token == TK_IS) {
+       luaX_next(ls); /* skip 'is' */
+       TString *type_name = str_checkname(ls);
+       int type_k = luaK_stringK(fs, type_name);
+       /* OP_IS: 检查 R[ctrl] 的类型是否等于 K[type_k] */
+       /* k=0 表示：类型匹配时跳过下一条指令（JMP），不匹配时执行JMP跳转到next_check */
+       luaK_codeABCk(fs, OP_IS, ctrl->u.info, type_k, 0, 0);
+       luaK_concat(fs, &current_false_jump, luaK_jump(fs));
+       /* 类型匹配成功后跳转到分支体（如果提供了success_jump） */
+       if (success_jump != NULL)
+         luaK_concat(fs, success_jump, luaK_jump(fs));
+    }
+    /* --- 表解构模式：{ field1, field2, ... } --- */
+    else if (ls->t.token == '{') {
+       luaX_next(ls);
+       /* 保存控制值到安全寄存器，避免被字段变量覆盖 */
+       int ctrl_save_reg = fs->freereg;
+       luaK_reserveregs(fs, 1);
+       luaK_codeABC(fs, OP_MOVE, ctrl_save_reg, ctrl->u.info, 0);
+       int orig_ctrl_reg = ctrl->u.info;
+       ctrl->u.info = ctrl_save_reg;
+       int idx = 1;
+       while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+          expdesc key;
 
-        int val_reg = fs->freereg;
-        luaK_reserveregs(fs, 1);
-        luaK_codeABC(fs, OP_GETTABLE, val_reg, ctrl->u.info, key.u.info);
+          if (ls->t.token == '[') {
+             luaX_next(ls);
+             expr(ls, &key);
+             checknext(ls, ']');
+             checknext(ls, '=');
+          } else if (ls->t.token == TK_NAME) {
+             int la = luaX_lookahead(ls);
+             if (la == '=') {
+                 codestring(&key, str_checkname(ls));
+                 luaX_next(ls);
+             } else {
+                 /* 简写形式：{x} 等价于 {x = x}，使用字段名字符串作为键 */
+                 /* 不消耗 token，让递归 parse_pattern 处理变量绑定 */
+                 codestring(&key, ls->t.seminfo.ts);
+             }
+          } else {
+             init_exp(&key, VKINT, 0); key.u.ival = idx++;
+          }
 
-        /* Now shift val_reg down to nactvar to make room for local variables */
-        int target_reg = fs->nactvar;
-        if (val_reg != target_reg) {
-           luaK_codeABC(fs, OP_MOVE, target_reg, val_reg, 0);
-        }
+          luaK_exp2anyregup(fs, &key);
 
-        /* Reset freereg to the end of the new 'val' */
-        fs->freereg = target_reg + 1;
+          int val_reg = fs->freereg;
+          luaK_reserveregs(fs, 1);
+          luaK_codeABC(fs, OP_GETTABLE, val_reg, ctrl->u.info, key.u.info);
 
-        expdesc val;
-        init_exp(&val, VNONRELOC, target_reg);
+          /* 将 val_reg 移动到 nactvar 位置，为局部变量腾出空间 */
+          int target_reg = luaY_nvarstack(fs);  /* use actual register, not variable index */
+          if (val_reg != target_reg) {
+             luaK_codeABC(fs, OP_MOVE, target_reg, val_reg, 0);
+          }
 
-        parse_pattern(ls, &val, next_check_jump);
+          /* 重置 freereg 到新 'val' 的末尾 */
+          fs->freereg = target_reg + 1;
 
-        if (testnext(ls, ',')) {}
-     }
-     check_match(ls, '}', '{', ls->linenumber);
-  } else {
-     expdesc e;
-     expdesc c = *ctrl;
-     int old_flags = ls->expr_flags;
-     ls->expr_flags |= E_NO_COLON;
-     expr(ls, &e);
-     ls->expr_flags = old_flags;
+          expdesc val;
+          init_exp(&val, VNONRELOC, target_reg);
 
-     luaK_infix(fs, OPR_EQ, &c);
-     luaK_posfix(fs, OPR_EQ, &c, &e, ls->linenumber);
+          /* 递归解析子模式（支持嵌套解构） */
+          /* 表字段模式不直接跳转到分支体，而是fallthrough到下一个字段 */
+          /* 传入NULL作为success_jump，字段匹配成功后自然fallthrough */
+          parse_pattern(ls, &val, &current_false_jump, NULL, 0);
 
-     luaK_goiftrue(fs, &c);
-     luaK_concat(fs, next_check_jump, c.f);
-  }
+          if (testnext(ls, ',')) {}
+       }
+       check_match(ls, '}', '{', ls->linenumber);
+       /* 所有表字段匹配成功后，跳转到分支体 */
+       if (success_jump != NULL)
+         luaK_concat(fs, success_jump, luaK_jump(fs));
+    }
+    /* --- 字面量模式 / 范围模式 --- */
+    else {
+       expdesc e;
+       expdesc c = *ctrl;
+       int old_flags = ls->expr_flags;
+       ls->expr_flags |= E_NO_COLON;
+       /* 使用 PRI_RANGE_EXPR 限制，在 '..' 之前停止，以便检测范围模式 */
+       subexpr(ls, &e, PRI_RANGE_EXPR);
+       ls->expr_flags = old_flags;
+
+       /* 检查是否为范围模式：low..high */
+       if (ls->t.token == TK_CONCAT) {
+          /* 范围模式：生成 (ctrl >= low) and (ctrl <= high) */
+          luaX_next(ls); /* skip '..' */
+          expdesc upper;
+          /* 上限也用 PRI_RANGE_EXPR 限制，避免 '..' 被消费 */
+          subexpr(ls, &upper, PRI_RANGE_EXPR);
+
+          /* 检查 ctrl >= low */
+          luaK_infix(fs, OPR_GE, &c);
+          luaK_posfix(fs, OPR_GE, &c, &e, ls->linenumber);
+          luaK_goiftrue(fs, &c);
+          int ge_false = c.f;  /* ctrl < low 时的跳转 */
+
+          /* 检查 ctrl <= upper */
+          expdesc c2 = *ctrl;
+          luaK_infix(fs, OPR_LE, &c2);
+          luaK_posfix(fs, OPR_LE, &c2, &upper, ls->linenumber);
+          luaK_goiftrue(fs, &c2);
+
+          /* 两个条件都失败时跳转到当前子模式的失败跳转链 */
+          luaK_concat(fs, &current_false_jump, ge_false);
+          luaK_concat(fs, &current_false_jump, c2.f);
+          /* 范围匹配成功后跳转到分支体（如果提供了success_jump） */
+          if (success_jump != NULL)
+            luaK_concat(fs, success_jump, luaK_jump(fs));
+       }
+       else {
+          /* 字面量模式：生成 ctrl == expr */
+          luaK_infix(fs, OPR_EQ, &c);
+          luaK_posfix(fs, OPR_EQ, &c, &e, ls->linenumber);
+
+          luaK_goiftrue(fs, &c);
+          luaK_concat(fs, &current_false_jump, c.f);
+          /* 字面量匹配成功后跳转到分支体（如果提供了success_jump） */
+          if (success_jump != NULL)
+            luaK_concat(fs, success_jump, luaK_jump(fs));
+       }
+    }
+
+    /* 保存当前子模式的失败跳转，供下一次迭代使用 */
+    /* 如果是最后一个子模式，这些跳转会转到 next_check_jump */
+    /* 如果后面还有子模式，这些跳转会被修补到下一个子模式检查的开始 */
+    prev_false_jumps = current_false_jump;
+
+  } while (allow_multi && ls->t.token == ',');
+
+  /* 最后一个子模式的失败跳转汇总到 next_check_jump */
+  /* 对于单值模式，这就是唯一的失败跳转 */
+  luaK_concat(fs, next_check_jump, prev_false_jumps);
 }
 
-static void matchstat (LexState *ls, int line) {
+/*
+** match 表达式/语句的共享核心解析函数
+** 参数：
+**   ls - 词法分析状态
+**   v - 表达式结果存储（仅 is_expr=1 时有效）
+**   is_expr - 是否为表达式模式（1=表达式，0=语句）
+** 说明：
+**   - 表达式模式：只支持箭头形式 (case pattern => expr)，结果存入 v
+**   - 语句模式：支持箭头形式和块形式，箭头形式使用 luaK_ret 返回
+*/
+static void match_body (LexState *ls, expdesc *v, int is_expr) {
   FuncState *fs = ls->fs;
   BlockCnt bl;
   expdesc ctrl;
   int jump_to_check = NO_JUMP;
   int finish_jump = NO_JUMP;
+  int result_reg = -1;
+  int line = ls->linenumber;  /* 记录 match 关键字所在行号 */
 
   luaX_next(ls);  /* skip MATCH */
 
@@ -6471,10 +6658,14 @@ static void matchstat (LexState *ls, int line) {
 
   expr(ls, &ctrl); /* parse control expression */
 
-  /* Save control value to a local variable to ensure register safety */
+  /* 保存控制值到寄存器（不创建局部变量，避免 actvar/nactvar 不对齐） */
   luaK_exp2nextreg(fs, &ctrl);
-  new_localvarliteral(ls, "(match control)");
-  adjustlocalvars(ls, 1);
+
+  /* 表达式模式：在控制变量之后分配结果寄存器（避免寄存器冲突） */
+  if (is_expr) {
+    result_reg = fs->freereg;
+    luaK_reserveregs(fs, 1);
+  }
 
   if(!testnext(ls, TK_DO)){
       if(!testnext(ls, TK_THEN)){
@@ -6490,7 +6681,7 @@ static void matchstat (LexState *ls, int line) {
     if (ls->t.token == TK_CASE) {
       int next_check_jump = NO_JUMP;
 
-      /* Now generating check code */
+      /* 生成检查代码 */
       luaK_patchtohere(fs, jump_to_check);
 
       luaX_next(ls); /* skip CASE */
@@ -6498,10 +6689,14 @@ static void matchstat (LexState *ls, int line) {
       BlockCnt case_bl;
       enterblock(fs, &case_bl, 0);
 
-      /* Parse pattern and build next_check_jump for failures */
-      parse_pattern(ls, &ctrl, &next_check_jump);
+      /* 解析模式并构建失败跳转和成功跳转 */
+      int success_jump = NO_JUMP;
+      parse_pattern(ls, &ctrl, &next_check_jump, &success_jump, 1);
 
-      /* Optional Guard */
+      /* 修补成功跳转：模式匹配成功后跳转到分支体（守卫条件之前） */
+      luaK_patchtohere(fs, success_jump);
+
+      /* 可选守卫条件 */
       if (testnext(ls, TK_IF)) {
          expdesc cond;
          expr(ls, &cond);
@@ -6509,13 +6704,22 @@ static void matchstat (LexState *ls, int line) {
          luaK_concat(fs, &next_check_jump, cond.f);
       }
 
-      /* Body Start */
+      /* 分支体 */
       if (testnext(ls, TK_ARROW)) {
          expdesc e;
          expr(ls, &e);
-         luaK_exp2nextreg(fs, &e);
-         luaK_ret(fs, e.u.info, 1);
+         if (is_expr) {
+           /* 表达式模式：将结果存入结果寄存器 */
+           luaK_exp2reg(fs, &e, result_reg);
+         } else {
+           /* 语句模式：评估表达式（副作用），不返回 */
+           luaK_exp2nextreg(fs, &e);
+           /* 不调用 luaK_ret，避免提前终止函数导致后续代码不可达 */
+         }
       } else {
+         if (is_expr) {
+           luaX_syntaxerror(ls, "match expression requires '=>' arrow form for each case");
+         }
          testnext(ls, ':');
          testnext(ls, TK_DO);
          testnext(ls, TK_THEN);
@@ -6524,7 +6728,7 @@ static void matchstat (LexState *ls, int line) {
 
       leaveblock(fs);
 
-      /* Jump to end of match if not returned */
+      /* 跳转到 match 结束 */
       luaK_concat(fs, &finish_jump, luaK_jump(fs));
 
       jump_to_check = next_check_jump;
@@ -6533,10 +6737,15 @@ static void matchstat (LexState *ls, int line) {
     }
   }
 
-  /* Patch dangling checks (no case matched) */
+  /* 修补挂起的检查（没有case匹配时） */
   luaK_patchtohere(fs, jump_to_check);
 
-  /* End of match */
+  /* 如果没有匹配的case，表达式模式返回 nil */
+  if (is_expr) {
+    luaK_codeABC(fs, OP_LOADNIL, result_reg, result_reg, 0);
+  }
+
+  /* match 结束 */
   if (finish_jump != NO_JUMP) {
     luaK_patchtohere(fs, finish_jump);
   }
@@ -6548,6 +6757,43 @@ static void matchstat (LexState *ls, int line) {
   }
 
   leaveblock(fs);
+
+  /* 表达式模式：设置返回值 */
+  if (is_expr) {
+    /* 离开块后 nactvar 恢复到外部块的状态，需要将结果移动到外部块的变量基址，
+    ** 以便后续 local 赋值等操作能正确获取结果 */
+    int target_reg = fs->nactvar;
+    if (result_reg != target_reg) {
+      luaK_codeABC(fs, OP_MOVE, target_reg, result_reg, 0);
+    }
+    init_exp(v, VNONRELOC, target_reg);
+    fs->freereg = cast_byte(target_reg + 1);
+  }
+}
+
+/*
+** match 语句解析（保留原有功能）
+** 语法：match expr { case pattern => expr | case pattern: block } end
+*/
+static void matchstat (LexState *ls, int line) {
+  (void)line;  /* line 参数在 match_body 内部处理 */
+  match_body(ls, NULL, 0);
+}
+
+/*
+** match 表达式解析（新增：函数式编程增强）
+** 语法：match expr { case pattern => expr, ... }
+** 示例：
+**   local result = match x do
+**     case 1 => "one"
+**     case 2, 3, 4 => "small"
+**     case 5..10 => "medium"
+**     case is string => "text"
+**     case _ => "other"
+**   end
+*/
+static void matchexpr (LexState *ls, expdesc *v) {
+  match_body(ls, v, 1);
 }
 
 static void switchstat (LexState *ls, int line) {
