@@ -1376,6 +1376,7 @@ void luaX_next (LexState *ls) {
   ls->tokpos = ls->curpos;
   if (ls->lookahead.token != TK_EOS) {  /* is there a look-ahead token? */
     ls->t = ls->lookahead;  /* use this one (struct copy, includes linenumber) */
+    ls->linenumber = ls->t.linenumber;  /* 同步行号到当前token */
     if (ls->lookahead2.token != TK_EOS) {
        ls->lookahead = ls->lookahead2;
        if (ls->lookahead3.token != TK_EOS) {
@@ -1399,25 +1400,32 @@ int luaX_lookahead (LexState *ls) {
   if (ls->lookahead.token != TK_EOS) {
     return ls->lookahead.token;
   }
+  /* 保存当前行号，llex() 会更新 ls->linenumber，但 lookahead 不应改变当前 token 的行号 */
+  int saved_linenumber = ls->linenumber;
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
-  ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
+  ls->lookahead.linenumber = ls->linenumber;  /* 记录lookahead token所在行号 */
+  ls->linenumber = saved_linenumber;  /* 恢复当前行号 */
   return ls->lookahead.token;
 }
 
 int luaX_lookahead2 (LexState *ls) {
+  int saved_linenumber = ls->linenumber;
   if (ls->lookahead.token == TK_EOS) {
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
   }
   if (ls->lookahead2.token != TK_EOS) {
+    ls->linenumber = saved_linenumber;
     return ls->lookahead2.token;
   }
   ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
   ls->lookahead2.linenumber = ls->linenumber;  /* 记录token所在行号 */
+  ls->linenumber = saved_linenumber;
   return ls->lookahead2.token;
 }
 
 int luaX_lookahead3 (LexState *ls) {
+  int saved_linenumber = ls->linenumber;
   if (ls->lookahead.token == TK_EOS) {
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;
@@ -1427,9 +1435,11 @@ int luaX_lookahead3 (LexState *ls) {
     ls->lookahead2.linenumber = ls->linenumber;
   }
   if (ls->lookahead3.token != TK_EOS) {
+    ls->linenumber = saved_linenumber;
     return ls->lookahead3.token;
   }
   ls->lookahead3.token = llex(ls, &ls->lookahead3.seminfo);
   ls->lookahead3.linenumber = ls->linenumber;
+  ls->linenumber = saved_linenumber;
   return ls->lookahead3.token;
 }
