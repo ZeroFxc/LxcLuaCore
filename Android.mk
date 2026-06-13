@@ -152,7 +152,7 @@ LOCAL_SRC_FILES := \
 	src/utils/lrsa.c \
 	src/utils/lecc.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.0-aarch64-android-c-api/include
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 
 # QuickJS 配置
