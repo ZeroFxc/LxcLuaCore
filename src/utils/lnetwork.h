@@ -870,6 +870,13 @@ lnet_http_client_result *lnet_http_client_request(const char *method, const char
 void lnet_http_client_result_free(lnet_http_client_result *result);
 
 /**
+ * @brief 重置 HTTP 客户端请求结果（释放内部数据但不释放结构体本身）
+ * 用于重定向等需要重用 lnet_http_client_result 的场景
+ * @param result 请求结果
+ */
+void lnet_http_client_result_reset(lnet_http_client_result *result);
+
+/**
  * @brief 创建默认 HTTP 客户端配置
  * @param config 输出配置
  */

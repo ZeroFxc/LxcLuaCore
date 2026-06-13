@@ -17,13 +17,13 @@ RANLIB= ranlib
 RM= rm -f
 UNAME= uname
 
-# wasmtime: 支持 WASM GC 提案的运行时（v45.0.0 预编译库，用于桌面对 Windows MinGW）
-WASMTIME_DIR = wasmtime/wasmtime-v45.0.0-x86_64-mingw-c-api
+# wasmtime: 支持 WASM GC 提案的运行时（v45.0.1 预编译库，用于桌面对 Windows MinGW）
+WASMTIME_DIR = wasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api
 WASMTIME_INC = -I$(WASMTIME_DIR)/include
 WASMTIME_LIB = $(WASMTIME_DIR)/lib/libwasmtime.a -lbcrypt -luserenv -lole32 -lntdll
 WASMTIME_DLL = $(WASMTIME_DIR)/lib/wasmtime.dll
 # wasmtime Android 预编译库（aarch64）
-WASMTIME_ANDROID_DIR = wasmtime/wasmtime-v45.0.0-aarch64-android-c-api
+WASMTIME_ANDROID_DIR = wasmtime/wasmtime-v45.0.1-aarch64-android-c-api
 
 SYSCFLAGS= -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
@@ -278,11 +278,17 @@ ios:
 	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_IOS"
 
 Linux linux:
-	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread" SYSLDFLAGS="-s"
+	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread -lssl -lcrypto" SYSLDFLAGS="-s" \
+	"WASMTIME_DIR=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api" \
+	"WASMTIME_LIB=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api/lib/libwasmtime.a" \
+	"WASMTIME_DLL=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api/lib/libwasmtime.so"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
 termux:
-	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld"
+	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm -lssl -lcrypto" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld" \
+	"WASMTIME_DIR=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api" \
+	"WASMTIME_LIB=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/lib/libwasmtime.a" \
+	"WASMTIME_DLL=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/lib/libwasmtime.so"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 
 Darwin macos macosx:
@@ -291,7 +297,7 @@ Darwin macos macosx:
 mingw:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -Wl,--stack,16777216" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
@@ -303,6 +309,11 @@ mingw:
 
 lsp:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
+
+lsp-linux:
+	$(MAKE) "LSP_SRV_T=lxclua-lsp" "SYSLDFLAGS=-s" "SYSLIBS=" \
+	"CC=gcc -std=gnu11" "CFLAGS=-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" lxclua-lsp
+	strip --strip-unneeded lxclua-lsp || true
 
 mingw-static:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
@@ -550,7 +561,7 @@ LUA_WASM_EXPORTS=\
 	 "_free"]
 
 # Targets that do not create files (not all makes understand .PHONY).
-.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasm-minimal wasmlsp wasm-c wasm-c-all wasm-c-wasi lxclua-wasm release mingw-release linux-release macos-release wasm-release termux-release lsp
+.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasm-minimal wasmlsp wasm-c wasm-c-all wasm-c-wasi lxclua-wasm release mingw-release linux-release macos-release wasm-release termux-release lsp lsp-linux
 
 # 发行版打包配置
 RELEASE_NAME= lxclua

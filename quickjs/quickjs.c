@@ -59316,12 +59316,12 @@ static struct list_head js_atomics_waiter_list =
 #if defined(__aarch64__)
 static inline void cpu_pause(void)
 {
-    asm volatile("yield" ::: "memory");
+    __asm__ volatile("yield" ::: "memory");
 }
 #elif defined(__x86_64) || defined(__i386__)
 static inline void cpu_pause(void)
 {
-    asm volatile("pause" ::: "memory");
+    __asm__ volatile("pause" ::: "memory");
 }
 #else
 static inline void cpu_pause(void)
