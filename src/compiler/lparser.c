@@ -2844,7 +2844,6 @@ static void funcargs (LexState *ls, expdesc *f, int line) {
   expdesc args;
   int base, nparams;
   int nodiscard = f->nodiscard;
-
   switch (ls->t.token) {
     case '(': {  /* funcargs -> '(' [ explist ] ')' */
       luaX_next(ls);
@@ -3591,7 +3590,6 @@ static void suffixedexp (LexState *ls, expdesc *v) {
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
   int opt_jumps = NO_JUMP;
-
   primaryexp(ls, v);
   for (;;) {
     switch (ls->t.token) {
@@ -5189,9 +5187,10 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
   /* expand while operators have priorities higher than 'limit' */
   op = getbinopr(ls->t.token);
   /* 检测中缀函数调用: expr NAME expr => expr:NAME(expr)
-     要求方法名与表达式起始在同一行，防止跨行误检测 */
+     要求方法名与表达式起始在同一行，防止跨行误检测
+     且要求expression不是已完成的函数调用(VCALL) */
   if (op == OPR_NOBINOPR && ls->t.token == TK_NAME &&
-      ls->t.linenumber == expr_line) {
+      ls->t.linenumber == expr_line && v->k != VCALL) {
     int la = luaX_lookahead(ls);
     if (is_infix_expr_start(la) && is_same_line_infix(ls)) {
       op = OPR_INFIX;  /* 有参中缀 */
@@ -11918,7 +11917,6 @@ static void exprstat (LexState *ls) {
   /* stat -> func | assignment | compoundassign | increment | cmdcall | walrus */
   FuncState *fs = ls->fs;
   struct LHS_assign v;
-
   /* 优先尝试 Shell 风格命令调用 */
   if (try_command_call(ls)) {
     return;
@@ -11985,7 +11983,7 @@ static void exprstat (LexState *ls) {
        关键：使用语句起始行号 stmt_line，防止 suffixedexp 消费了后续行的 token
        导致 receiver_line 错误地指向后续行 */
     int receiver_line = stmt_line;
-    while (ls->t.token == TK_NAME) {
+    while (ls->t.token == TK_NAME && v.v.k != VCALL) {
       /* 方法名必须与 receiver 在同一行，防止跨行误检测 */
       if (ls->t.linenumber != receiver_line)
         break;
@@ -12116,7 +12114,6 @@ static int is_stmt_terminator (int token) {
 */
 static int try_command_call (LexState *ls) {
   FuncState *fs = ls->fs;
-  
   /* 检查是否是 TK_NAME 后面跟着参数 */
   if (ls->t.token != TK_NAME) {
     return 0;
