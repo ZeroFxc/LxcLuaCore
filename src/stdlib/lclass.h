@@ -23,6 +23,7 @@
 #define CLASS_FLAG_ABSTRACT   (1 << 1)   /**< Abstract class, cannot be instantiated. */
 #define CLASS_FLAG_INTERFACE  (1 << 2)   /**< Interface type. */
 #define CLASS_FLAG_SEALED     (1 << 3)   /**< Sealed class. */
+#define CLASS_FLAG_TRAIT      (1 << 4)   /**< Trait type (cannot be instantiated, provides default methods). */
 /**@}*/
 
 /** @name Access Control Levels */
@@ -66,6 +67,8 @@
 #define CLASS_KEY_PROTECTED_GETTERS "__protected_getters" /**< Protected getter table. */
 #define CLASS_KEY_PROTECTED_SETTERS "__protected_setters" /**< Protected setter table. */
 #define CLASS_KEY_MEMBER_FLAGS "__member_flags" /**< Member flags table. */
+#define CLASS_KEY_TRAITS       "__traits"       /**< Used traits table. */
+#define CLASS_KEY_TRAIT_REQUIRES "__trait_requires" /**< Required methods from traits. */
 /**@}*/
 
 /** @name Object Metadata Keys */
@@ -343,5 +346,43 @@ LUAI_FUNC void luaC_setmemberflags(lua_State *L, int class_idx, TString *name,
  * @brief Gets member flags.
  */
 LUAI_FUNC int luaC_getmemberflags(lua_State *L, int class_idx, TString *name);
+
+/*
+** =====================================================================
+** Trait/Mixin 系统函数
+** =====================================================================
+*/
+
+/**
+ * @brief Sets the trait flag on a table.
+ * @param L Lua state.
+ * @param trait_idx Stack index of the trait table.
+ */
+LUAI_FUNC void luaC_settraitflag(lua_State *L, int trait_idx);
+
+/**
+ * @brief Applies a trait to a class (copies methods, tracks requires).
+ * @param L Lua state.
+ * @param class_idx Stack index of the class.
+ * @param trait_idx Stack index of the trait.
+ */
+LUAI_FUNC void luaC_usetrait(lua_State *L, int class_idx, int trait_idx);
+
+/**
+ * @brief Registers a required method in a trait.
+ * @param L Lua state.
+ * @param trait_idx Stack index of the trait.
+ * @param name Method name.
+ * @param nparams Expected parameter count (-1 for no validation).
+ */
+LUAI_FUNC void luaC_settraitrequire(lua_State *L, int trait_idx, TString *name, int nparams);
+
+/**
+ * @brief Verifies all trait require methods are implemented.
+ * @param L Lua state.
+ * @param class_idx Stack index of the class.
+ * @return 1 on success, 0 on failure (with error).
+ */
+LUAI_FUNC int luaC_verify_trait_requires(lua_State *L, int class_idx);
 
 #endif

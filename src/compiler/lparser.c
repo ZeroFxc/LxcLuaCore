@@ -154,6 +154,7 @@ static int testtoken (LexState *ls, int c) {
 #define SOFTKW_CTX_EXPR         0x02  /* 表达式中（如 new） */
 #define SOFTKW_CTX_CLASS_BODY   0x04  /* 类体内部（如 private, protected） */
 #define SOFTKW_CTX_CLASS_INHERIT 0x08 /* 类继承上下文（如 extends, implements） */
+#define SOFTKW_CTX_TRAIT_BODY   0x10 /* trait体内部（如 require） */
 #define SOFTKW_CTX_ANY          0xFF  /* 任意上下文 */
 
 /*
@@ -184,6 +185,10 @@ typedef enum {
   SKW_NEW,
   SKW_SUPER,
   SKW_MATCH,
+  /* trait/mixin 相关 */
+  SKW_TRAIT,
+  SKW_USE,
+  SKW_REQUIRE,
   /* 总数 */
   SKW_COUNT
 } SoftKWID;
@@ -235,6 +240,12 @@ static SoftKWDef soft_keywords[] = {
   {"set",        SKW_SET,        SOFTKW_CTX_CLASS_BODY,    {TK_NAME, 0}, {'=', 0}, 0},
   /* static - 类体内，后面跟function或标识符名 */
   {"static",     SKW_STATIC,     SOFTKW_CTX_CLASS_BODY,    {TK_FUNCTION, TK_NAME, 0}, {'=', 0}, 0},
+  /* trait - 语句开头，后面必须跟trait名 */
+  {"trait",      SKW_TRAIT,      SOFTKW_CTX_STMT_BEGIN,    {TK_NAME, 0}, {'=', 0}, 0},
+  /* use - 类继承上下文，后面必须跟trait名 */
+  {"use",        SKW_USE,        SOFTKW_CTX_CLASS_INHERIT, {TK_NAME, 0}, {'=', 0}, 0},
+  /* require - trait体内，后面跟function */
+  {"require",    SKW_REQUIRE,    SOFTKW_CTX_TRAIT_BODY,    {TK_FUNCTION, 0}, {'=', 0}, 0},
   {"match",      SKW_MATCH,      SOFTKW_CTX_STMT_BEGIN | SOFTKW_CTX_EXPR,    {TK_NAME, '{', '[', TK_STRING, TK_INT, TK_FLT, TK_TRUE, TK_FALSE, TK_NIL, '(', TK_NOT, '-', '#', TK_FUNCTION, 0}, {'=', '.', ':', '(', 0}, 0},
   /* 结束标记 */
   {NULL,         SKW_NONE,       0,                         {0}, {0}, 0}
@@ -10876,6 +10887,18 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
     } while (testnext(ls, ','));
   }
   
+  /* 检查是否使用trait（软关键字 use） */
+  if (softkw_testnext(ls, SKW_USE, SOFTKW_CTX_CLASS_INHERIT)) {
+    do {
+      expdesc trait_exp;
+      expr(ls, &trait_exp);
+      luaK_exp2nextreg(fs, &trait_exp);
+      /* 生成 OP_USETRAIT 指令: R[class_reg] use R[trait_reg] */
+      luaK_codeABC(fs, OP_USETRAIT, class_reg, trait_exp.u.info, 0);
+      fs->freereg--;
+    } while (testnext(ls, ','));
+  }
+  
   int has_brace = testnext(ls, '{');
   if (!has_brace) testnext(ls, TK_DO); /* Optional Universal Block Opener */
 
@@ -11028,6 +11051,124 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
   apply_decorators_inline(ls, &v, &class_exp);
   luaK_storevar(fs, &v, &class_exp);
   
+  luaK_fixline(fs, line);
+}
+
+
+/*
+** 解析trait定义语句
+** 参数：
+**   ls - 词法状态
+**   line - 起始行号
+** 语法：
+**   trait TraitName
+**     function methodName(self, ...)
+**       -- 默认实现
+**     end
+**     require function methodName(self, ...): returnType
+**   end
+*/
+static void traitstat(LexState *ls, int line, int isexport) {
+  FuncState *fs = ls->fs;
+  expdesc trait_exp, v;
+  TString *traitname;
+  int trait_reg;
+
+  luaX_next(ls);  /* 跳过 'trait' */
+
+  /* 获取trait名 */
+  traitname = str_checkname(ls);
+
+  /* 创建trait表 */
+  trait_reg = fs->freereg;
+  luaK_reserveregs(fs, 1);
+
+  /* 使用 NEWCLASS 创建trait（trait本质上是一个不能实例化的类） */
+  int traitname_k = luaK_stringK(fs, traitname);
+  luaK_codeABx(fs, OP_NEWCLASS, trait_reg, traitname_k);
+
+  /* 设置trait标志 */
+  luaK_codeABC(fs, OP_SETTRAITFLAG, trait_reg, 0, 0);
+
+  /* 解析trait体 */
+  while (!testnext(ls, TK_END)) {
+    if (ls->t.token == TK_EOS) {
+      luaX_syntaxerror(ls, "期望 'end' 来结束trait定义");
+      break;
+    }
+
+    /* 检查是否是require关键字 */
+    int is_require = softkw_testnext(ls, SKW_REQUIRE, SOFTKW_CTX_TRAIT_BODY);
+
+    if (ls->t.token == TK_FUNCTION) {
+      luaX_next(ls);  /* 跳过 'function' */
+
+      TString *method_name = str_checkname(ls);
+
+      if (is_require) {
+        /* require方法: 声明方法签名，不提供实现 */
+        checknext(ls, '(');
+        /* 解析参数列表并计算参数个数 */
+        int param_count = 0;
+        while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+          if (ls->t.token == TK_NAME) {
+            param_count++;
+          }
+          luaX_next(ls);
+        }
+        checknext(ls, ')');
+        /* 可选返回类型 */
+        if (ls->t.token == ':') {
+          luaX_next(ls);  /* 跳过 ':' */
+          if (is_type_token(ls->t.token)) {
+            luaX_next(ls);  /* 跳过返回类型 */
+          }
+        }
+
+        /* 生成 SETTRAITREQUIRE 指令 */
+        int method_k = luaK_stringK(fs, method_name);
+        luaK_codeABC(fs, OP_SETTRAITREQUIRE, trait_reg, method_k, param_count);
+      } else {
+        /* 普通方法: 编译函数体 */
+        /* 创建闭包函数 */
+        int has_params = 0;
+        /* 检查参数列表 */
+        if (ls->t.token == '(') {
+          has_params = 1;
+        }
+
+        /* 创建方法函数体 */
+        expdesc method;
+        body(ls, &method, 0, ls->linenumber);
+
+        /* 将方法添加到trait */
+        luaK_exp2nextreg(fs, &method);
+        int method_k = luaK_stringK(fs, method_name);
+        luaK_codeABC(fs, OP_SETMETHOD, trait_reg, method_k, method.u.info);
+        fs->freereg = trait_reg + 1;  /* 释放方法寄存器 */
+      }
+    }
+    else if (ls->t.token == ';') {
+      luaX_next(ls);
+    }
+    else {
+      luaX_syntaxerror(ls, "trait中只能定义方法");
+    }
+  }
+
+  /* 将trait存储到变量中 */
+  if (isexport) {
+     new_localvar(ls, traitname);
+     add_export(ls, traitname);
+     adjustlocalvars(ls, 1);
+     init_var(fs, &v, fs->nactvar - 1);
+  } else {
+     buildglobal(ls, traitname, &v);
+  }
+  init_exp(&trait_exp, VNONRELOC, trait_reg);
+  apply_decorators_inline(ls, &v, &trait_exp);
+  luaK_storevar(fs, &v, &trait_exp);
+
   luaK_fixline(fs, line);
 }
 
@@ -13147,6 +13288,10 @@ void statement (LexState *ls) {
           /* interface export */
           interfacestat(ls, line, 1);
         }
+        else if (skw == SKW_TRAIT) {
+          /* trait export */
+          traitstat(ls, line, 1);
+        }
         else if (ls->t.token == TK_NAME) {
           localstat(ls, 1);
         }
@@ -13261,6 +13406,11 @@ void statement (LexState *ls) {
       else if (skw == SKW_INTERFACE) {
         /* interface 作为软关键字，触发接口定义解析 */
         interfacestat(ls, line, 0);
+        break;
+      }
+      else if (skw == SKW_TRAIT) {
+        /* trait 作为软关键字，触发trait定义解析 */
+        traitstat(ls, line, 0);
         break;
       }
       else if (skw == SKW_ABSTRACT) {

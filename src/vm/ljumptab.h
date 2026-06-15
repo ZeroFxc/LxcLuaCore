@@ -126,6 +126,10 @@ static const void *const disptab[NUM_OPCODES] = {
 &&L_OP_SETIFACEFLAG,
 &&L_OP_ADDMETHOD,
 &&L_OP_IN,
+/* Trait/Mixin 系统操作码 */
+&&L_OP_SETTRAITFLAG,
+&&L_OP_SETTRAITREQUIRE,
+&&L_OP_USETRAIT,
 &&L_OP_SLICE,
 &&L_OP_NOP,
 &&L_OP_CASE,

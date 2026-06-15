@@ -1335,6 +1335,9 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
   /* 验证所有接口方法都已正确实现（包括参数数量验证） */
   luaC_verify_interfaces(L, class_idx);
   
+  /* 验证所有trait require方法都已实现 */
+  luaC_verify_trait_requires(L, class_idx);
+  
   /* 创建对象表 */
   lua_newtable(L);
   int obj_idx = lua_gettop(L);
@@ -2717,4 +2720,255 @@ int luaC_getmemberflags(lua_State *L, int class_idx, TString *name) {
   int flags = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 0;
   lua_pop(L, 2);
   return flags;
+}
+
+
+/*
+** =====================================================================
+** Trait/Mixin 系统实现
+** =====================================================================
+*/
+
+/*
+** 设置trait标志
+** 参数：
+**   L - Lua状态机
+**   trait_idx - trait表在栈中的索引
+** 说明：
+**   将表标记为trait，trait不能实例化但可以use
+*/
+void luaC_settraitflag(lua_State *L, int trait_idx) {
+  trait_idx = absindex(L, trait_idx);
+
+  /* 获取当前flags */
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_rawget(L, trait_idx);
+  int flags = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 0;
+  lua_pop(L, 1);
+
+  /* 设置trait标志 */
+  flags |= CLASS_FLAG_TRAIT;
+
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_pushinteger(L, flags);
+  lua_rawset(L, trait_idx);
+}
+
+/*
+** 注册trait中需要被实现的方法
+** 参数：
+**   L - Lua状态机
+**   trait_idx - trait表在栈中的索引
+**   name - 方法名
+**   nparams - 期望参数个数（-1表示不验证）
+** 说明：
+**   require方法必须被use该trait的类实现
+*/
+void luaC_settraitrequire(lua_State *L, int trait_idx, TString *name, int nparams) {
+  trait_idx = absindex(L, trait_idx);
+
+  /* 获取或创建trait_requires表 */
+  lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+  lua_rawget(L, trait_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+    lua_insert(L, -2);
+    lua_rawset(L, trait_idx);
+  }
+
+  /* 设置方法名和参数个数 */
+  lua_pushlstring(L, getstr(name), tsslen(name));
+  lua_pushinteger(L, nparams);
+  lua_rawset(L, -3);
+  lua_pop(L, 1);
+}
+
+/*
+** 将trait应用到类（复制方法，跟踪require）
+** 参数：
+**   L - Lua状态机
+**   class_idx - 类在栈中的索引
+**   trait_idx - trait在栈中的索引
+** 说明：
+**   1. 复制trait的公开方法到类（类已有的方法不覆盖）
+**   2. 收集trait的require方法到类的__trait_requires表
+**   3. 记录trait到类的__traits表
+*/
+void luaC_usetrait(lua_State *L, int class_idx, int trait_idx) {
+  class_idx = absindex(L, class_idx);
+  trait_idx = absindex(L, trait_idx);
+
+  /* 检查trait是否有效 */
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_rawget(L, trait_idx);
+  int flags = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 0;
+  lua_pop(L, 1);
+  if (!(flags & CLASS_FLAG_TRAIT)) {
+    luaL_error(L, "use的目标必须是trait");
+    return;
+  }
+
+  /* 1. 复制trait的公开方法到类 */
+  lua_pushstring(L, CLASS_KEY_METHODS);
+  lua_rawget(L, trait_idx);
+  if (lua_istable(L, -1)) {
+    int trait_methods = lua_gettop(L);
+
+    /* 获取类的公开方法表 */
+    lua_pushstring(L, CLASS_KEY_METHODS);
+    lua_rawget(L, class_idx);
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 1);
+      lua_newtable(L);
+      lua_pushvalue(L, -1);
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_insert(L, -2);
+      lua_rawset(L, class_idx);
+    }
+    int class_methods = lua_gettop(L);
+
+    /* 复制方法（类已有的方法不覆盖） */
+    lua_pushnil(L);
+    while (lua_next(L, trait_methods) != 0) {
+      /* 栈: key, value */
+      lua_pushvalue(L, -2);  /* 复制key */
+      lua_rawget(L, class_methods);
+      if (lua_isnil(L, -1)) {
+        /* 类没有这个方法，从trait复制 */
+        lua_pop(L, 1);  /* 移除nil */
+        lua_pushvalue(L, -2);  /* key */
+        lua_pushvalue(L, -2);  /* value */
+        lua_rawset(L, class_methods);
+      } else {
+        lua_pop(L, 1);  /* 移除已有的值 */
+      }
+      lua_pop(L, 1);  /* 移除value */
+    }
+
+    lua_pop(L, 1);  /* 移除class_methods */
+  }
+  lua_pop(L, 1);  /* 移除trait_methods */
+
+  /* 2. 收集trait的require方法到类的__trait_requires表 */
+  lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+  lua_rawget(L, trait_idx);
+  if (lua_istable(L, -1)) {
+    int trait_requires = lua_gettop(L);
+
+    /* 获取或创建类的trait_requires表 */
+    lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+    lua_rawget(L, class_idx);
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 1);
+      lua_newtable(L);
+      lua_pushvalue(L, -1);
+      lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+      lua_insert(L, -2);
+      lua_rawset(L, class_idx);
+    }
+    int class_requires = lua_gettop(L);
+
+    /* 复制所有require方法 */
+    lua_pushnil(L);
+    while (lua_next(L, trait_requires) != 0) {
+      lua_pushvalue(L, -2);  /* key */
+      lua_pushvalue(L, -2);  /* value */
+      lua_rawset(L, class_requires);
+      lua_pop(L, 1);  /* 移除value */
+    }
+
+    lua_pop(L, 1);  /* 移除class_requires */
+  }
+  lua_pop(L, 1);  /* 移除trait_requires */
+
+  /* 3. 记录trait到类的__traits表 */
+  lua_pushstring(L, CLASS_KEY_TRAITS);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_pushstring(L, CLASS_KEY_TRAITS);
+    lua_insert(L, -2);
+    lua_rawset(L, class_idx);
+  }
+
+  /* 添加trait到列表 */
+  int n = (int)lua_rawlen(L, -1);
+  lua_pushvalue(L, trait_idx);
+  lua_rawseti(L, -2, n + 1);
+  lua_pop(L, 1);
+}
+
+
+/*
+** 验证所有trait require方法是否都被类实现
+** 参数：
+**   L - Lua状态机
+**   class_idx - 类在栈中的索引
+** 返回值：
+**   1 - 所有require方法都已实现
+**   0 - 存在未实现的方法（会产生错误）
+** 说明：
+**   遍历类的__trait_requires表，验证每个方法是否在类中实现
+*/
+int luaC_verify_trait_requires(lua_State *L, int class_idx) {
+  class_idx = absindex(L, class_idx);
+
+  /* 如果类本身是抽象类，不需要验证 */
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_rawget(L, class_idx);
+  if (lua_isinteger(L, -1)) {
+    int flags = (int)lua_tointeger(L, -1);
+    if (flags & CLASS_FLAG_ABSTRACT) {
+      lua_pop(L, 1);
+      return 1;
+    }
+  }
+  lua_pop(L, 1);
+
+  /* 获取trait_requires表 */
+  lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    return 1;  /* 没有require方法需要验证 */
+  }
+  int requires_idx = lua_gettop(L);
+
+  /* 遍历所有require方法 */
+  lua_pushnil(L);
+  while (lua_next(L, requires_idx) != 0) {
+    /* 栈顶: value(期望参数个数), key(方法名) */
+    int expected_params = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : -1;
+    lua_pop(L, 1);  /* 移除value，保留key用于查找 */
+
+    /* 获取实现方法的参数个数 */
+    int actual_params = get_method_numparams(L, class_idx, lua_gettop(L));
+
+    if (actual_params < 0) {
+      /* 方法未实现 */
+      const char *classname = get_class_name_str(L, class_idx);
+      const char *methodname = lua_tostring(L, -1);
+      luaL_error(L, "类 '%s' 必须实现trait的require方法 '%s'",
+                 classname, methodname ? methodname : "?");
+      return 0;
+    }
+
+    /* 验证参数数量是否匹配 */
+    if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
+      const char *classname = get_class_name_str(L, class_idx);
+      const char *methodname = lua_tostring(L, -1);
+      luaL_error(L, "类 '%s' 的方法 '%s' 参数数量不匹配trait要求: 期望 %d 个参数，实际 %d 个参数",
+                 classname, methodname ? methodname : "?",
+                 expected_params, actual_params);
+      return 0;
+    }
+  }
+
+  lua_pop(L, 1);  /* 移除requires表 */
+  return 1;
 }

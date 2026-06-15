@@ -3651,6 +3651,56 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         }
         vmbreak;
       }
+      vmcase(OP_SETTRAITFLAG) {
+        /*
+        ** Set trait flag
+        ** Format: OP_SETTRAITFLAG A
+        ** Function: Mark R[A] as a trait
+        */
+        StkId ra = RA(i);
+        savestate(L, ci);
+        setobj2s(L, L->top.p, s2v(ra));
+        L->top.p++;
+        luaC_settraitflag(L, -1);
+        L->top.p--;
+        updatetrap(ci);
+        vmbreak;
+      }
+      vmcase(OP_SETTRAITREQUIRE) {
+        /*
+        ** Register a required method in a trait
+        ** Format: OP_SETTRAITREQUIRE A B C
+        ** Function: R[A].__trait_requires[K[B]] := C (param count)
+        */
+        StkId ra = RA(i);
+        TString *method_name = tsvalue(&k[GETARG_B(i)]);
+        int param_count = GETARG_C(i);
+        savestate(L, ci);
+        setobj2s(L, L->top.p, s2v(ra));
+        L->top.p++;
+        luaC_settraitrequire(L, -1, method_name, param_count);
+        L->top.p--;
+        updatetrap(ci);
+        vmbreak;
+      }
+      vmcase(OP_USETRAIT) {
+        /*
+        ** Use a trait (copy methods to class)
+        ** Format: OP_USETRAIT A B
+        ** Function: R[A] use R[B]
+        */
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        savestate(L, ci);
+        setobj2s(L, L->top.p, s2v(ra));
+        L->top.p++;
+        setobj2s(L, L->top.p, rb);
+        L->top.p++;
+        luaC_usetrait(L, -2, -1);
+        L->top.p -= 2;
+        updatetrap(ci);
+        vmbreak;
+      }
       vmcase(OP_IN) {
         StkId ra = RA(i);
         TValue *a = vRB(i);
