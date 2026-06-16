@@ -700,7 +700,6 @@ static void laio_promise_settled(promise *p) {
         lua_pushnil(ctx->co);
         nargs = 1;
     }
-
     int nres;
     int status = lua_resume(ctx->co, ctx->L_main, nargs, &nres);
     
@@ -722,8 +721,31 @@ static void laio_promise_settled(promise *p) {
         /* 协程正常结束：清理上下文 */
         luaL_unref(ctx->L_main, LUA_REGISTRYINDEX, ctx->co_ref);
         free_coroutine_context(ctx);
+        } else {
+        /* LUA_YIELD：协程再次挂起（连续的 await）
+         * 协程栈顶是新 yield 出来的 Promise，需要注册回调 */
+        int yield_results = lua_gettop(ctx->co);
+        if (yield_results > 0) {
+            promise **pp = (promise **)luaL_testudata(ctx->co, -1, PROMISE_METATABLE);
+            if (pp && *pp) {
+                promise *yielded_p = *pp;
+                /* 释放旧 Promise 引用，持有新 Promise */
+                if (ctx->waiting_p) promise_release(ctx->waiting_p);
+                ctx->waiting_p = promise_retain(yielded_p);
+
+                /* 注册 settle 回调 */
+                yielded_p->aco_ctx = ctx;
+                yielded_p->on_settled = laio_promise_settled;
+
+                lua_pop(ctx->co, 1);  /* 清理协程栈 */
+
+                /* 如果已 settle，立即触发 */
+                if (promise_is_settled(yielded_p)) {
+                    laio_promise_settled(yielded_p);
+                }
+            }
         }
-        /* 如果是 yield，ctx 继续使用，由新的 await 调用处理清理 */
+        }
     } else {
         /* 协程出错 */
         const char *errmsg = lua_tostring(ctx->co, -1);
@@ -895,6 +917,11 @@ promise *aio_run_async(lua_State *L, event_loop *loop) {
                     yielded_p->on_settled = laio_promise_settled;
 
                     lua_pop(co_L, 1);  /* 清理协程栈上的 Promise */
+
+                    /* 如果 Promise 已经 settle，on_settled 不会自动触发，需立即处理 */
+                    if (promise_is_settled(yielded_p)) {
+                        laio_promise_settled(yielded_p);
+                    }
                 } else {
                     /* yield 出来的不是 Promise：当作普通值恢复协程 */
                     /* 这种情况不应该发生在正常的 await 中，但为了健壮性处理 */
