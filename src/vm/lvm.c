@@ -176,12 +176,15 @@ static int lvm_async_start(lua_State *L) {
         lua_getfield(L, -1, "run_async_internal");  /* aio_run_async 的 Lua 包装 */
 
         if (lua_isfunction(L, -1)) {
-            /* 将函数和所有参数移动到正确位置 */
-            lua_insert(L, 1);  /* run_async_internal 移到位置 1 */
-            lua_remove(L, 2);  /* 移除 asyncio 表 */
+            /* 栈布局: [func_body, ..., asyncio表, run_async_internal]
+             * 需要重组为: [run_async_internal, func_body, ...]
+             * 调用 run_async_internal(func_body, arg1, arg2, ...) */
+            lua_insert(L, 1);  /* [run_async_internal, func_body, ..., asyncio表] */
+            lua_pop(L, 1);     /* 移除栈顶的 asyncio 表 */
 
-            /* 调用: run_async_internal(func, arg1, arg2, ...) */
-            lua_call(L, n, 1);  /* n 个参数，返回 1 个值 (Promise) */
+            /* 调用: run_async_internal(func_body, arg1, ...)
+             * n+1 = 1(func_body) + n(user_args) 个参数 */
+            lua_call(L, n + 1, 1);  /* 返回 1 个值 (Promise) */
             return 1;
         } else {
             /* run_async_internal 不存在，回退到简单模式 */

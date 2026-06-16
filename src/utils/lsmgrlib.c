@@ -313,7 +313,7 @@ static void find_files_recursive(const char *base_path, const char *pattern, int
     if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && recursive) {
       find_files_recursive(entry_path, pattern, recursive, L, result_table);
     }
-  } while (FindNextFile(hFind, &findData));
+  } while (FindNextFileW(hFind, &findData));
   
   /* 关闭搜索句柄 */
   FindClose(hFind);
@@ -612,7 +612,7 @@ static int smgr_listfiles (lua_State *L) {
       /* 将条目添加到结果表 */
       lua_rawseti(L, -2, index++);
     }
-  } while (FindNextFile(hFind, &findData));
+  } while (FindNextFileW(hFind, &findData));
   
   /* 关闭搜索句柄 */
   FindClose(hFind);

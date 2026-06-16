@@ -5162,11 +5162,28 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
   if (uop != OPR_NOUNOPR) {  /* prefix (unary) operator? */
     int line = ls->linenumber;
     luaX_next(ls);  /* skip operator */
+    int saved_freereg = ls->fs->freereg;  /* 保存 await 之前的 freereg，作为结果寄存器 */
     subexpr(ls, v, UNARY_PRIORITY);
     if (uop == OPR_AWAIT) {
+        /* await 表达式：编译为 coroutine.yield(expr)
+         * 使用 saved_freereg 作为结果寄存器，确保与 adjustlocalvars 分配的寄存器一致
+         * 寄存器分配策略：
+         *   result_reg     = coroutine.yield 函数 + CALL 结果
+         *   result_reg + 1 = Promise 参数
+         *   result_reg + 2 = coroutine 表（临时）
+         * 先移动 Promise 参数，再加载 coroutine 到高寄存器，避免覆盖 */
         FuncState *fs = ls->fs;
+        int result_reg = saved_freereg;  /* 结果寄存器 == local 变量将被分配的寄存器 */
+
+        /* 先将 Promise 参数移到 result_reg + 1 */
+        luaK_exp2reg(fs, v, result_reg + 1);
+
+        /* 确保 coroutine 表加载到 result_reg + 2 或更高，避免与参数冲突 */
+        if (fs->freereg <= result_reg + 1)
+            fs->freereg = result_reg + 2;
+
+        /* 获取 coroutine.yield，加载到高寄存器 */
         expdesc f;
-        /* Get coroutine.yield */
         singlevaraux(fs, luaS_newliteral(ls->L, "coroutine"), &f, 1);
         if (f.k == VVOID) {
             expdesc key;
@@ -5174,19 +5191,21 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
             codestring(&key, luaS_newliteral(ls->L, "coroutine"));
             luaK_indexed(fs, &f, &key);
         }
-        luaK_exp2anyreg(fs, &f);
+        luaK_exp2nextreg(fs, &f);  /* coroutine → 高寄存器（>= result_reg + 2） */
         expdesc key;
         codestring(&key, luaS_newliteral(ls->L, "yield"));
-        luaK_indexed(fs, &f, &key);
+        luaK_indexed(fs, &f, &key);  /* f 变成 coroutine["yield"] (VINDEXSTR) */
 
-        luaK_exp2nextreg(fs, &f);
-        int func_reg = f.u.info;
+        /* 将 coroutine.yield 加载到 result_reg（函数寄存器） */
+        luaK_exp2reg(fs, &f, result_reg);
 
-        luaK_exp2nextreg(fs, v);
-        int arg_reg = v->u.info;
+        /* 确保 freereg 至少为 result_reg + 2 */
+        if (fs->freereg <= result_reg + 1)
+            fs->freereg = result_reg + 2;
 
-        init_exp(v, VCALL, luaK_codeABC(fs, OP_CALL, func_reg, 2, 2));
-        fs->freereg = func_reg + 1;
+        /* CALL result_reg(result_reg+1), 结果在 result_reg, 1个返回值 */
+        init_exp(v, VCALL, luaK_codeABC(fs, OP_CALL, result_reg, 2, 2));
+        fs->freereg = result_reg + 1;  /* 只有结果存活 */
         luaK_fixline(fs, line);
     } else {
         luaK_prefix(ls->fs, uop, v, line);
@@ -7235,25 +7254,23 @@ static void localfunc (LexState *ls, int isexport, int isasync) {
   body(ls, &b, 0, ls->linenumber);  /* function created in next register */
 
   if (isasync) {
-      expdesc wrap;
-      singlevaraux(fs, luaS_newliteral(ls->L, "__async_wrap"), &wrap, 1);
-      if (wrap.k == VVOID) {
-          expdesc key;
-          singlevaraux(fs, ls->envn, &wrap, 1);
-          codestring(&key, luaS_newliteral(ls->L, "__async_wrap"));
-          luaK_indexed(fs, &wrap, &key);
-      }
-
+      FuncState *fs = ls->fs;
+      /* 使用 OP_ASYNCWRAP 创建异步包装器（与 funcstat 一致） */
       int func_reg = fs->freereg;
       luaK_reserveregs(fs, 1);
-      luaK_exp2reg(fs, &wrap, func_reg);
 
-      int arg_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-      luaK_exp2reg(fs, &b, arg_reg);
+      /* body() 生成的函数值在下一个寄存器 */
+      luaK_exp2nextreg(fs, &b);
+      int b_reg = b.u.info;
 
-      init_exp(&b, VCALL, luaK_codeABC(fs, OP_CALL, func_reg, 2, 2));
-      fs->freereg = func_reg + 1;
+      /* OP_ASYNCWRAP R[func_reg] := lvm_async_start(R[b_reg]) */
+      luaK_codeABC(fs, OP_ASYNCWRAP, func_reg, b_reg, 0);
+
+      /* 将 C closure 包装结果移动到局部变量寄存器 fvar */
+      if (fvar != func_reg)
+        luaK_codeABC(fs, OP_MOVE, fvar, func_reg, 0);
+
+      fs->freereg = fvar + 1;
   }
 
   if (fs->f->p[fs->np - 1]->nodiscard) {
@@ -13215,6 +13232,44 @@ void statement (LexState *ls) {
           funcstat(ls, line, 1);
       } else {
           luaX_syntaxerror(ls, "expected 'function' after 'async'");
+      }
+      break;
+    }
+    case TK_AWAIT: {  /* stat -> await expr */
+      /* 将 await expr 编译为 coroutine.yield(expr)，丢弃返回值 */
+      luaX_next(ls);  /* 跳过 await */
+      {
+        expdesc v;
+        expr(ls, &v);  /* 解析 await 的参数表达式 */
+        FuncState *fs = ls->fs;
+        /* 获取 coroutine.yield */
+        expdesc f;
+        singlevaraux(fs, luaS_newliteral(ls->L, "coroutine"), &f, 1);
+        if (f.k == VVOID) {
+          expdesc key;
+          singlevaraux(fs, ls->envn, &f, 1);
+          codestring(&key, luaS_newliteral(ls->L, "coroutine"));
+          luaK_indexed(fs, &f, &key);
+        }
+        /* 将 coroutine 表解析到寄存器中，确保后续 luaK_indexed("yield") 能正确工作 */
+        luaK_exp2anyreg(fs, &f);
+        expdesc key;
+        codestring(&key, luaS_newliteral(ls->L, "yield"));
+        luaK_indexed(fs, &f, &key);
+
+        /* 显式预留2个寄存器，在 v 的寄存器之后分配，避免寄存器冲突
+         * v 可能是 VCALL（如 asyncio.sleep(0.01)），其 CALL 结果寄存器
+         * 可能与 coroutine.yield 的寄存器重叠 */
+        luaK_reserveregs(fs, 2);
+        int func_reg = fs->freereg - 2;  /* coroutine.yield */
+        int arg_reg = fs->freereg - 1;   /* Promise 参数 */
+
+        luaK_exp2reg(fs, &f, func_reg);
+        luaK_exp2reg(fs, &v, arg_reg);
+
+        luaK_codeABC(fs, OP_CALL, func_reg, 2, 1);  /* 1 arg, 0 results (C=1) */
+        fs->freereg = func_reg;
+        luaK_fixline(fs, line);
       }
       break;
     }
