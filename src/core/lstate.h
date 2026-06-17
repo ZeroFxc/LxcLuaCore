@@ -223,6 +223,7 @@ struct CallInfo {
 #define CIST_FIN	(1<<7)	/**< Function "called" a finalizer. */
 #define CIST_TRAN	(1<<8)	/**< 'ci' has transfer information. */
 #define CIST_CLSRET	(1<<9)  /**< Function is closing tbc variables. */
+#define CIST_AWAIT	(1<<14) /**< OP_AWAIT 语法级 yield（纯 VM 指令，不走函数调用） */
 /** @} */
 
 /* Bits 10-12 are used for CIST_RECST (see below) */

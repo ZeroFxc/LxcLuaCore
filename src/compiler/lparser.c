@@ -5062,6 +5062,21 @@ static int is_same_line_infix (LexState *ls) {
 
 
 /*
+** 判断操作符是否为比较运算符
+** 用于链式比较语法糖: a < b < c => (a < b) and (b < c)
+*/
+static int is_comparison_op (BinOpr op) {
+  switch (op) {
+    case OPR_EQ: case OPR_LT: case OPR_LE:
+    case OPR_NE: case OPR_GT: case OPR_GE:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+
+/*
 ** subexpr -> (simpleexp | unop subexpr) { binop subexpr }
 ** where 'binop' is any binary operator with a priority higher than 'limit'
 */
@@ -5165,46 +5180,19 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
     int saved_freereg = ls->fs->freereg;  /* 保存 await 之前的 freereg，作为结果寄存器 */
     subexpr(ls, v, UNARY_PRIORITY);
     if (uop == OPR_AWAIT) {
-        /* await 表达式：编译为 coroutine.yield(expr)
-         * 使用 saved_freereg 作为结果寄存器，确保与 adjustlocalvars 分配的寄存器一致
-         * 寄存器分配策略：
-         *   result_reg     = coroutine.yield 函数 + CALL 结果
-         *   result_reg + 1 = Promise 参数
-         *   result_reg + 2 = coroutine 表（临时）
-         * 先移动 Promise 参数，再加载 coroutine 到高寄存器，避免覆盖 */
+        /* await 表达式：编译为 OP_AWAIT 指令（纯语法级，不依赖 coroutine.yield）
+         * OP_AWAIT A B: R[A] = await(R[B])
+         *   result_reg     = 结果寄存器（与 adjustlocalvars 对齐）
+         *   result_reg + 1 = Promise 参数 */
         FuncState *fs = ls->fs;
         int result_reg = saved_freereg;  /* 结果寄存器 == local 变量将被分配的寄存器 */
 
-        /* 先将 Promise 参数移到 result_reg + 1 */
+        /* 将 Promise 参数移到 result_reg + 1 */
         luaK_exp2reg(fs, v, result_reg + 1);
 
-        /* 确保 coroutine 表加载到 result_reg + 2 或更高，避免与参数冲突 */
-        if (fs->freereg <= result_reg + 1)
-            fs->freereg = result_reg + 2;
-
-        /* 获取 coroutine.yield，加载到高寄存器 */
-        expdesc f;
-        singlevaraux(fs, luaS_newliteral(ls->L, "coroutine"), &f, 1);
-        if (f.k == VVOID) {
-            expdesc key;
-            singlevaraux(fs, ls->envn, &f, 1);
-            codestring(&key, luaS_newliteral(ls->L, "coroutine"));
-            luaK_indexed(fs, &f, &key);
-        }
-        luaK_exp2nextreg(fs, &f);  /* coroutine → 高寄存器（>= result_reg + 2） */
-        expdesc key;
-        codestring(&key, luaS_newliteral(ls->L, "yield"));
-        luaK_indexed(fs, &f, &key);  /* f 变成 coroutine["yield"] (VINDEXSTR) */
-
-        /* 将 coroutine.yield 加载到 result_reg（函数寄存器） */
-        luaK_exp2reg(fs, &f, result_reg);
-
-        /* 确保 freereg 至少为 result_reg + 2 */
-        if (fs->freereg <= result_reg + 1)
-            fs->freereg = result_reg + 2;
-
-        /* CALL result_reg(result_reg+1), 结果在 result_reg, 1个返回值 */
-        init_exp(v, VCALL, luaK_codeABC(fs, OP_CALL, result_reg, 2, 2));
+        /* OP_AWAIT result_reg, result_reg+1 — VM 直接处理，无需运行时查表 */
+        luaK_codeABC(fs, OP_AWAIT, result_reg, result_reg + 1, 0);
+        init_exp(v, VNONRELOC, result_reg);  /* 结果在 result_reg 中 */
         fs->freereg = result_reg + 1;  /* 只有结果存活 */
         luaK_fixline(fs, line);
     } else {
@@ -5297,7 +5285,93 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
       luaK_infix(ls->fs, op, v);
       /* read sub-expression with higher priority */
       nextop = subexpr(ls, &v2, priority[op].right);
+      /* 链式比较检测: a < b < c => (a < b) and (b < c) */
+      int is_chain = is_comparison_op(op) && is_comparison_op(nextop);
+      int chain_val_reg = 0;
+      int result_reg = 0;
+      if (is_chain) {
+        /* 保存结果应该去的寄存器，luaK_exp2nextreg 会抢占 freereg */
+        result_reg = ls->fs->freereg;
+        /* 保存比较的右操作数到临时寄存器，用于后续链式比较 */
+        luaK_exp2nextreg(ls->fs, &v2);
+        chain_val_reg = v2.u.info;
+      }
       luaK_posfix(ls->fs, op, v, &v2, line);
+      if (is_chain) {
+        /* 保护 result_reg 和 chain_val_reg 不被 luaK_posfix 释放的寄存器覆盖 */
+        if (ls->fs->freereg <= result_reg)
+          ls->fs->freereg = result_reg + 1;
+        if (ls->fs->freereg <= chain_val_reg)
+          ls->fs->freereg = chain_val_reg + 1;
+        /* v 现在是第一个比较的布尔结果，保存到临时寄存器 */
+        luaK_exp2nextreg(ls->fs, v);
+        int bool_reg = v->u.info;
+        op = nextop;
+        /* 处理链式比较: 每个后续比较都与累积的布尔结果做 AND */
+        while (is_comparison_op(op)) {
+          luaX_next(ls);  /* 跳过比较运算符 */
+          int line_n = ls->linenumber;
+          /* 解析右侧操作数 */
+          expdesc rc;
+          nextop = subexpr(ls, &rc, priority[op].right);
+          int chain_continues = is_comparison_op(nextop);
+          int next_chain_reg = 0;
+          if (chain_continues) {
+            /* 保存 rc 用于下一个比较的左操作数，在 posfix 释放前保存 */
+            luaK_exp2nextreg(ls->fs, &rc);
+            next_chain_reg = rc.u.info;
+          }
+          /* 生成: chain_val_reg cmp rc */
+          {
+            expdesc lc;
+            init_exp(&lc, VNONRELOC, chain_val_reg);
+            luaK_infix(ls->fs, op, &lc);
+            luaK_posfix(ls->fs, op, &lc, &rc, line_n);
+            /* 保护 bool_reg、result_reg 和 next_chain_reg 不被 freeexps 释放的寄存器覆盖 */
+            if (ls->fs->freereg <= bool_reg)
+              ls->fs->freereg = bool_reg + 1;
+            if (ls->fs->freereg <= result_reg)
+              ls->fs->freereg = result_reg + 1;
+            if (chain_continues && ls->fs->freereg <= next_chain_reg)
+              ls->fs->freereg = next_chain_reg + 1;
+            /* lc 现在是比较结果 (布尔值) */
+            luaK_exp2nextreg(ls->fs, &lc);
+            /* 与累积的布尔结果做 AND */
+            expdesc ba;
+            init_exp(&ba, VNONRELOC, bool_reg);
+            luaK_infix(ls->fs, OPR_AND, &ba);
+            luaK_posfix(ls->fs, OPR_AND, &ba, &lc, line_n);
+            /* ba 现在是布尔表达式，转存到 bool_reg 保持累积结果在同一寄存器 */
+            /* 保护 bool_reg、result_reg 和 next_chain_reg 不被 freeexps 释放的寄存器覆盖 */
+            if (ls->fs->freereg <= bool_reg)
+              ls->fs->freereg = bool_reg + 1;
+            if (ls->fs->freereg <= result_reg)
+              ls->fs->freereg = result_reg + 1;
+            if (chain_continues && ls->fs->freereg <= next_chain_reg)
+              ls->fs->freereg = next_chain_reg + 1;
+            luaK_exp2reg(ls->fs, &ba, bool_reg);
+          }
+          if (chain_continues) {
+            chain_val_reg = next_chain_reg;
+          }
+          op = nextop;
+        }
+        /* 将最终布尔结果移动到 result_reg（调用者期望的寄存器） */
+        if (bool_reg != result_reg) {
+          luaK_codeABC(ls->fs, OP_MOVE, result_reg, bool_reg, 0);
+        }
+        init_exp(v, VNONRELOC, result_reg);
+        ls->fs->freereg = result_reg + 1;
+        /* 继续检测中缀调用 */
+        if (op == OPR_INFIX && ls->t.linenumber != line) {
+          op = OPR_NOBINOPR;
+        }
+        if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+            is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+          op = OPR_INFIX;
+        }
+        continue;
+      }
       op = nextop;
       /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
       if (op == OPR_INFIX && ls->t.linenumber != line) {
@@ -5668,7 +5742,85 @@ static BinOpr cond_subexpr (LexState *ls, expdesc *v, int limit) {
       luaK_infix(ls->fs, op, v);
       /* read sub-expression with higher priority */
       nextop = cond_subexpr(ls, &v2, priority[op].right);
+      /* 链式比较检测: a < b < c => (a < b) and (b < c) */
+      int is_chain = is_comparison_op(op) && is_comparison_op(nextop);
+      int chain_val_reg = 0;
+      int result_reg = 0;
+      if (is_chain) {
+        /* 保存结果应该去的寄存器，luaK_exp2nextreg 会抢占 freereg */
+        result_reg = ls->fs->freereg;
+        luaK_exp2nextreg(ls->fs, &v2);
+        chain_val_reg = v2.u.info;
+      }
       luaK_posfix(ls->fs, op, v, &v2, line);
+      if (is_chain) {
+        /* 保护 result_reg 和 chain_val_reg 不被 luaK_posfix 释放的寄存器覆盖 */
+        if (ls->fs->freereg <= result_reg)
+          ls->fs->freereg = result_reg + 1;
+        if (ls->fs->freereg <= chain_val_reg)
+          ls->fs->freereg = chain_val_reg + 1;
+        luaK_exp2nextreg(ls->fs, v);
+        int bool_reg = v->u.info;
+        op = nextop;
+        while (is_comparison_op(op)) {
+          luaX_next(ls);
+          int line_n = ls->linenumber;
+          expdesc rc;
+          nextop = cond_subexpr(ls, &rc, priority[op].right);
+          int chain_continues = is_comparison_op(nextop);
+          int next_chain_reg = 0;
+          if (chain_continues) {
+            luaK_exp2nextreg(ls->fs, &rc);
+            next_chain_reg = rc.u.info;
+          }
+          {
+            expdesc lc;
+            init_exp(&lc, VNONRELOC, chain_val_reg);
+            luaK_infix(ls->fs, op, &lc);
+            luaK_posfix(ls->fs, op, &lc, &rc, line_n);
+            /* 保护 bool_reg、result_reg 和 next_chain_reg 不被 freeexps 释放的寄存器覆盖 */
+            if (ls->fs->freereg <= bool_reg)
+              ls->fs->freereg = bool_reg + 1;
+            if (ls->fs->freereg <= result_reg)
+              ls->fs->freereg = result_reg + 1;
+            if (chain_continues && ls->fs->freereg <= next_chain_reg)
+              ls->fs->freereg = next_chain_reg + 1;
+            /* lc 现在是比较结果 (布尔值) */
+            luaK_exp2nextreg(ls->fs, &lc);
+            expdesc ba;
+            init_exp(&ba, VNONRELOC, bool_reg);
+            luaK_infix(ls->fs, OPR_AND, &ba);
+            luaK_posfix(ls->fs, OPR_AND, &ba, &lc, line_n);
+            /* ba 现在是布尔表达式，转存到 bool_reg 保持累积结果在同一寄存器 */
+            /* 保护 bool_reg、result_reg 和 next_chain_reg 不被 freeexps 释放的寄存器覆盖 */
+            if (ls->fs->freereg <= bool_reg)
+              ls->fs->freereg = bool_reg + 1;
+            if (ls->fs->freereg <= result_reg)
+              ls->fs->freereg = result_reg + 1;
+            if (chain_continues && ls->fs->freereg <= next_chain_reg)
+              ls->fs->freereg = next_chain_reg + 1;
+            luaK_exp2reg(ls->fs, &ba, bool_reg);
+          }
+          if (chain_continues) {
+            chain_val_reg = next_chain_reg;
+          }
+          op = nextop;
+        }
+        /* 将最终布尔结果移动到 result_reg（调用者期望的寄存器） */
+        if (bool_reg != result_reg) {
+          luaK_codeABC(ls->fs, OP_MOVE, result_reg, bool_reg, 0);
+        }
+        init_exp(v, VNONRELOC, result_reg);
+        ls->fs->freereg = result_reg + 1;
+        if (op == OPR_INFIX && ls->t.linenumber != line) {
+          op = OPR_NOBINOPR;
+        }
+        if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+            is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+          op = OPR_INFIX;
+        }
+        continue;
+      }
       op = nextop;
       /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
       if (op == OPR_INFIX && ls->t.linenumber != line) {
@@ -7255,20 +7407,17 @@ static void localfunc (LexState *ls, int isexport, int isasync) {
 
   if (isasync) {
       FuncState *fs = ls->fs;
-      /* 使用 OP_ASYNCWRAP 创建异步包装器（与 funcstat 一致） */
-      int func_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-
-      /* body() 生成的函数值在下一个寄存器 */
+      /*
+       * 纯语法级 async 标记：直接在函数 Proto 上设置 PF_ASYNC 标志，
+       * 不再创建 CClosure 包装器。调用时 luaD_precall 检测标志，
+       * 直接走 VM 异步路径。
+       */
       luaK_exp2nextreg(fs, &b);
-      int b_reg = b.u.info;
+      luaK_codeABC(fs, OP_ASYNCWRAP, 0, b.u.info, 0);
 
-      /* OP_ASYNCWRAP R[func_reg] := lvm_async_start(R[b_reg]) */
-      luaK_codeABC(fs, OP_ASYNCWRAP, func_reg, b_reg, 0);
-
-      /* 将 C closure 包装结果移动到局部变量寄存器 fvar */
-      if (fvar != func_reg)
-        luaK_codeABC(fs, OP_MOVE, fvar, func_reg, 0);
+      /* 将结果移动到局部变量寄存器 fvar */
+      if (fvar != b.u.info)
+        luaK_codeABC(fs, OP_MOVE, fvar, b.u.info, 0);
 
       fs->freereg = fvar + 1;
   }
@@ -7925,12 +8074,21 @@ static void check_type_compatibility(LexState *ls, TypeHint *target, expdesc *e)
 
 /* Destructuring support */
 static void destructuring (LexState *ls) {
-   /* local {a, b} = t */
+   /* local {a, b, name = "default"} = t -- 支持默认值 */
    TString *names[MAXVARS];
+   expdesc def_expr[MAXVARS];  /* 存储默认值表达式 */
+   int has_default[MAXVARS] = {0};  /* 记录每个字段是否有默认值 */
    int nnames = 0;
    luaX_next(ls); /* skip { */
    do {
-     names[nnames++] = str_checkname(ls);
+     names[nnames] = str_checkname(ls);
+     /* 检查是否有默认值: name = expr */
+     if (testnext(ls, '=')) {
+       /* 解析默认值表达式 */
+       expr(ls, &def_expr[nnames]);
+       has_default[nnames] = 1;
+     }
+     nnames++;
    } while (testnext(ls, ',') && nnames < MAXVARS);
    checknext(ls, '}');
    
@@ -7940,6 +8098,12 @@ static void destructuring (LexState *ls) {
    
    int base = luaY_nvarstack(ls->fs);
    
+   /* 先分配所有局部变量 */
+   for (int i = 0; i < nnames; i++) {
+     new_localvar(ls, names[i]);
+   }
+   adjustlocalvars(ls, nnames);
+   
    /* Move table to safe reg */
    luaK_exp2reg(ls->fs, &e, base + nnames);
    int tbl_reg = base + nnames;
@@ -7947,27 +8111,48 @@ static void destructuring (LexState *ls) {
    if (ls->fs->freereg < tbl_reg + 1)
        ls->fs->freereg = tbl_reg + 1;
    
-   for (int i=0; i<nnames; i++) {
-     new_localvar(ls, names[i]);
+   for (int i = 0; i < nnames; i++) {
+     /* 每次迭代前恢复表寄存器，因为 luaK_dischargevars 会释放它 */
+     if (ls->fs->freereg < tbl_reg + 1)
+       ls->fs->freereg = tbl_reg + 1;
      
-     expdesc t;
-     init_exp(&t, VNONRELOC, tbl_reg); 
-     expdesc k;
-     init_exp(&k, VKSTR, 0);
-     k.u.strval = names[i];
-     
-     luaK_indexed(ls->fs, &t, &k); 
-     /* 't' now contains the indexed variable expression */
-     
-     expdesc lvar;
-     init_exp(&lvar, VLOCAL, 0);
-     lvar.u.var.vidx = 0;
-     lvar.u.var.ridx = base + i;
-     
-     luaK_storevar(ls->fs, &lvar, &t);
+     if (has_default[i]) {
+       /* 直接生成 GETFIELD，避免 luaK_dischargevars 释放表寄存器 */
+       luaK_reserveregs(ls->fs, 1);
+       int getfield_reg = ls->fs->freereg - 1;
+       luaK_codeABC(ls->fs, OP_GETFIELD, getfield_reg, tbl_reg,
+                    luaK_stringK(ls->fs, names[i]));
+       expdesc t;
+       init_exp(&t, VNONRELOC, getfield_reg);
+       
+       /* 将默认值表达式移到寄存器 */
+       luaK_exp2nextreg(ls->fs, &def_expr[i]);
+       /* 使用空值合并运算符 */
+       luaK_infix(ls->fs, OPR_NULLCOAL, &t);
+       luaK_posfix(ls->fs, OPR_NULLCOAL, &t, &def_expr[i], ls->linenumber);
+       
+       expdesc lvar;
+       init_exp(&lvar, VLOCAL, 0);
+       lvar.u.var.vidx = 0;
+       lvar.u.var.ridx = base + i;
+       luaK_storevar(ls->fs, &lvar, &t);
+     }
+     else {
+       expdesc t;
+       init_exp(&t, VNONRELOC, tbl_reg);
+       expdesc k;
+       init_exp(&k, VKSTR, 0);
+       k.u.strval = names[i];
+       luaK_indexed(ls->fs, &t, &k);
+       
+       expdesc lvar;
+       init_exp(&lvar, VLOCAL, 0);
+       lvar.u.var.vidx = 0;
+       lvar.u.var.ridx = base + i;
+       luaK_storevar(ls->fs, &lvar, &t);
+     }
    }
    
-   adjustlocalvars(ls, nnames);
    ls->fs->freereg = base + nnames;
 }
 
@@ -10425,17 +10610,12 @@ static void funcstat (LexState *ls, int line, int isasync) {
 
   if (isasync) {
       FuncState *fs = ls->fs;
-      /* Using OP_ASYNCWRAP */
-      int func_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-
-      luaK_exp2nextreg(fs, &b); /* put function in next reg */
-      int b_reg = b.u.info;
-
-      luaK_codeABC(fs, OP_ASYNCWRAP, func_reg, b_reg, 0);
-
-      init_exp(&b, VNONRELOC, func_reg);
-      fs->freereg = func_reg + 1;
+      /*
+       * 纯语法级 async 标记：直接在函数 Proto 上设置 PF_ASYNC 标志。
+       * 不再创建 CClosure 包装器，不需要额外寄存器。
+       */
+      luaK_exp2nextreg(fs, &b);
+      luaK_codeABC(fs, OP_ASYNCWRAP, 0, b.u.info, 0);
   }
 
   apply_decorators_inline(ls, &v, &b);
@@ -13236,39 +13416,16 @@ void statement (LexState *ls) {
       break;
     }
     case TK_AWAIT: {  /* stat -> await expr */
-      /* 将 await expr 编译为 coroutine.yield(expr)，丢弃返回值 */
+      /* 将 await expr 编译为 OP_AWAIT 指令，丢弃返回值（纯语法级） */
       luaX_next(ls);  /* 跳过 await */
       {
         expdesc v;
         expr(ls, &v);  /* 解析 await 的参数表达式 */
         FuncState *fs = ls->fs;
-        /* 获取 coroutine.yield */
-        expdesc f;
-        singlevaraux(fs, luaS_newliteral(ls->L, "coroutine"), &f, 1);
-        if (f.k == VVOID) {
-          expdesc key;
-          singlevaraux(fs, ls->envn, &f, 1);
-          codestring(&key, luaS_newliteral(ls->L, "coroutine"));
-          luaK_indexed(fs, &f, &key);
-        }
-        /* 将 coroutine 表解析到寄存器中，确保后续 luaK_indexed("yield") 能正确工作 */
-        luaK_exp2anyreg(fs, &f);
-        expdesc key;
-        codestring(&key, luaS_newliteral(ls->L, "yield"));
-        luaK_indexed(fs, &f, &key);
-
-        /* 显式预留2个寄存器，在 v 的寄存器之后分配，避免寄存器冲突
-         * v 可能是 VCALL（如 asyncio.sleep(0.01)），其 CALL 结果寄存器
-         * 可能与 coroutine.yield 的寄存器重叠 */
-        luaK_reserveregs(fs, 2);
-        int func_reg = fs->freereg - 2;  /* coroutine.yield */
-        int arg_reg = fs->freereg - 1;   /* Promise 参数 */
-
-        luaK_exp2reg(fs, &f, func_reg);
-        luaK_exp2reg(fs, &v, arg_reg);
-
-        luaK_codeABC(fs, OP_CALL, func_reg, 2, 1);  /* 1 arg, 0 results (C=1) */
-        fs->freereg = func_reg;
+        int reg = fs->freereg;
+        luaK_exp2reg(fs, &v, reg);  /* Promise 存入 reg */
+        luaK_codeABC(fs, OP_AWAIT, reg, reg, 0);  /* 结果覆盖同一寄存器（丢弃） */
+        fs->freereg = reg + 1;
         luaK_fixline(fs, line);
       }
       break;

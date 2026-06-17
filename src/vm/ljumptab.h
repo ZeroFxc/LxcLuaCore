@@ -141,6 +141,7 @@ static const void *const disptab[NUM_OPCODES] = {
 &&L_OP_GETCMDS,
 &&L_OP_GETOPS,
 &&L_OP_ASYNCWRAP,
+&&L_OP_AWAIT,
 &&L_OP_GENERICWRAP,
 &&L_OP_CHECKTYPE,
 &&L_OP_EXTRAARG,

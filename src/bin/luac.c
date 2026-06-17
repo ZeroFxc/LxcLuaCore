@@ -781,6 +781,24 @@ static void PrintCode(const Proto* f)
    case OP_EXTRAARG:
 	printf("%d",ax);
 	break;
+   case OP_AWAIT:
+	/* A=结果寄存器, B=Promise(或普通值)寄存器
+	 * B 是 userdata(Promise)时挂起协程等待；普通值时直接写入 R[A]。*/
+	printf("%d %d",a,b);
+	break;
+   case OP_SETTRAITFLAG:
+	printf("%d",a);
+	break;
+   case OP_SETTRAITREQUIRE:
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT); PrintConstant(f,b);
+	break;
+   case OP_USETRAIT:
+	printf("%d %d",a,b);
+	break;
+   case OP_CUSTOM:
+	printf("%d",a);
+	break;
    default:
 	printf("%d %d %d",a,b,c);
 	printf(COMMENT "not handled");

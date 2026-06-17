@@ -12,6 +12,7 @@
 
 
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -878,6 +879,27 @@ CallInfo *luaD_precall (lua_State *L, StkId func, int nresults) {
     case LUA_VLCL: {  /* Lua function */
       CallInfo *ci;
       Proto *p = clLvalue(s2v(func))->p;
+
+      /*
+       * 纯语法级 async 函数调用（PF_ASYNC 标志）
+       *
+       * 仅在主线程上触发异步路径（创建协程返回 Promise）。
+       * 在协程内调用时，正常执行 Lua 函数（await 由 OP_AWAIT 处理）。
+       *
+       * 完全消除 CClosure → lvm_async_start 函数调用链，
+       * 是真正的纯语法级 async 实现。
+       */
+      if ((p->flag & PF_ASYNC) && L == G(L)->mainthread) {
+        checkstackGCp(L, LUA_MINSTACK, func);
+        L->ci = ci = prepCallInfo(L, func, nresults, CIST_C,
+                                     L->top.p + LUA_MINSTACK);
+        lua_assert(ci->top.p <= L->stack_last.p);
+        lua_unlock(L);
+        int n = lvm_async_invoke(L);
+        lua_lock(L);
+        luaD_poscall(L, ci, n);
+        return NULL;
+      }
       
       /* Enhanced Upvalue check */
       if (p->sizeupvalues > 0) {
@@ -1091,12 +1113,32 @@ static void resume (lua_State *L, void *ud) {
     lua_assert(L->status == LUA_YIELD);
     L->status = LUA_OK;  /* mark that it is running (again) */
     if (isLua(ci)) {  /* yielded inside a hook? */
-      /* undo increment made by 'luaG_traceexec': instruction was not
-         executed yet */
-      lua_assert(ci->callstatus & CIST_HOOKYIELD);
-      ci->u.l.savedpc--;
-      L->top.p = firstArg;  /* discard arguments */
-      luaV_execute(L, ci);  /* just continue running Lua code */
+      if (ci->callstatus & CIST_AWAIT) {
+        /*
+         * OP_AWAIT 恢复（纯语法级，无函数调用）
+         *
+         * 从 savedpc-1 读取 OP_AWAIT 指令，获取目标寄存器 R[A]，
+         * 将 resume 参数（Promise 解析值）写入 R[A]。
+         * savedpc 已指向下一条指令，直接继续执行。
+         */
+        ci->callstatus &= ~CIST_AWAIT;
+        Instruction inst = *(ci->u.l.savedpc - 1);  /* OP_AWAIT 指令 */
+        StkId base = ci->func.p + 1;
+        StkId ra = base + GETARG_A(inst);
+
+        /* 将 Promise 解析值写入目标寄存器 R[A] */
+        setobjs2s(L, ra, firstArg);
+        L->top.p = firstArg + 1;  /* 保留结果 */
+        luaV_execute(L, ci);
+      }
+      else {
+        /* undo increment made by 'luaG_traceexec': instruction was not
+           executed yet */
+        lua_assert(ci->callstatus & CIST_HOOKYIELD);
+        ci->u.l.savedpc--;
+        L->top.p = firstArg;  /* discard arguments */
+        luaV_execute(L, ci);  /* just continue running Lua code */
+      }
     }
     else {  /* 'common' yield */
       if (ci->u.c.k != NULL) {  /* does it have a continuation function? */

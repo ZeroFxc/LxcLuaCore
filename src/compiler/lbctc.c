@@ -1517,16 +1517,12 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         }
 
         case OP_ASYNCWRAP: {
-            int b = GETARG_B(i);
-            add_fmt(B, "    lua_getglobal(L, \"__async_wrap\");\n");
-            add_fmt(B, "    if (lua_isfunction(L, %s)) {\n", obf_int(-1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_call(L, %s, %s);\n", obf_int(1, &obf_seed, obfuscate), obf_int(1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "    } else {\n");
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
-            add_fmt(B, "        luaL_error(L, \"__async_wrap not found\");\n");
-            add_fmt(B, "    }\n");
+            /*
+             * 纯语法级 async 标记：PF_ASYNC 标志在字节码加载时由 VM 自动设置。
+             * 字节码转C编译器不需要额外处理，因为生成的 C 代码中函数原型
+             * 已包含 PF_ASYNC 标志。
+             */
+            add_fmt(B, "    /* OP_ASYNCWRAP: async marker (PF_ASYNC set in proto) */\n");
             break;
         }
 
