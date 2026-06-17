@@ -10,6 +10,7 @@
 #include "laio.h"
 #include "lpromise.h"
 #include "lauxlib.h"
+#include "lvm.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -2422,6 +2423,14 @@ int luaopen_asyncio(lua_State *L) {
      * 注意：asyncio 表在栈顶（索引 -1），promise 元表在索引 -2 */
     lua_pushvalue(L, -1);  /* 复制栈顶的 asyncio 表 */
     lua_setfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO");
+
+    /*
+     * 直接设置全局 C 函数指针（纯内存赋值，无任何 Lua 操作）
+     *
+     * 替代原先的 lua_pushlightuserdata + lua_setfield 注册表存储方式。
+     * lvm.c 的 lvm_async_start 直接读取此全局指针，完全消除 Lua 表操作。
+     */
+    lvm_set_async_runner((void *)aio_run_async);
 
     return 1;
 }

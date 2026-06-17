@@ -59,6 +59,7 @@
 #include "lsuper.h"
 #include "lbigint.h"
 #include "lauxlib.h"
+#include "lpromise.h"
 #ifndef LUA_NOJIT
 #include "jit/core/ljit.h"
 #endif
@@ -129,67 +130,166 @@ static int check_subtype_internal(lua_State *L, const TValue *val, const TValue 
     return res;
 }
 
+/*
+ * 全局异步执行器函数指针（纯 C 指针，无 Lua 表查找）
+ *
+ * 由 laio.c 的 luaopen_asyncio 在加载 asyncio 库时设置。
+ * lvm_async_start 直接读取此指针，完全避免 lua_getfield 注册表查找。
+ *
+ * 类型：promise *(*)(lua_State *, event_loop *)
+ * 使用 void* 存储以避免头文件依赖。
+ */
+static void *g_aio_run_async_ptr = NULL;
+
+/**
+ * @brief 设置全局异步执行器函数指针
+ *
+ * 由 laio.c 在 luaopen_asyncio 中调用，替代原先的注册表存储方式。
+ * 纯 C 指针赋值，零 Lua 开销。
+ *
+ * @param fn 异步执行器函数指针（aio_run_async）
+ */
+void lvm_set_async_runner(void *fn) {
+    g_aio_run_async_ptr = fn;
+}
+
+/**
+ * @brief 纯语法级 async function 调用入口
+ *
+ * 由 luaD_precall 在检测到 PF_ASYNC 标志时直接调用。
+ * 不经过 CClosure，不经过 lvm_async_start，纯 VM 级处理。
+ *
+ * 栈布局（调用前）: [func, arg1, ..., argN]
+ * 栈布局（调用后）: [func, arg1, ..., argN, Promise_userdata]
+ *
+ * @param L Lua 状态
+ * @return 结果数量（1 = Promise，或 2 = nil + error）
+ */
+int lvm_async_invoke(lua_State *L) {
+    promise *(*run_async)(lua_State *, event_loop *) =
+        (promise *(*)(lua_State *, event_loop *))g_aio_run_async_ptr;
+
+    /*
+     * 栈重组：将函数推到 ci->func.p + 1 之后，使其被 lua_gettop 计数
+     *
+     * LXCLUA 的 lua_gettop 返回 L->top.p - (ci->func.p + 1)，
+     * 即只计算 ci->func.p 之后（参数）的元素数，不包含函数本身。
+     *
+     * LXCLUA 的 index2stack 对正索引使用 ci->func.p + idx（非标准 Lua 的 +idx-1），
+     * 因此不能使用 lua_pushvalue 的绝对栈索引，必须直接操作栈指针。
+     *
+     * aio_run_async 依赖 lua_gettop 获取函数+参数总数，
+     * 且 luaL_checktype(L, 1, ...) 检查 ci->func.p + 1（LXCLUA 的索引1）。
+     */
+    /* 直接复制函数到栈顶（ci->func.p 处的函数 → L->top.p） */
+    setobj2s(L, L->top.p, s2v(L->ci->func.p));
+    L->top.p++;
+
+    /* 如果有参数，将函数副本旋转到参数之前（LXCLUA 索引1 = ci->func.p + 1） */
+    {
+        int nargs = cast_int(L->top.p - (L->ci->func.p + 1)) - 1;  /* 减去刚复制的函数 */
+        if (nargs > 0) {
+            lua_insert(L, 1);  /* lua_rotate(L, idx=1, 1): 栈顶函数副本移到位置1 */
+        }
+    }
+    /* 栈布局: [func, func_copy, arg1, ..., argN] */
+    /* lua_gettop 返回 1 + nargs */
+
+    if (run_async) {
+        promise *p = run_async(L, NULL);
+        if (p) {
+            promise **pp = (promise **)lua_newuserdata(L, sizeof(promise *));
+            *pp = p;
+            luaL_setmetatable(L, PROMISE_METATABLE);
+            return 1;
+        }
+        lua_pushnil(L);
+        lua_pushliteral(L, "Failed to start async execution");
+        return 2;
+    }
+
+    /*
+     * Fallback: 简单的协程执行（无 Promise 支持）
+     * 当 asyncio 库未加载时使用此路径。
+     */
+    int n = lua_gettop(L) - 1;  /* nargs = top - 1（func在位置1） */
+    lua_State *co = lua_newthread(L);
+    lua_pushvalue(L, 1);        /* 复制函数 */
+    lua_xmove(L, co, 1);        /* 移到协程 */
+    for (int i = 0; i < n; i++) {
+        lua_pushvalue(L, 2 + i);  /* 复制参数 */
+        lua_xmove(L, co, 1);       /* 移到协程 */
+    }
+    int nres;
+    int status = lua_resume(co, L, n, &nres);
+    if (status != LUA_YIELD) {
+        if (status != LUA_OK) {
+            lua_xmove(co, L, 1);
+            return 1;
+        }
+        if (nres > 0) {
+            lua_xmove(co, L, nres);
+            return nres;
+        }
+    }
+    return 1;  /* 返回协程对象 */
+}
+
 static int lvm_async_start(lua_State *L) {
     /*
-     * 纯 C 层 async function 执行器
+     * 纯语法级 async function 执行器
      *
-     * 这是 OP_ASYNCWRAP 创建的 C 闭包的 __call 方法。
+     * 这是 OP_ASYNCWRAP 创建的 C 闭包的入口函数。
      * 当用户调用 async function 时，此函数被触发。
      *
-     * 工作流程：
+     * 工作流程（纯 VM 级，零 Lua 表操作）：
      * 1. 从 upvalue[0] 获取原始函数
-     * 2. 检查 asyncio 库是否已加载
-     * 3. 如果已加载，使用 aio_run_async() 执行（支持 Promise + await）
-     * 4. 如果未加载，使用简单的协程 fallback
+     * 2. 直接读取全局 C 指针 g_aio_run_async_ptr（无任何 Lua 操作）
+     * 3. 直接 C 调用 aio_run_async，返回 Promise
+     * 4. 如果 asyncio 未加载，使用简单的协程 fallback
      *
      * 特点：
-     * - 不依赖任何全局函数
-     * - 不使用 luaL_dostring 或 Lua 代码字符串
-     * - 完全透明：用户感知不到 C 层和 Lua 层的界限
+     * - 不依赖任何 Lua 函数、表、注册表
+     * - 不使用 lua_getfield / lua_call 等任何 Lua API 查找
+     * - 纯 C 指针 + 纯 C 调用，完全在 VM 层面执行
      */
     int n = lua_gettop(L);
 
     /* 从 upvalue[0] 获取要执行的异步函数 */
     lua_pushvalue(L, lua_upvalueindex(1));
 
-    /* 尝试获取 asyncio 的 aio_run_async 函数 */
-    lua_getfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO");
-    int has_asyncio = !lua_isnil(L, -1);
-    lua_pop(L, 1);
+    /*
+     * 直接读取全局 C 函数指针（纯内存访问，无任何 Lua 操作）
+     *
+     * 原先使用 lua_getfield(L, LUA_REGISTRYINDEX, "__AIO_RUN_ASYNC_PTR")
+     * 进行注册表查表，现在改为直接读取全局变量，完全消除 Lua 表操作。
+     */
+    promise *(*run_async)(lua_State *, event_loop *) =
+        (promise *(*)(lua_State *, event_loop *))g_aio_run_async_ptr;
 
-    if (has_asyncio) {
+    if (run_async) {
         /*
-         * asyncio 库已加载：使用完整的 Promise 支持
+         * 将 original_func 移到栈位置1（aio_run_async 期望 func 在位置1）
          *
-         * 调用链路：
-         * lvm_async_start → aio_run_async → 创建协程 → 执行函数
-         *   → 遇到 await(Promise) → yield → 捕获 Promise
-         *   → 注册回调 → Promise 完成 → resume 协程 → 传入结果
-         *   → 最终返回 Promise 对象给调用者
+         * 当前栈: [arg1, ..., argN, original_func]（带参数）
+         *       或 [original_func]（无参数）
+         * lua_insert(L,1) → [original_func, arg1, ..., argN]
+         *
+         * 注意：CClosure 调用时闭包不在调用栈上，无需 lua_pop。
          */
-
-        /* 将原始函数插入到参数列表前面 */
         lua_insert(L, 1);
 
-        /* 调用 aio_run_async(func, ...) */
-        lua_getfield(L, LUA_REGISTRYINDEX, "LOADED_ASYNCIO"); /* asyncio 表 */
-        lua_getfield(L, -1, "run_async_internal");  /* aio_run_async 的 Lua 包装 */
-
-        if (lua_isfunction(L, -1)) {
-            /* 栈布局: [func_body, ..., asyncio表, run_async_internal]
-             * 需要重组为: [run_async_internal, func_body, ...]
-             * 调用 run_async_internal(func_body, arg1, arg2, ...) */
-            lua_insert(L, 1);  /* [run_async_internal, func_body, ..., asyncio表] */
-            lua_pop(L, 1);     /* 移除栈顶的 asyncio 表 */
-
-            /* 调用: run_async_internal(func_body, arg1, ...)
-             * n+1 = 1(func_body) + n(user_args) 个参数 */
-            lua_call(L, n + 1, 1);  /* 返回 1 个值 (Promise) */
+        /* 直接 C 调用 aio_run_async（纯语法级，无 Lua 表查找） */
+        promise *p = run_async(L, NULL);
+        if (p) {
+            promise **pp = (promise **)lua_newuserdata(L, sizeof(promise *));
+            *pp = p;
+            luaL_setmetatable(L, PROMISE_METATABLE);
             return 1;
-        } else {
-            /* run_async_internal 不存在，回退到简单模式 */
-            lua_pop(L, 2);  /* 弹出 nil 和 asyncio 表 */
         }
+        lua_pushnil(L);
+        lua_pushliteral(L, "Failed to start async execution");
+        return 2;
     }
 
     /*
@@ -3965,37 +4065,65 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
       }
       vmcase(OP_ASYNCWRAP) {
         /*
-         * 纯 C 层 async function 包装器
+         * 纯语法级 async 标记指令（完全不创建函数包装器）
          *
-         * 将普通函数转换为异步函数：
-         * - 输入: R[B] = 普通函数 (可能包含 await 表达式)
-         * - 输出: R[A] = AsyncFunction 包装器 (C closure)
+         * 直接在函数 Proto 上设置 PF_ASYNC 标志，不创建任何 CClosure。
          *
-         * 调用 AsyncFunction 时:
-         * 1. 创建协程执行原函数
-         * 2. 遇到 await(expr) → 协程 yield 出 Promise
-         * 3. Promise 完成时恢复协程并传入结果
-         * 4. 函数完成时返回最终结果
+         * OP_ASYNCWRAP A B:
+         *   R[B] = 包含 await 的 Lua 函数
+         *   直接设置 clLvalue(R[B])->p->flag |= PF_ASYNC
          *
-         * 完全不依赖任何全局函数或 Lua 表，纯 C 实现
+         * 当函数被调用时，luaD_precall 检测到 PF_ASYNC 标志，
+         * 直接走 VM 异步调用路径（调用 lvm_async_invoke），
+         * 完全不经过 CClosure → lvm_async_start 函数包装。
+         *
+         * 这是真正的纯语法级 async 实现：
+         * - 无 CClosure 创建
+         * - 无 luaF_newCclosure 内存分配
+         * - 无 upvalue 设置
+         * - 调用时无 luaD_precall → precallC → lvm_async_start 函数调用链
+         * - 调用时直接 VM 路径：luaD_precall 检测 PF_ASYNC → lvm_async_invoke
          */
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
-        luaD_checkstack(L, 1);
-        updatebase(ci);
-
         int b = GETARG_B(i);
-
-        /* 直接创建 C 闭包，使用 lvm_async_start 作为 __call 方法 */
-        CClosure *ncl = luaF_newCclosure(L, 1);
-        ncl->f = lvm_async_start;
-        updatebase(ci); /* stack might have moved */
-
-        StkId ra = RA(i);
         TValue *rb = s2v(base + b);
-        setclCvalue(L, s2v(ra), ncl);
-        setobj(L, &ncl->upvalue[0], rb); /* upvalue[0] = 原始函数 */
-        checkGC(L, ra + 1);
+        if (ttisLclosure(rb)) {
+            clLvalue(rb)->p->flag |= PF_ASYNC;
+        }
+        vmbreak;
+      }
+      vmcase(OP_AWAIT) {
+        /*
+         * 纯语法级 await 指令（完全不依赖函数调用）
+         *
+         * OP_AWAIT A B:
+         *   R[A] = 结果寄存器
+         *   R[B] = 待 await 的值（Promise 或普通值）
+         *
+         * 如果是 Promise（userdata），挂起协程等待 Promise 完成。
+         * 如果是普通值（非 userdata），直接写入 R[A] 继续执行。
+         *
+         * 这允许 await 嵌套 async 函数调用：
+         *   await(inner(21))  — inner 在协程内同步执行，直接返回 42
+         *   await(sleep(0.1)) — sleep 返回 Promise，需要 yield 等待
+         */
+        int b = GETARG_B(i);
+        TValue *await_val = s2v(base + b);
+
+        if (ttisfulluserdata(await_val)) {
+          /* Promise 值：挂起协程，等待 Promise 完成 */
+          setobj2s(L, L->top.p, await_val);
+          L->top.p++;
+          savepc(L);  /* pc 已指向下一条指令，无需修正 */
+          ci->callstatus |= CIST_AWAIT;  /* 标记纯语法 await yield */
+          L->status = LUA_YIELD;
+          ci->u2.nyield = 1;  /* 传出 1 个值（Promise） */
+          luaD_throw(L, LUA_YIELD);  /* 直接挂起协程 */
+        }
+        else {
+          /* 普通值（非 Promise）：直接存入 R[A]，不 yield */
+          StkId ra = base + GETARG_A(i);
+          setobj2s(L, ra, await_val);
+        }
         vmbreak;
       }
       vmcase(OP_GENERICWRAP) {

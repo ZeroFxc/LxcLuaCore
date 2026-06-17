@@ -680,6 +680,7 @@ typedef struct AbsLineInfo {
 #define PF_VATAB	2  /* function has vararg table */
 #define PF_FIXED	4  /* prototype has parts in fixed memory */
 #define PF_LOCKED	8  /* function is locked (read-only bytecode) */
+#define PF_ASYNC	16 /* async function: 纯语法级标记，调用时走 VM 直接路径 */
 
 /* a vararg function either has hidden args. or a vararg table */
 #define isvararg(p)	((p)->flag & (PF_VAHID | PF_VATAB))
