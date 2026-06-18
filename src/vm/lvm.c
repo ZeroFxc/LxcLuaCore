@@ -2013,12 +2013,35 @@ static void inopr (lua_State *L, StkId ra, TValue *a, TValue *b) {
     if (l_unlikely(!ttistable(b))) {
       luaG_runerror(L, "expected second 'in' operand to be table or string");
     }
-    const TValue *res = luaH_get(hvalue(b), a);
+    Table *t = hvalue(b);
+    /* 先检查 key 是否存在 */
+    const TValue *res = luaH_get(t, a);
     if (!ttisnil(res)) {
       setbtvalue(s2v(ra));
-    } else {
-      setbfvalue(s2v(ra));
+      return;
     }
+    /* key 不存在时，遍历查找 value */
+    lua_Integer n = luaH_getn(t);
+    lua_Integer i;
+    for (i = 1; i <= n; i++) {
+      const TValue *v = luaH_getint(t, i);
+      if (!ttisnil(v) && luaV_rawequalobj(a, v)) {
+        setbtvalue(s2v(ra));
+        return;
+      }
+    }
+    /* 遍历 hash 部分 */
+    int j;
+    for (j = 0; j < sizenode(t); j++) {
+      Node *nd = gnode(t, j);
+      if (!isempty(gval(nd))) {
+        if (luaV_rawequalobj(a, gval(nd))) {
+          setbtvalue(s2v(ra));
+          return;
+        }
+      }
+    }
+    setbfvalue(s2v(ra));
   }
 }
 

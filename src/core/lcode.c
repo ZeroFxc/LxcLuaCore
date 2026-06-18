@@ -2568,8 +2568,8 @@ void luaK_switchexpression (LexState *ls, expdesc *v) {
       luaK_patchtohere(fs, to_body_jump);
 
       /* 解析 case body */
-      if (testnext(ls, TK_MEAN)) {
-        /* => 箭头形式：直接计算表达式并存入结果寄存器 */
+      if (testnext(ls, TK_MEAN) || testnext(ls, TK_ARROW)) {
+        /* => 或 -> 箭头形式：直接计算表达式并存入结果寄存器 */
         expdesc body_exp;
         expr(ls, &body_exp);
         luaK_exp2reg(fs, &body_exp, result_reg);

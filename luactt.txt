@@ -1,0 +1,98 @@
+
+main <e:\Soft\Proje\LXCLUA-NCore\lua\test_template.lua:0,0> (84 instructions at 0000000000d5b130)
+0 params, 17 slots, 1 upvalue, 14 locals, 32 constants, 1 function
+        1       [1]     VARARGPREP      0
+        2       [2]     EXTRAARG        0
+        3       [2]     GETTABUP        1 0 1   ; _ENV "print"
+        4       [2]     GETFIELD        2 0 2   ; "pattern"
+        5       [2]     CALL            1 2 1   ; 1 in 0 out
+        6       [3]     GETTABUP        1 0 1   ; _ENV "print"
+        7       [3]     GETFIELD        2 0 3   ; "flags"
+        8       [3]     CALL            1 2 1   ; 1 in 0 out
+        9       [4]     NEWTABLE        1 0 3   ; 3
+        10      [4]     EXTRAARG        0
+        11      [4]     LOADI           2 1
+        12      [4]     LOADI           3 2
+        13      [4]     LOADI           4 3
+        14      [4]     SETLIST         1 3 0
+        15      [5]     NEWTABLE        2 2 0   ; 0
+        16      [5]     EXTRAARG        0
+        17      [5]     SETFIELD        2 4 5k  ; "x" 10
+        18      [5]     SETFIELD        2 6 7k  ; "y" 20
+        19      [6]     MERGE           3 1 2   ; not handled
+        20      [7]     GETTABUP        4 0 1   ; _ENV "print"
+        21      [7]     LOADK           5 8     ; "\230\149\176\231\187\132\233\131\168\229\136\134: "        
+        22      [7]     GETTABUP        6 0 9   ; _ENV "table"
+        23      [7]     GETFIELD        6 6 10  ; "concat"
+        24      [7]     MOVE            7 3
+        25      [7]     LOADK           8 11    ; ","
+        26      [7]     CALL            6 3 2   ; 2 in 1 out
+        27      [7]     CONCAT          5 2
+        28      [7]     CALL            4 2 1   ; 1 in 0 out
+        29      [8]     GETTABUP        4 0 1   ; _ENV "print"
+        30      [8]     LOADK           5 12    ; "x: "
+        31      [8]     GETFIELD        6 3 4   ; "x"
+        32      [8]     LOADK           7 13    ; " y: "
+        33      [8]     GETFIELD        8 3 6   ; "y"
+        34      [8]     CONCAT          5 4
+        35      [8]     CALL            4 2 1   ; 1 in 0 out
+        36      [11]    NEWTABLE        4 2 0   ; 0
+        37      [11]    EXTRAARG        0
+        38      [11]    SETFIELD        4 14 15k        ; "a" 1
+        39      [11]    NEWTABLE        5 1 0   ; 0
+        40      [11]    EXTRAARG        0
+        41      [11]    SETFIELD        5 17 18k        ; "inner" 2
+        42      [11]    SETFIELD        4 16 5  ; "b"
+        43      [12]    NEWTABLE        5 2 0   ; 0
+        44      [12]    EXTRAARG        0
+        45      [12]    NEWTABLE        6 1 0   ; 0
+        46      [12]    EXTRAARG        0
+        47      [12]    SETFIELD        6 19 20k        ; "outer" 3
+        48      [12]    SETFIELD        5 16 6  ; "b"
+        49      [12]    SETFIELD        5 21 22k        ; "c" 4
+        50      [13]    MERGE           6 4 5   ; not handled
+        51      [14]    GETTABUP        7 0 1   ; _ENV "print"
+        52      [14]    LOADK           8 23    ; "f.a: "
+        53      [14]    GETFIELD        9 6 14  ; "a"
+        54      [14]    LOADK           10 24   ; " f.c: "
+        55      [14]    GETFIELD        11 6 21 ; "c"
+        56      [14]    CONCAT          8 4
+        57      [14]    CALL            7 2 1   ; 1 in 0 out
+        58      [19]    CLOSURE         7 0     ; 0000000000d5b8b0
+        59      [20]    MOVE            8 7
+        60      [20]    EXTRAARG        819209
+        61      [20]    CALL            8 2 1   ; 1 in 0 out
+        62      [24]    EXTRAARG        851976
+        63      [24]    MOVE            9 8
+        64      [25]    GETTABUP        10 0 27 ; _ENV "print"
+        65      [25]    LOADK           11 28   ; "y.pattern: "
+        66      [25]    GETFIELD        12 9 2  ; "pattern"
+        67      [25]    CONCAT          11 2
+        68      [25]    CALL            10 2 1  ; 1 in 0 out
+        69      [28]    LOADI           10 10
+        70      [29]    LOADI           11 2
+        71      [30]    DIV             12 10 11
+        72      [30]    MMBIN           10 11 12        ; __div
+        73      [31]    GETTABUP        13 0 27 ; _ENV "print"
+        74      [31]    LOADK           14 29   ; "\233\153\164\230\179\149: "
+        75      [31]    MOVE            15 12
+        76      [31]    CONCAT          14 2
+        77      [31]    CALL            13 2 1  ; 1 in 0 out
+        78      [35]    EXTRAARG        983053
+        79      [35]    GETTABUP        14 0 27 ; _ENV "print"
+        80      [35]    LOADK           15 31   ; "r3.pattern: "
+        81      [35]    GETFIELD        16 13 2 ; "pattern"
+        82      [35]    CONCAT          15 2
+        83      [35]    CALL            14 2 1  ; 1 in 0 out
+        84      [35]    RETURN          0 1 1   ; 0 out
+
+function <e:\Soft\Proje\LXCLUA-NCore\lua\test_template.lua:17,20> (8 instructions at 0000000000d5b8b0)        
+1 param, 6 slots, 1 upvalue, 1 local, 5 constants, 0 functions
+        1       [18]    GETTABUP        1 0 0   ; _ENV "print"
+        2       [18]    LOADK           2 1     ; "\229\140\185\233\133\141\230\168\161\229\188\143: "        
+        3       [18]    GETFIELD        3 0 2   ; "pattern"
+        4       [18]    LOADK           4 3     ; " flag: "
+        5       [18]    GETFIELD        5 0 4   ; "flags"
+        6       [18]    CONCAT          2 4
+        7       [18]    CALL            1 2 1   ; 1 in 0 out
+        8       [19]    RETURN0

@@ -12,6 +12,7 @@
 
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "lua.h"
@@ -549,6 +550,8 @@ LUA_API void lua_close (lua_State *L) {
  */
 void luaE_warning (lua_State *L, const char *msg, int tocont) {
   lua_WarnFunction wf = G(L)->warnf;
+  /* 始终输出到 stderr，确保编译期警告可见 */
+  fprintf(stderr, "%s", msg);
   if (wf != NULL)
     wf(G(L)->ud_warn, msg, tocont);
 }

@@ -269,6 +269,7 @@ typedef struct FuncState {
   lu_byte freereg;  /**< first free register */
   lu_byte iwthabs;  /**< instructions issued since last absolute line info */
   lu_byte needclose;  /**< function needs to close upvalues when returning */
+  struct TypeHint *returntype_hint;  /**< 函数声明的返回类型提示，用于类型检查 */
 } FuncState;
 
 

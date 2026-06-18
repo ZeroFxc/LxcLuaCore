@@ -1,28 +1,35 @@
--- 模板字符串测试 (反引号)
-print("=== 模板字符串测试 ===")
+local r = /[a-z]+\d+/i
+print(r.pattern)  -- "[a-z]+\d+"
+print(r.flags)    -- "i"-- 表合并：不重叠数组
+local a = {1, 2, 3}
+local b = {x=10, y=20}
+local c = a <> b
+print("数组部分: " .. table.concat(c, ","))
+print("x: " .. c.x .. " y: " .. c.y)
 
--- 1. 基本无插值
-local s1 = `hello world`
-print("1. plain: " .. s1)  -- 期望: hello world
+-- 表合并：嵌套
+local d = {a=1, b={inner=2}}
+local e = {b={outer=3}, c=4}
+local f = d <> e
+print("f.a: " .. f.a .. " f.c: " .. f.c)
 
--- 2. 变量插值
-local name = "Alice"
-local age = 25
-local s2 = `Name: ${name}, Age: ${age}`
-print("2. interp: " .. s2)  -- 期望: Name: Alice, Age: 25
+-- 正则：作为参数
+local function describe(r)
+    print("匹配模式: " .. r.pattern .. " flag: " .. r.flags)
+end
+describe(/hello/i)
 
--- 3. 表达式插值
-local s3 = `Sum: ${[1 + 2 + 3]}`
-print("3. expr: " .. s3)  -- 期望: Sum: 6
+-- 正则：表达式上下文
+local x = /[0-9]+/
+local y = x
+print("y.pattern: " .. y.pattern)
 
--- 4. 多行模板字符串
-local s4 = `Line1
-Line2
-Line3`
-print("4. multi: " .. s4)  -- 期望: 三行文本
+-- 除法 vs 正则区分
+local a2 = 10
+local b2 = 2
+local div = a2 / b2
+print("除法: " .. div)
 
--- 5. $$ 转义
-local s5 = `Price: $$100`
-print("5. escape: " .. s5)  -- 期望: Price: $100
-
-print("PASS: template")
+-- 正则：复杂转义
+local r3 = /\w+\s+\d+/
+print("r3.pattern: " .. r3.pattern)
