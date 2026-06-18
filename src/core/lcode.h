@@ -51,6 +51,8 @@ typedef enum BinOpr {
   OPR_CASE,
   /* infix function call: expr1 NAME expr2 => expr1:NAME(expr2) */
   OPR_INFIX,
+  /* table merge operator: a <> b => merged table */
+  OPR_MERGE,
   OPR_NOBINOPR
 } BinOpr;
 
@@ -125,6 +127,8 @@ LUAI_FUNC void luaK_interpstring (LexState *ls, expdesc *v);
 LUAI_FUNC void luaK_settablesize (FuncState *fs, int pc,
                                   int ra, int asize, int hsize);
 LUAI_FUNC void luaK_setlist (FuncState *fs, int base, int nelems, int tostore);
+LUAI_FUNC void luaK_range (FuncState *fs, expdesc *v, lua_Integer start,
+                           lua_Integer end, int line);
 LUAI_FUNC void luaK_finish (FuncState *fs);
 LUAI_FUNC l_noret luaK_semerror (LexState *ls, const char *fmt, ...);
 LUAI_FUNC void luaK_switchexpression (LexState *ls, expdesc *v);

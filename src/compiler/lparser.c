@@ -72,6 +72,9 @@ static void matchstat (LexState *ls, int line);
 static void matchexpr (LexState *ls, expdesc *v);  /* match表达式的前向声明 */
 static void trystat (LexState *ls, int line);     /* try语句的前向声明 */
 static void withstat (LexState *ls, int line);    /* with语句的前向声明 */
+static void guardstat (LexState *ls, int line);   /* guard语句的前向声明 */
+static void letstat (LexState *ls);                /* let语句的前向声明 */
+static void deletestat (LexState *ls);             /* delete语句的前向声明 */
 static void classstat (LexState *ls, int line, int class_flags, int isexport);   /* class语句的前向声明 */
 static void namespacestat (LexState *ls, int line);
 static void declaration_stat (LexState *ls, int line);
@@ -87,6 +90,19 @@ static void constexprstat (LexState *ls);         /* 预处理语句 */
 static void ifexpr (LexState *ls, expdesc *v);    /* if表达式前向声明 */
 static int cond (LexState *ls);                   /* cond前向声明 */
 static Vardesc *getlocalvardesc (FuncState *fs, int vidx); /* getlocalvardesc前向声明 */
+
+/* LHS_assign 结构体定义（需要在 simpleexp 之前，因为 do 表达式使用它） */
+struct LHS_assign {
+  struct LHS_assign *prev;
+  expdesc v;  /* variable (global, local, upvalue, or indexed) */
+};
+
+/* 前向声明：do 表达式需要的函数 */
+static BinOpr subexpr (LexState *ls, expdesc *v, int limit);
+static void restassign (LexState *ls, struct LHS_assign *lh, int nvars);
+static void incrementstat (LexState *ls, expdesc *var);
+static BinOpr getcompoundop (int token);
+static void compoundassign (LexState *ls, expdesc *var, BinOpr opr);
 
 static l_noret error_expected (LexState *ls, int token) {
   luaX_syntaxerror(ls,
@@ -553,6 +569,7 @@ void checknext (LexState *ls, int c) {
 ** raise an error that the expected 'what' should match a 'who'
 ** in line 'where' (if that is not the current line).
 */
+__attribute__((noinline))
 void check_match (LexState *ls, int what, int who, int where) {
   if (l_unlikely(!testnext(ls, what))) {
     if (where == ls->linenumber)  /* all in the same line? */
@@ -585,6 +602,7 @@ static void init_exp (expdesc *e, expkind k, int i) {
   e->k = k;
   e->u.info = i;
   e->nodiscard = 0;
+  e->is_pipe_self = 0;
 }
 
 
@@ -1598,6 +1616,7 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_FOR: ts = luaS_newliteral(ls->L, "for"); break;
       case TK_FUNCTION: ts = luaS_newliteral(ls->L, "function"); break;
       case TK_GLOBAL: ts = luaS_newliteral(ls->L, "global"); break;
+      case TK_GUARD: ts = luaS_newliteral(ls->L, "guard"); break;
       case TK_GOTO: ts = luaS_newliteral(ls->L, "goto"); break;
       case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
       case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
@@ -1934,6 +1953,8 @@ typedef struct ConsControl {
 } ConsControl;
 
 
+static void body (LexState *ls, expdesc *e, int ismethod, int line);
+
 static void recfield (LexState *ls, ConsControl *cc) {
   /* recfield -> (NAME | '['exp']') = exp */
   FuncState *fs = ls->fs;
@@ -2030,7 +2051,8 @@ static void listfield (LexState *ls, ConsControl *cc) {
 
 
 static void field (LexState *ls, ConsControl *cc) {
-  /* field -> listfield | recfield */
+  /* field -> listfield | recfield | TK_FUNCTION NAME body */
+  FuncState *fs = ls->fs;
   switch(ls->t.token) {
     case TK_NAME:
     case TK_TYPE_INT:
@@ -2049,6 +2071,23 @@ static void field (LexState *ls, ConsControl *cc) {
     }
     case '[': {
       recfield(ls, cc);
+      break;
+    }
+    case TK_FUNCTION: {  /* function NAME (params) body end 简写，自动添加 self */
+      int reg = ls->fs->freereg;
+      expdesc tab, key, val;
+      int fline = ls->linenumber;
+      luaX_next(ls);  /* skip 'function' */
+      /* 函数名作为 table key */
+      TString *ts = str_checkname(ls);
+      codestring(&key, ts);
+      cc->nh++;
+      /* 解析函数体，ismethod=1 自动添加隐式 self 参数 */
+      body(ls, &val, 1, fline);
+      tab = *cc->t;
+      luaK_indexed(fs, &tab, &key);
+      luaK_storevar(fs, &tab, &val);
+      fs->freereg = reg;
       break;
     }
     default: {
@@ -2803,20 +2842,13 @@ static void lambda_parlist(LexState *ls, TString **varargname) {
 }
 
 
-static void lambda_body(LexState *ls, expdesc *e, int line) {
-    /* lambda_body -> lambda_parlist ':'|let retstat          -- 表达式体 */
-    /* lambda_body -> lambda_parlist '=>' statement            -- 箭头体 */
-    /* lambda_body -> lambda_parlist statlist TK_END           -- 块体 */
-    FuncState new_fs;
-    BlockCnt bl;
-    new_fs.f = addprototype(ls);
-    new_fs.f->linedefined = line;
-    open_func(ls, &new_fs, &bl);
-    TString *varargname = NULL;
-    lambda_parlist(ls, &varargname);
-    if (varargname) namedvararg(ls, varargname);
-    if (testnext(ls, TK_LET)||testnext(ls, ':')) {
-        /* 表达式体: lambda(x): x * 2 */
+/*
+** 解析lambda体（参数已解析完毕）
+** 支持: '->' expr | ':'|let expr | '=>' stmt | statlist end
+*/
+static void lambda_body_inner(LexState *ls, expdesc *e, int line) {
+    if (testnext(ls, TK_ARROW) || testnext(ls, TK_LET) || testnext(ls, ':')) {
+        /* 表达式体: || -> 42  或  |x| -> x * 2  或  lambda(x): x * 2 */
         enterlevel(ls);
         retstat(ls);
         lua_assert(ls->fs->f->maxstacksize >= ls->fs->freereg &&
@@ -2831,6 +2863,21 @@ static void lambda_body(LexState *ls, expdesc *e, int line) {
         statlist(ls);
         check_match(ls, TK_END, TK_LAMBDA, line);
     }
+}
+
+static void lambda_body(LexState *ls, expdesc *e, int line) {
+    /* lambda_body -> lambda_parlist ':'|let retstat          -- 表达式体 */
+    /* lambda_body -> lambda_parlist '=>' statement            -- 箭头体 */
+    /* lambda_body -> lambda_parlist statlist TK_END           -- 块体 */
+    FuncState new_fs;
+    BlockCnt bl;
+    new_fs.f = addprototype(ls);
+    new_fs.f->linedefined = line;
+    open_func(ls, &new_fs, &bl);
+    TString *varargname = NULL;
+    lambda_parlist(ls, &varargname);
+    if (varargname) namedvararg(ls, varargname);
+    lambda_body_inner(ls, e, line);
     new_fs.f->lastlinedefined = ls->linenumber;
     codeclosure(ls, e);
     close_func(ls);
@@ -2906,8 +2953,9 @@ static void funcargs (LexState *ls, expdesc *f, int line) {
   }
   lua_assert(f->k == VNONRELOC);
   base = f->u.info;  /* base register for call */
-  if (hasmultret(args.k))
+  if (hasmultret(args.k)) {
     nparams = LUA_MULTRET;  /* open call */
+  }
   else {
     if (args.k != VVOID)
       luaK_exp2nextreg(fs, &args);  /* close last argument */
@@ -3491,6 +3539,8 @@ static void primaryexp (LexState *ls, expdesc *v) {
         case TK_SPACESHIP: opstr = "<=>"; break;
         case TK_NULLCOAL: opstr = "??"; break;
         case TK_NULLCOALEQ: opstr = "?\?="; break;
+        case TK_ANDANDEQ: opstr = "&&="; break;
+        case TK_OROREQ: opstr = "||="; break;
         case TK_ARROW: opstr = "->"; break;
         case TK_MEAN: opstr = "=>"; break;
         case TK_ADDEQ: opstr = "+="; break;
@@ -3541,6 +3591,68 @@ static void primaryexp (LexState *ls, expdesc *v) {
       *v = operators_table;
       return;
     }
+    case '@': {  /* || 无参lambda */
+      luaX_next(ls);  /* skip || */
+      int line = ls->linenumber;
+      FuncState new_fs;
+      BlockCnt bl;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      new_fs.f->is_vararg = 0;
+      new_fs.f->numparams = 0;
+      open_func(ls, &new_fs, &bl);
+      lambda_body_inner(ls, v, line);
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
+    case '|': {  /* |params| lambda */
+      luaX_next(ls);  /* skip | */
+      int line = ls->linenumber;
+      FuncState new_fs;
+      BlockCnt bl;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      new_fs.f->is_vararg = 0;
+      open_func(ls, &new_fs, &bl);
+      FuncState *fs = ls->fs;  /* 在 open_func 之后获取新函数状态 */
+      /* 解析参数列表直到 '|' */
+      int nparams = 0;
+      while (ls->t.token != '|') {
+        if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+          new_localvar(ls, str_checkname(ls));
+          adjustlocalvars(ls, 1);
+          luaK_reserveregs(fs, 1);
+          nparams++;
+          if (testnext(ls, '=')) {
+            int param_reg = getlocalvardesc(fs, fs->nactvar - 1)->vd.ridx;
+            luaK_codeABCk(fs, OP_TESTNIL, param_reg, param_reg, 0, 0);
+            int jmp_skip = luaK_jump(fs);
+            expdesc default_val;
+            expr(ls, &default_val);
+            luaK_exp2reg(fs, &default_val, param_reg);
+            luaK_patchtohere(fs, jmp_skip);
+          }
+        }
+        else if (ls->t.token == TK_DOTS) {
+          luaX_next(ls);
+          new_fs.f->is_vararg = 1;
+        }
+        else {
+          luaX_syntaxerror(ls, "<name> or '...' expected");
+        }
+        if (ls->t.token != '|' && !testnext(ls, ','))
+          break;
+      }
+      checknext(ls, '|');  /* skip closing | */
+      new_fs.f->numparams = cast_byte(fs->nactvar);
+      lambda_body_inner(ls, v, line);
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
     default: {
       luaX_syntaxerror(ls, "unexpected symbol");
     }
@@ -3565,13 +3677,13 @@ static void pipe_funcexp (LexState *ls, expdesc *v) {
     switch (ls->t.token) {
       case '.':
       case TK_DBCOLON: {  /* fieldsel or label */
-        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 再跟 ::，则是 label 而非字段访问
+        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 或关键字（continue/break等）再跟 ::，则是 label 而非字段访问
            区分链式命名空间 (obj::ns::member) 需要 lookahead 三步：
            - label: ::NAME::  → 第二个 :: 之后不是 NAME（通常是另一个 statement）
            - 命名空间: obj::ns::member → 第二个 :: 之后还是 NAME
            关键：lookahead3 如果在不同行，一定是 label（跨行不可能是命名空间链）*/
         int la = luaX_lookahead(ls);
-        if (la == TK_NAME) {
+        if (la == TK_NAME || la == TK_CONTINUE || la == TK_BREAK || la == TK_GOTO) {
           int la2 = luaX_lookahead2(ls);
           if (la2 == TK_DBCOLON) {
             int la3 = luaX_lookahead3(ls);
@@ -3588,6 +3700,30 @@ static void pipe_funcexp (LexState *ls, expdesc *v) {
       case '[': {  /* '[' exp ']' 或切片语法 '[' start:end:step ']' */
         yindex_or_slice(ls, v);
         break;
+      }
+      case ':': {  /* ':' NAME（无 funcargs，管道方法引用） */
+        /* 
+         * obj:method 在管道上下文中作为方法引用使用
+         * 等价于 function(x) return obj:method(x) end
+         * 使用 OP_SELF 生成 (method, obj) 对，管道调用时多传 self 参数
+         */
+        int next = luaX_lookahead(ls);
+        if (next == TK_NAME) {
+          int next2 = luaX_lookahead2(ls);
+          if (next2 == '(' || next2 == '{' || next2 == TK_STRING 
+              || next2 == TK_INTERPSTRING || next2 == TK_RAWSTRING) {
+            /* 有 funcargs，不是管道方法引用，停止 */
+            return;
+          }
+          /* 无 funcargs，管道方法引用 */
+          expdesc key;
+          luaX_next(ls);  /* 跳过 ':' */
+          codename(ls, &key);
+          luaK_self(fs, v, &key);
+          v->is_pipe_self = 1;  /* 标记为管道方法引用 */
+          return;
+        }
+        return;
       }
       default: return;  /* 遇到其他 token 就停止 */
     }
@@ -3710,13 +3846,13 @@ static void suffixedexp (LexState *ls, expdesc *v) {
       }
       case '.':
       case TK_DBCOLON: {  /* fieldsel or label */
-        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 再跟 ::，则是 label 而非字段访问
+        /* 检测 ::name:: 标签模式：若 :: 后跟 NAME 或关键字（continue/break等）再跟 ::，则是 label 而非字段访问
            区分链式命名空间 (obj::ns::member) 需要 lookahead 三步：
            - label: ::NAME::  → 第二个 :: 之后不是 NAME（通常是另一个 statement）
            - 命名空间: obj::ns::member → 第二个 :: 之后还是 NAME
            关键：lookahead3 如果在不同行，一定是 label（跨行不可能是命名空间链）*/
         int la = luaX_lookahead(ls);
-        if (la == TK_NAME) {
+        if (la == TK_NAME || la == TK_CONTINUE || la == TK_BREAK || la == TK_GOTO) {
           int la2 = luaX_lookahead2(ls);
           if (la2 == TK_DBCOLON) {
             int la3 = luaX_lookahead3(ls);
@@ -3771,6 +3907,70 @@ static void suffixedexp (LexState *ls, expdesc *v) {
           }
           case TK_LAMBDA: {  /* lambda表达式 */
             lambda_body(ls, &e, ls->linenumber);
+            break;
+          }
+          case '@': {  /* || 无参lambda */
+            luaX_next(ls);  /* skip || */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              new_fs.f->numparams = 0;
+              open_func(ls, &new_fs, &bl);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
+            break;
+          }
+          case '|': {  /* |params| lambda */
+            luaX_next(ls);  /* skip | */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              open_func(ls, &new_fs, &bl);
+              FuncState *inner_fs = ls->fs;  /* 在 open_func 之后获取新函数状态 */
+              /* 解析参数列表直到 '|' */
+              while (ls->t.token != '|') {
+                if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+                  new_localvar(ls, str_checkname(ls));
+                  adjustlocalvars(ls, 1);
+                  luaK_reserveregs(inner_fs, 1);
+                  if (testnext(ls, '=')) {
+                    int param_reg = getlocalvardesc(inner_fs, inner_fs->nactvar - 1)->vd.ridx;
+                    luaK_codeABCk(inner_fs, OP_TESTNIL, param_reg, param_reg, 0, 0);
+                    int jmp_skip = luaK_jump(inner_fs);
+                    expdesc default_val;
+                    expr(ls, &default_val);
+                    luaK_exp2reg(inner_fs, &default_val, param_reg);
+                    luaK_patchtohere(inner_fs, jmp_skip);
+                  }
+                }
+                else if (ls->t.token == TK_DOTS) {
+                  luaX_next(ls);
+                  new_fs.f->is_vararg = 1;
+                }
+                else {
+                  luaX_syntaxerror(ls, "<name> or '...' expected");
+                }
+                if (ls->t.token != '|' && !testnext(ls, ','))
+                  break;
+              }
+              checknext(ls, '|');  /* skip closing | */
+              new_fs.f->numparams = cast_byte(inner_fs->nactvar);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
             break;
           }
           case TK_INT: {  /* 整数常量 */
@@ -3831,6 +4031,70 @@ static void suffixedexp (LexState *ls, expdesc *v) {
           }
           case TK_LAMBDA: {  /* lambda表达式 */
             lambda_body(ls, &e, ls->linenumber);
+            break;
+          }
+          case '@': {  /* || 无参lambda */
+            luaX_next(ls);  /* skip || */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              new_fs.f->numparams = 0;
+              open_func(ls, &new_fs, &bl);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
+            break;
+          }
+          case '|': {  /* |params| lambda */
+            luaX_next(ls);  /* skip | */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              open_func(ls, &new_fs, &bl);
+              FuncState *inner_fs = ls->fs;  /* 在 open_func 之后获取新函数状态 */
+              /* 解析参数列表直到 '|' */
+              while (ls->t.token != '|') {
+                if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+                  new_localvar(ls, str_checkname(ls));
+                  adjustlocalvars(ls, 1);
+                  luaK_reserveregs(inner_fs, 1);
+                  if (testnext(ls, '=')) {
+                    int param_reg = getlocalvardesc(inner_fs, inner_fs->nactvar - 1)->vd.ridx;
+                    luaK_codeABCk(inner_fs, OP_TESTNIL, param_reg, param_reg, 0, 0);
+                    int jmp_skip = luaK_jump(inner_fs);
+                    expdesc default_val;
+                    expr(ls, &default_val);
+                    luaK_exp2reg(inner_fs, &default_val, param_reg);
+                    luaK_patchtohere(inner_fs, jmp_skip);
+                  }
+                }
+                else if (ls->t.token == TK_DOTS) {
+                  luaX_next(ls);
+                  new_fs.f->is_vararg = 1;
+                }
+                else {
+                  luaX_syntaxerror(ls, "<name> or '...' expected");
+                }
+                if (ls->t.token != '|' && !testnext(ls, ','))
+                  break;
+              }
+              checknext(ls, '|');  /* skip closing | */
+              new_fs.f->numparams = cast_byte(inner_fs->nactvar);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
             break;
           }
           case TK_INT: {  /* 整数常量 */
@@ -3896,6 +4160,70 @@ static void suffixedexp (LexState *ls, expdesc *v) {
           }
           case TK_LAMBDA: {  /* lambda表达式 */
             lambda_body(ls, &e, ls->linenumber);
+            break;
+          }
+          case '@': {  /* || 无参lambda */
+            luaX_next(ls);  /* skip || */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              new_fs.f->numparams = 0;
+              open_func(ls, &new_fs, &bl);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
+            break;
+          }
+          case '|': {  /* |params| lambda */
+            luaX_next(ls);  /* skip | */
+            {
+              int line = ls->linenumber;
+              FuncState new_fs;
+              BlockCnt bl;
+              new_fs.f = addprototype(ls);
+              new_fs.f->linedefined = line;
+              new_fs.f->is_vararg = 0;
+              open_func(ls, &new_fs, &bl);
+              FuncState *inner_fs = ls->fs;  /* 在 open_func 之后获取新函数状态 */
+              /* 解析参数列表直到 '|' */
+              while (ls->t.token != '|') {
+                if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+                  new_localvar(ls, str_checkname(ls));
+                  adjustlocalvars(ls, 1);
+                  luaK_reserveregs(inner_fs, 1);
+                  if (testnext(ls, '=')) {
+                    int param_reg = getlocalvardesc(inner_fs, inner_fs->nactvar - 1)->vd.ridx;
+                    luaK_codeABCk(inner_fs, OP_TESTNIL, param_reg, param_reg, 0, 0);
+                    int jmp_skip = luaK_jump(inner_fs);
+                    expdesc default_val;
+                    expr(ls, &default_val);
+                    luaK_exp2reg(inner_fs, &default_val, param_reg);
+                    luaK_patchtohere(inner_fs, jmp_skip);
+                  }
+                }
+                else if (ls->t.token == TK_DOTS) {
+                  luaX_next(ls);
+                  new_fs.f->is_vararg = 1;
+                }
+                else {
+                  luaX_syntaxerror(ls, "<name> or '...' expected");
+                }
+                if (ls->t.token != '|' && !testnext(ls, ','))
+                  break;
+              }
+              checknext(ls, '|');  /* skip closing | */
+              new_fs.f->numparams = cast_byte(inner_fs->nactvar);
+              lambda_body_inner(ls, &e, line);
+              new_fs.f->lastlinedefined = ls->linenumber;
+              codeclosure(ls, &e);
+              close_func(ls);
+            }
             break;
           }
           case TK_INT: {  /* 整数常量 */
@@ -4075,6 +4403,124 @@ static void simpleexp (LexState *ls, expdesc *v) {
     case TK_LAMBDA: {
       luaX_next(ls);
       lambda_body(ls, v, ls->linenumber);
+      return;
+    }
+    case TK_DO: {  /* do 表达式 */
+      luaX_next(ls);  /* 跳过 DO */
+      FuncState *fs = ls->fs;
+      int line = ls->linenumber;
+      int has_result = 0;
+      BlockCnt bl;
+      expdesc result_e;
+
+      /* 保存 enterblock 前的 freereg，用于放置 do 表达式结果 */
+      int saved_freereg = fs->freereg;
+      int stklevel_before = luaY_nvarstack(fs);
+      fs->freereg = stklevel_before;  /* enterblock 要求 freereg == nvarstack */
+
+      /*
+      ** 暂时移除未激活的待处理变量（pending variables）。
+      */
+      int pending_start = fs->firstlocal + fs->nactvar;
+      int pending_count = (int)(ls->dyd->actvar.n) - pending_start;
+      Vardesc *saved_pending = NULL;
+      if (pending_count > 0) {
+        saved_pending = luaM_newvector(ls->L, pending_count, Vardesc);
+        memcpy(saved_pending,
+               &ls->dyd->actvar.arr[pending_start],
+               pending_count * sizeof(Vardesc));
+        ls->dyd->actvar.n = pending_start;
+      }
+
+      enterblock(fs, &bl, 0);  /* 创建独立作用域 */
+
+      /* 解析语句，直到 end。最后一个表达式作为 do 表达式的返回值 */
+      while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+        switch (ls->t.token) {
+          case TK_IF: case TK_WHILE: case TK_FOR: case TK_REPEAT:
+          case TK_LOCAL: case TK_CONST: case TK_GLOBAL:
+          case TK_RETURN: case TK_BREAK: case TK_CONTINUE: case TK_GOTO:
+          case TK_FUNCTION: case TK_SWITCH: case TK_TRY: case TK_DEFER:
+          case TK_DOLLAR: case TK_DBCOLON: case TK_EXPORT:
+          case TK_NAMESPACE: case TK_USING: case TK_STRUCT: case TK_ENUM:
+          case TK_WHEN: case TK_WITH: case TK_GUARD: case TK_LET: case TK_DELETE: case TK_ASM:
+          case TK_ASYNC: case TK_AWAIT: case TK_COMMAND: case TK_KEYWORD:
+          case TK_OPERATOR: case TK_CONCEPT: case TK_SUPERSTRUCT:
+          case TK_TYPE_INT: case TK_TYPE_FLOAT: case TK_DOUBLE:
+          case TK_BOOL: case TK_VOID: case TK_CHAR: case TK_LONG:
+          case '@': case ';':
+            statement(ls);
+            fs->freereg = luaY_nvarstack(fs);  /* 语句执行后重置 freereg */
+            break;
+          default: {
+            expdesc e;
+            subexpr(ls, &e, 0);  /* 直接调用 subexpr 而非 expr */
+
+            if (ls->t.token == TK_END) {
+              result_e = e;  /* 保存结果表达式 */
+              has_result = 1;
+              break;  /* 跳出 switch，while 循环条件会检测到 TK_END 并退出 */
+            }
+
+            if (ls->t.token == '=' || ls->t.token == ',') {
+              struct LHS_assign lh;
+              lh.v = e;
+              lh.prev = NULL;
+              restassign(ls, &lh, 1);
+            }
+            else if (ls->t.token == TK_WALRUS) {
+              expdesc val;
+              luaX_next(ls);
+              subexpr(ls, &val, 0);
+              luaK_storevar(fs, &e, &val);
+            }
+            else if (ls->t.token == TK_PLUSPLUS) {
+              incrementstat(ls, &e);
+            }
+            else {
+              BinOpr opr = getcompoundop(ls->t.token);
+              if (opr != OPR_NOBINOPR) {
+                compoundassign(ls, &e, opr);
+              }
+            }
+
+            fs->freereg = luaY_nvarstack(fs);
+            break;
+          }
+        }
+      }
+
+      /* 在 leaveblock 之前，将结果移到 saved_freereg（不受 leaveblock 影响的寄存器） */
+      if (has_result) {
+        luaK_exp2reg(fs, &result_e, saved_freereg);
+      }
+
+      check_match(ls, TK_END, TK_DO, line);
+      leaveblock(fs);  /* 释放作用域，freereg 回到 stklevel_before */
+
+      /* 恢复之前移除的待激活变量 */
+      if (pending_count > 0) {
+        int current_n = (int)(ls->dyd->actvar.n);
+        luaM_growvector(ls->L, ls->dyd->actvar.arr, current_n + pending_count,
+                        ls->dyd->actvar.size, Vardesc, USHRT_MAX,
+                        "local variables");
+        memmove(&ls->dyd->actvar.arr[pending_start + pending_count],
+                &ls->dyd->actvar.arr[pending_start],
+                (current_n - pending_start) * sizeof(Vardesc));
+        memcpy(&ls->dyd->actvar.arr[pending_start], saved_pending,
+               pending_count * sizeof(Vardesc));
+        ls->dyd->actvar.n = current_n + pending_count;
+        luaM_freearray(ls->L, saved_pending, pending_count);
+      }
+
+      if (has_result) {
+        /* 结果在 saved_freereg，更新 freereg */
+        fs->freereg = saved_freereg + 1;
+        init_exp(v, VNONRELOC, saved_freereg);
+      } else {
+        fs->freereg = saved_freereg;
+        init_exp(v, VNIL, 0);
+      }
       return;
     }
     case TK_INTERPSTRING: {
@@ -4939,6 +5385,18 @@ static void simpleexp (LexState *ls, expdesc *v) {
       fs->freereg = base + 1;
       return;
     }
+    case TK_REGEX: {
+      /* 正则字面量 /pattern/flags
+      ** 将 pattern 和 flags 字符串存入常量表，生成 OP_REGEX 指令
+      */
+      FuncState *fs = ls->fs;
+      TString *ts = ls->t.seminfo.ts;
+      int kidx = luaK_stringK(fs, ts);
+      init_exp(v, VRELOC, luaK_codeABx(fs, OP_REGEX, 0, kidx));
+      luaX_next(ls);
+      luaK_fixline(fs, ls->linenumber);
+      return;
+    }
     default: {
       suffixedexp(ls, v);
       return;
@@ -4989,6 +5447,7 @@ static BinOpr getbinopr (int op) {
     case TK_IN: return OPR_IN;
     case TK_NULLCOAL: return OPR_NULLCOAL;
     case TK_MEAN: return OPR_CASE;
+    case TK_MERGE: return OPR_MERGE;
     default: return OPR_NOBINOPR;
   }
 }
@@ -5017,7 +5476,8 @@ static const struct {
    {2, 2}, {1, 1},           /* and, or */
    {1, 1},                   /* ?? (null coalescing, right associative) */
    {1, 1},                   /* => (case operator) */
-   {5, 5}                    /* INFIX (infix function call, left associative) */
+   {5, 5},                   /* INFIX (infix function call, left associative) */
+   {8, 7}                    /* <> (table merge, left associative) */
 };
 
 #define UNARY_PRIORITY	12  /* priority for unary operators */
@@ -5281,10 +5741,35 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
         op = OPR_INFIX;
       }
     } else {
+      /* 范围操作符检测：在消费 '..' 之前检查左操作数是否为整数常量 */
+      int is_range = 0;
+      lua_Integer range_start = 0;
+      if (op == OPR_CONCAT && ls->t.nospace) {
+        luaK_dischargevars(ls->fs, v);
+        if (v->k == VKINT && v->t == v->f) {  /* 无跳转的整数常量 */
+          range_start = v->u.ival;
+          is_range = 1;
+        }
+      }
       luaX_next(ls);  /* skip operator */
       luaK_infix(ls->fs, op, v);
       /* read sub-expression with higher priority */
       nextop = subexpr(ls, &v2, priority[op].right);
+      /* 范围操作符：1..5 生成表 {1,2,3,4,5} */
+      if (is_range && v2.k == VKINT && v2.t == v2.f && range_start <= v2.u.ival) {
+        /* 释放 luaK_infix 为 v 分配的临时寄存器 */
+        if (v->k == VNONRELOC && v->u.info >= luaY_nvarstack(ls->fs))
+          ls->fs->freereg = v->u.info;
+        luaK_range(ls->fs, v, range_start, v2.u.ival, line);
+        op = nextop;
+        /* 继续检测中缀调用 */
+        if (op == OPR_INFIX && ls->t.linenumber != line)
+          op = OPR_NOBINOPR;
+        if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+            is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls))
+          op = OPR_INFIX;
+        continue;
+      }
       /* 链式比较检测: a < b < c => (a < b) and (b < c) */
       int is_chain = is_comparison_op(op) && is_comparison_op(nextop);
       int chain_val_reg = 0;
@@ -5387,7 +5872,6 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
   leavelevel(ls);
   return op;  /* return first untreated operator */
 }
-
 
 void expr (LexState *ls, expdesc *v) {
   subexpr(ls, v, 0);
@@ -5900,14 +6384,7 @@ static void block (LexState *ls) {
 }
 
 
-/*
-** structure to chain all variables in the left-hand side of an
-** assignment
-*/
-struct LHS_assign {
-  struct LHS_assign *prev;
-  expdesc v;  /* variable (global, local, upvalue, or indexed) */
-};
+
 
 
 /*
@@ -6059,6 +6536,17 @@ static void gotostat (LexState *ls) {
   if (ls->t.token == TK_CONTINUE) {
     luaX_next(ls);
     newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(fs));
+    return;
+  }
+  /* 允许 break 和 goto 关键字作为标签名 */
+  if (ls->t.token == TK_BREAK) {
+    luaX_next(ls);
+    newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, luaK_jump(fs));
+    return;
+  }
+  if (ls->t.token == TK_GOTO) {
+    luaX_next(ls);
+    newgotoentry(ls, luaS_newliteral(ls->L, "goto"), line, luaK_jump(fs));
     return;
   }
   TString *name = str_checkname(ls);  /* label's name */
@@ -6316,7 +6804,13 @@ static void forlist (LexState *ls, TString *indexname) {
   }
   if (ls->t.token == TK_IN) luaX_next(ls);
   line = ls->linenumber;
-  adjust_assign(ls, 4, explist(ls, &e), &e);
+  
+  /* 解析表达式列表 */
+  /* 注：OP_TFORPREP 已内置隐式 pairs 支持 — 当第一个表达式是 table 时
+   * 自动使用 next 迭代，因此编译器不需要手动包装 pairs() */
+  int nexps = explist(ls, &e);
+  
+  adjust_assign(ls, 4, nexps, &e);
   adjustlocalvars(ls, 4);  /* control variables */
   marktobeclosed(fs);  /* last control var. must be closed */
   luaK_checkstack(fs, 3);  /* extra space to call generator */
@@ -6549,6 +7043,188 @@ static void ifstat (LexState *ls, int line) {
   }
   
   luaK_patchtohere(fs, escapelist);  /* patch escape list to 'if' end */
+}
+
+
+/*
+** let 语句解析 - 独立变量声明
+** letstat -> LET NAME {',' NAME} '=' explist
+** 
+** let 声明创建块作用域变量，与 local 类似但语法更简洁
+** 
+** 参数：
+**   ls - 词法状态
+*/
+static void letstat (LexState *ls) {
+  /* letstat -> LET NAME {',' NAME} '=' explist */
+  FuncState *fs = ls->fs;
+  int nvars = 0;
+  int nexps;
+  expdesc e;
+  
+  luaX_next(ls);  /* skip LET */
+  
+  /* 解析变量名 */
+  do {
+    new_localvar(ls, str_checkname(ls));
+    nvars++;
+  } while (testnext(ls, ','));
+  
+  /* 必须有赋值 */
+  checknext(ls, '=');
+  
+  /* 解析表达式并赋值 */
+  nexps = explist(ls, &e);
+  adjust_assign(ls, nvars, nexps, &e);
+  adjustlocalvars(ls, nvars);
+}
+
+
+/*
+** delete 语句解析 - 删除 table 中的键
+** deletestat -> DELETE NAME {'.' NAME | '[' exp ']'}
+** 
+** 将 table 的指定键设为 nil，等价于 t.key = nil
+** 
+** 参数：
+**   ls - 词法状态
+*/
+static void deletestat (LexState *ls) {
+  FuncState *fs = ls->fs;
+  expdesc t, key, val;
+  int line = ls->linenumber;
+  
+  luaX_next(ls);  /* skip 'delete' */
+  
+  /* 解析基础表达式 */
+  primaryexp(ls, &t);
+  
+  /* 解析后缀链: .name 或 [expr] */
+  for (;;) {
+    if (ls->t.token == '.') {
+      luaK_exp2anyregup(fs, &t);  /* 将表表达式载入寄存器，支持嵌套索引 */
+      luaX_next(ls);  /* skip '.' */
+      codestring(&key, str_checkname(ls));
+      luaK_indexed(fs, &t, &key);
+    }
+    else if (ls->t.token == '[') {
+      luaK_exp2anyregup(fs, &t);  /* 将表表达式载入寄存器，支持嵌套索引 */
+      yindex(ls, &key);
+      luaK_indexed(fs, &t, &key);
+    }
+    else {
+      break;
+    }
+  }
+  
+  /* 设置值为 nil */
+  init_exp(&val, VNIL, 0);
+  luaK_storevar(fs, &t, &val);
+}
+
+
+/*
+** guard 语句解析
+** guardstat -> GUARD cond ELSE ['{'] block ['}']
+** guardstat -> GUARD let NAME {',' NAME} '=' explist ELSE ['{'] block ['}']
+** 
+** guard 语义：条件为真时跳过 else 块继续执行，条件为假时进入 else 块（必须退出作用域）
+** 
+** 参数：
+**   ls - 词法状态
+**   line - guard 关键字所在行号
+*/
+static void guardstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  BlockCnt bl;
+  int use_brace = 0;
+  
+  luaX_next(ls);  /* skip GUARD */
+  
+  if (ls->t.token == TK_LET) {
+    /* guard let NAME {',' NAME} '=' explist ELSE ['{'] block ['}'] */
+    int nvars = 1;
+    int nexps;
+    expdesc e;
+    
+    checknext(ls, TK_LET);  /* skip 'let' */
+    
+    /* guard let 变量在函数作用域中创建，guard 之后继续可用 */
+    
+    /* 解析变量名 */
+    new_localvar(ls, str_checkname(ls));
+    while (testnext(ls, ',')) {
+      new_localvar(ls, str_checkname(ls));
+      nvars++;
+    }
+    
+    checknext(ls, '=');
+    
+    /* 解析表达式并赋值 */
+    nexps = explist(ls, &e);
+    adjust_assign(ls, nvars, nexps, &e);
+    adjustlocalvars(ls, nvars);
+    
+    /* 用第一个 let 变量作为条件：guard 条件为假（nil/false）时进入 else 块 */
+    expdesc cond_v;
+    init_exp(&cond_v, VLOCAL, fs->nactvar - nvars);
+    luaK_goiffalse(fs, &cond_v);  /* 条件为真时跳过 else 块 */
+    
+    checknext(ls, TK_ELSE);  /* 跳过 'else' */
+    
+    enterblock(fs, &bl, 0);  /* else 块有自己的作用域 */
+    
+    /* 解析 else 块 */
+    if (ls->t.token == '{') {
+      use_brace = 1;
+      luaX_next(ls);  /* skip '{' */
+    }
+    
+    if (use_brace) {
+      while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+        statement(ls);
+      }
+      checknext(ls, '}');
+    } else {
+      statlist(ls);
+    }
+    
+    leaveblock(fs);  /* 结束 else 块 */
+    luaK_patchtohere(fs, cond_v.t);  /* 修补跳过 else 块的跳转 */
+    
+  } else {
+    /* guard cond ELSE ['{'] block ['}'] */
+    expdesc v;
+    int jt;  /* 条件为真时跳过 else 块的跳转 */
+    
+    cond_expr(ls, &v);  /* 读取条件 */
+    
+    /* guard 语义：条件为假时进入 else 块，条件为真时跳过 */
+    luaK_goiffalse(fs, &v);  /* 条件为真时跳转到 v.t（跳过 else 块） */
+    jt = v.t;
+    
+    checknext(ls, TK_ELSE);  /* 跳过 'else' */
+    
+    enterblock(fs, &bl, 0);
+    
+    /* 解析 else 块 */
+    if (ls->t.token == '{') {
+      use_brace = 1;
+      luaX_next(ls);  /* skip '{' */
+    }
+    
+    if (use_brace) {
+      while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+        statement(ls);
+      }
+      checknext(ls, '}');
+    } else {
+      statlist(ls);
+    }
+    
+    leaveblock(fs);
+    luaK_patchtohere(fs, jt);  /* 修补跳过 else 块的跳转 */
+  }
 }
 
 
@@ -10484,6 +11160,8 @@ static void operatorstat (LexState *ls, int line) {
     case TK_SPACESHIP: opstr = "<=>"; break;
     case TK_NULLCOAL: opstr = "??"; break;
     case TK_NULLCOALEQ: opstr = "?\?="; break;
+    case TK_ANDANDEQ: opstr = "&&="; break;
+    case TK_OROREQ: opstr = "||="; break;
     case TK_ARROW: opstr = "->"; break;
     case TK_MEAN: opstr = "=>"; break;
     case TK_ADDEQ: opstr = "+="; break;
@@ -12155,6 +12833,8 @@ static BinOpr getcompoundop (int token) {
     case TK_SHLEQ:    return OPR_SHL;     /* <<= */
     case TK_CONCATEQ: return OPR_CONCAT;  /* ..= */
     case TK_NULLCOALEQ: return OPR_NULLCOAL; /* ??= */
+    case TK_ANDANDEQ:  return OPR_AND;      /* &&= */
+    case TK_OROREQ:    return OPR_OR;       /* ||= */
     case TK_POWEQ:    return OPR_POW;      /* ^= */
     case TK_NE:       return OPR_BXOR;    /* ~= 在赋值上下文中作为位异或赋值 */
     default:          return OPR_NOBINOPR;
@@ -13347,6 +14027,10 @@ void statement (LexState *ls) {
       whenstat(ls, line);
       break;
     }
+    case TK_GUARD: {  /* stat -> guardstat */
+      guardstat(ls, line);
+      break;
+    }
     case TK_IF: {  /* stat -> ifstat */
       ifstat(ls, line);
       break;
@@ -13540,6 +14224,14 @@ void statement (LexState *ls) {
         localstat(ls, 0);
       break;
     }
+    case TK_LET: {  /* stat -> letstat */
+      letstat(ls);
+      break;
+    }
+    case TK_DELETE: {  /* stat -> deletestat */
+      deletestat(ls);
+      break;
+    }
     case TK_CONST: {  /* stat -> conststat */
       luaX_next(ls);  /* skip CONST */
       if (testnext(ls, TK_FUNCTION))  /* const function? */
@@ -13556,6 +14248,14 @@ void statement (LexState *ls) {
       luaX_next(ls);  /* skip double colon */
       if (ls->t.token == TK_CONTINUE) {
         TString *name = luaS_newliteral(ls->L, "continue");
+        luaX_next(ls);
+        labelstat(ls, name, line);
+      } else if (ls->t.token == TK_BREAK) {
+        TString *name = luaS_newliteral(ls->L, "break");
+        luaX_next(ls);
+        labelstat(ls, name, line);
+      } else if (ls->t.token == TK_GOTO) {
+        TString *name = luaS_newliteral(ls->L, "goto");
         luaX_next(ls);
         labelstat(ls, name, line);
       } else {

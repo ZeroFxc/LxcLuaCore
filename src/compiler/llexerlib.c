@@ -1458,6 +1458,7 @@ LUAMOD_API int luaopen_lexer(lua_State *L) {
     REG_TK(L, TK_DBCOLON);
     REG_TK(L, TK_DEFAULT);
     REG_TK(L, TK_DEFER);
+    REG_TK(L, TK_DELETE);
     REG_TK(L, TK_DIVEQ);
     REG_TK(L, TK_DO);
     REG_TK(L, TK_DOLLAR);
@@ -1478,6 +1479,7 @@ LUAMOD_API int luaopen_lexer(lua_State *L) {
     REG_TK(L, TK_FUNCTION);
     REG_TK(L, TK_GE);
     REG_TK(L, TK_GLOBAL);
+    REG_TK(L, TK_GUARD);
     REG_TK(L, TK_GOTO);
     REG_TK(L, TK_IDIV);
     REG_TK(L, TK_IDIVEQ);

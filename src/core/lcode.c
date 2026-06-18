@@ -13,6 +13,7 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "lua.h"
@@ -1746,7 +1747,8 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
       break;
     }
     case OPR_CONCAT: {
-      luaK_exp2nextreg(fs, v);  /* operand must be on the stack */
+      /* 保存左操作数到新寄存器，防止右操作数求值（如内层 ..）覆盖原值 */
+      luaK_exp2nextreg(fs, v);
       break;
     }
     case OPR_ADD: case OPR_SUB:
@@ -1789,6 +1791,11 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
     }
     case OPR_INFIX: {
       /* infix calls are handled directly in subexpr; this case shouldn't be reached */
+      luaK_exp2anyreg(fs, v);
+      break;
+    }
+    case OPR_MERGE: {
+      /* 表合并：确保左侧表达式在寄存器中 */
       luaK_exp2anyreg(fs, v);
       break;
     }
@@ -1850,7 +1857,20 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       break;
     }
     case OPR_CONCAT: {  /* e1 .. e2 */
-      luaK_exp2nextreg(fs, e2);
+      /* 范围操作符：TODO - 需要精确检测 '..' 前无空格后重新启用
+       * 目前暂时禁用，避免 "1 .. 2 .. 3" 被误判为范围操作符 */
+      luaK_dischargevars(fs, e1);
+      luaK_dischargevars(fs, e2);
+      /* e1 已在 luaK_infix 中保存到新寄存器，确保 e2 在 e1 的下一个寄存器 */
+      lua_assert(e1->k == VNONRELOC);
+      {
+        int target = e1->u.info + 1;
+        if (e2->k != VNONRELOC || e2->u.info != target) {
+          if (fs->freereg <= target)
+            luaK_reserveregs(fs, target - fs->freereg + 1);
+          luaK_exp2reg(fs, e2, target);
+        }
+      }
       codeconcat(fs, e1, e2, line);
       break;
     }
@@ -1961,6 +1981,18 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       luaK_fixline(fs, line);
       break;
     }
+    case OPR_MERGE: {
+      /* 表合并操作符：a <> b
+      ** 将两个表合并为一个新表，后者覆盖前者的同名字段
+      */
+      int r1 = luaK_exp2anyreg(fs, e1);
+      int r2 = luaK_exp2anyreg(fs, e2);
+      freeexps(fs, e1, e2);
+      e1->u.info = luaK_codeABC(fs, OP_MERGE, 0, r1, r2);
+      e1->k = VRELOC;
+      luaK_fixline(fs, line);
+      break;
+    }
     default: lua_assert(0);
   }
 }
@@ -2011,6 +2043,67 @@ void luaK_setlist (FuncState *fs, int base, int nelems, int tostore) {
 
 
 /*
+** 生成范围操作符代码: start..end 生成表 {start, start+1, ..., end}
+** 使用 OP_NEWTABLE + OP_SETLIST 指令直接生成表，最大支持 MAX_RANGE_SIZE 个元素
+** 超过限制时回退到字符串拼接
+*/
+#define MAX_RANGE_SIZE 200
+
+void luaK_range (FuncState *fs, expdesc *v, lua_Integer start,
+                 lua_Integer end, int line) {
+  lua_Integer count = end - start + 1;
+  lua_Integer i;
+  int base;
+
+  /* 范围大小检查 */
+  if (count <= 0 || count > MAX_RANGE_SIZE) {
+    luaK_semerror(fs->ls, "range too large (max %d elements)", MAX_RANGE_SIZE);
+    return;
+  }
+
+  /* 分配表寄存器 */
+  base = fs->freereg;
+  luaK_reserveregs(fs, 1);
+  {
+    int table_reg = base;
+    int pc = luaK_codeABC(fs, OP_NEWTABLE, table_reg, 0, 0);
+    luaK_settablesize(fs, pc, table_reg, (int)count, 0);
+    fs->pc++;  /* 跳过 luaK_settablesize 写入的 EXTRAARG 占位指令 */
+
+    /* 分批填充表元素，每批最多 LFIELDS_PER_FLUSH 个 */
+    lua_Integer remaining = count;
+    lua_Integer offset = 0;
+    while (remaining > 0) {
+      int batch = (remaining > LFIELDS_PER_FLUSH) ? LFIELDS_PER_FLUSH : (int)remaining;
+      int batch_base = table_reg + 1;
+
+      /* 确保批量寄存器足够 */
+      if (fs->freereg <= table_reg + batch)
+        luaK_reserveregs(fs, table_reg + batch + 1 - fs->freereg);
+
+      /* 加载批量元素到寄存器 */
+      for (i = 0; i < batch; i++) {
+        luaK_int(fs, batch_base + i, start + offset + i);
+      }
+
+      /* 发出 SETLIST 指令 */
+      luaK_setlist(fs, table_reg, (int)offset, batch);
+
+      offset += batch;
+      remaining -= batch;
+    }
+
+    /* 设置结果表达式 */
+    v->k = VNONRELOC;
+    v->u.info = table_reg;
+    v->t = NO_JUMP;
+    v->f = NO_JUMP;
+    luaK_fixline(fs, line);
+  }
+}
+
+
+/*
 ** return the final target of a jump (skipping jumps to jumps)
 */
 static int finaltarget (Instruction *code, int i) {
@@ -2037,28 +2130,37 @@ static int finaltarget (Instruction *code, int i) {
 void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int func_reg, arg_reg;
   int e1_reg = -1;
-  int saved_freereg;
+  int nargs = 1;  /* 默认1个参数 */
+  int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
 
-  /*
-   * 管道运算符实现：x |> f 等价于 f(x)
-   * 
-   * 关键修复：链式管道时，确保结果在第一次调用的位置
-   * 例如：x |> f |> g 的结果应该在 x 所在的位置
-   * 
-   * 实现策略：
-   * - 如果 e1 在寄存器 R[n] 中，则结果也应在 R[n]
-   * - 这意味着 func 放在 R[n]，arg 放在 R[n+1]
-   * - 需要先保存 e1 的值，再覆盖其位置
-   */
-  
+  if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
+
   /* 步骤1：记录 e1 的当前寄存器位置 */
   luaK_dischargevars(fs, e1);
   if (e1->k == VNONRELOC) {
     e1_reg = e1->u.info;
+  } else if (e1->k == VCALL) {
+    /* 从 VCALL 指令中提取结果寄存器，用于后续将管道结果移回原位 */
+    e1_reg = GETARG_A(fs->f->code[e1->u.info]);
   }
 
-  /* 步骤2：根据 e1 是否在寄存器中，选择不同策略 */
-  if (e1_reg >= 0) {
+  /* 步骤2：方法引用不使用链式优化，避免 SELF 指令的寄存器冲突 */
+  if (is_self) {
+    /*
+     * 方法引用：e2 已在固定寄存器中（由 OP_SELF 分配）
+     * e2 占用 func_reg（方法）和 func_reg+1（self）
+     * 管道参数放在 func_reg+2
+     * 调用后将结果移回 e1 的原始寄存器，确保赋值（如 local result = ...）正确
+     */
+    luaK_dischargevars(fs, e2);
+    func_reg = e2->u.info;
+    /* 确保 func_reg + 2 可用（e2 已占 func_reg 和 func_reg+1） */
+    if (fs->freereg <= func_reg + 2) {
+      fs->freereg = func_reg + 3;
+    }
+    arg_reg = func_reg + 2;
+    luaK_exp2reg(fs, e1, arg_reg);
+  } else if (e1_reg >= 0) {
     /*
      * 链式管道：e1 已经在寄存器 R[e1_reg] 中
      * 结果应该也在 R[e1_reg]，这样链式调用的最终结果
@@ -2068,16 +2170,37 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
     arg_reg = e1_reg + 1;
     
     /* 确保 arg_reg 可用 */
-    saved_freereg = fs->freereg;
     if (fs->freereg <= arg_reg) {
       fs->freereg = arg_reg + 1;
     }
     
-    /* 先把 e1 的值移动到 arg_reg（保存参数值） */
-    luaK_codeABC(fs, OP_MOVE, arg_reg, e1_reg, 0);
+    /*
+     * 检测冲突：e2（如 lambda 闭包）可能已在 arg_reg 中
+     * 因为 codeclosure 在解析时已调用了 luaK_exp2nextreg
+     * 如果直接用 OP_MOVE arg_reg, e1_reg 会覆盖 e2，导致调用失败
+     * 
+     * 注意：先生成 MOVE 再 discharge e2，避免 e2 的 GETTABUP 等指令
+     * 插入到 MOVE 之前，导致 MOVE 时 e1_reg 已被覆盖
+     */
+    int e2_at_arg = 0;
+    if (e2->k == VNONRELOC && e2->u.info == arg_reg) {
+      e2_at_arg = 1;
+    } else if (e2->k == VLOCAL && e2->u.var.ridx == arg_reg) {
+      e2_at_arg = 1;
+    }
     
-    /* 把函数放入 func_reg（覆盖 e1 原位置） */
-    luaK_exp2reg(fs, e2, func_reg);
+    if (e2_at_arg) {
+      /* 冲突：e2 在 arg_reg，三步操作 */
+      int temp_reg = fs->freereg;
+      luaK_reserveregs(fs, 1);
+      luaK_codeABC(fs, OP_MOVE, temp_reg, e1_reg, 0);  /* 保存 e1 到临时寄存器 */
+      luaK_exp2reg(fs, e2, func_reg);  /* 移动 e2 从 arg_reg 到 func_reg */
+      luaK_codeABC(fs, OP_MOVE, arg_reg, temp_reg, 0);  /* 恢复 e1 到 arg_reg */
+    } else {
+      /* 无冲突：先保存 e1 到 arg_reg，再加载 e2 到 func_reg */
+      luaK_codeABC(fs, OP_MOVE, arg_reg, e1_reg, 0);
+      luaK_exp2reg(fs, e2, func_reg);
+    }
     
   } else {
     /*
@@ -2096,14 +2219,25 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   /* 步骤3：生成函数调用指令
    * OP_CALL A B C：
    *   A = 函数寄存器，也是结果存储位置
-   *   B = 参数数量+1（2表示1个参数）
+   *   B = 参数数量+1（nargs+1）
    *   C = 返回值数量+1（2表示1个返回值）
    */
-  e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, 2, 2);
+  e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
   e1->k = VCALL;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;
-  
+  e1->is_pipe_self = 0;  /* 清除标志 */
+
+  /* 步骤4：如果 e1 有原始寄存器且与 func_reg 不同，将结果移回原始寄存器
+   * 这对于方法引用（is_self）尤为重要：SELF 指令使用了不同的寄存器，
+   * 管道结果必须移回原始寄存器，否则赋值（如 local result = ...）会拿到旧值
+   */
+  if (e1_reg >= 0 && e1_reg != func_reg) {
+    luaK_codeABC(fs, OP_MOVE, e1_reg, func_reg, 0);
+    e1->u.info = e1_reg;
+    e1->k = VNONRELOC;  /* 结果在固定寄存器中，便于链式管道 */
+  }
+
   /* 调用后释放参数寄存器，保留结果寄存器 */
   fs->freereg = func_reg + 1;
 }
