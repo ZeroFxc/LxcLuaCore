@@ -131,6 +131,8 @@ static const char *const opnames[] = {
   "AWAIT",
   "GENERICWRAP",
   "CHECKTYPE",
+  "MERGE",
+  "REGEX",
   "EXTRAARG",
   NULL
 };

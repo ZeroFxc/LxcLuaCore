@@ -294,8 +294,8 @@ static const char* const luaX_warnNames[] = {
 };
 
 static const char *const luaX_tokens [] = {
-    "and", "asm", "async", "await", "bool", "break", "case", "catch", "char", "command", "concept", "const", "continue", "default", "defer", "do", "double", "else", "elseif",
-    "end", "enum", "export", "false", "finally", "float", "for", "function", "global", "goto", "if", "in", "int", "is", "instanceof", "keyword", "lambda", "local", "long", "namespace", "nil", "not", "operator", "or",
+    "and", "asm", "async", "await", "bool", "break", "case", "catch", "char", "command", "concept", "const", "continue", "default", "defer", "delete", "do", "double", "else", "elseif",
+    "end", "enum", "export", "false", "finally", "float", "for", "function", "global", "guard", "goto", "if", "in", "int", "is", "instanceof", "keyword", "lambda", "local", "long", "namespace", "nil", "not", "operator", "or",
     "repeat", "requires",
     "return", "struct", "superstruct", "switch", "take", "then", "true", "try", "until", "using", "void", "when", "while", "with", "let",
     "//", "..", "...", "==", ">=", "<=", "~",  "<<", ">>", "|>", "<|", "|?>",
@@ -303,7 +303,8 @@ static const char *const luaX_tokens [] = {
     "=>", ":=", "->",
     /* 复合赋值运算符 */
     "+=", "-=", "*=", "/=", "//=", "%=", "&=", "|=", "~=", ">>=", "<<=", "..=", "++",
-    "?.", "??", "?\?=", "<=>", "$", "$$",
+    "?.", "??", "?\?=", "&&=", "||=", "^=", "<=>", "<>", "$", "$$",
+    "<regex>",
     "<number>", "<integer>", "<name>", "<string>", "<interpstring>", "<rawstring>"
 };
 
@@ -716,8 +717,14 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
       check_next2(ls, "-+");  /* optional exponent sign */
     else if (ls->current == '_')  /* underscore as visual separator? */
       next(ls);  /* skip underscore, don't save it */
-    else if (lisxdigit(ls->current) || ls->current == '.')  /* '%x|%.' */
+    else if (lisxdigit(ls->current) || ls->current == '.') {  /* '%x|%.' */
+      /* 如果 '.' 后面紧跟 '.'，则这是 '..' 拼接/范围操作符，停止读数字 */
+      if (ls->current == '.' && ls->z->n > 0) {
+        if (cast_uchar(*ls->z->p) == '.')
+          break;  /* 停止读数字，保留 '.' 在 current 中供下一轮处理 */
+      }
       save_and_next(ls);
+    }
     else break;
   }
   if (lislalpha(ls->current))  /* is numeral touching a letter? */
@@ -1062,6 +1069,40 @@ static void read_raw_long_string (LexState *ls, SemInfo *seminfo, size_t sep) {
                                    luaZ_bufflen(ls->buff) - 2 * sep);
 }
 
+/*
+** 读取正则字面量 /pattern/flags
+** 返回 TK_REGEX，pattern 和 flags 以 \0 分隔存入 seminfo->ts
+*/
+static int read_regex (LexState *ls, SemInfo *seminfo) {
+  luaZ_resetbuffer(ls->buff);
+  for (;;) {
+    if (ls->current == '\n' || ls->current == '\r' || ls->current == EOZ) {
+      luaX_syntaxerror(ls, "unfinished regex");
+    }
+    if (ls->current == '\\') {
+      save_and_next(ls);  /* 保存转义符 \ */
+      if (ls->current == '\n' || ls->current == '\r' || ls->current == EOZ)
+        break;
+      save_and_next(ls);  /* 保存转义字符 */
+    }
+    else if (ls->current == '/') {
+      next(ls);  /* 跳过结束 / */
+      break;
+    }
+    else {
+      save_and_next(ls);
+    }
+  }
+  save(ls, '\0');  /* 分隔符：\0 分隔 pattern 和 flags */
+  /* 读取可选的 flags：i, m, s, g 等字母 */
+  while (lislalnum(ls->current)) {
+    save_and_next(ls);
+  }
+  seminfo->ts = luaX_newstring(ls, luaZ_buffer(ls->buff),
+                               luaZ_bufflen(ls->buff));
+  return TK_REGEX;
+}
+
 
 static int llex (LexState *ls, SemInfo *seminfo) {
   if (ls->pending_tokens) {
@@ -1073,7 +1114,6 @@ static int llex (LexState *ls, SemInfo *seminfo) {
     ls->pending_tokens = NULL;
     ls->npending = 0;
   }
-
   luaZ_resetbuffer(ls->buff);
   for (;;) {
     switch (ls->current) {
@@ -1146,6 +1186,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           if (check_next1(ls, '>')) return TK_SPACESHIP;  /* '<=>' 三路比较 */
           else return TK_LE;  /* '<=' */
         }
+        else if (check_next1(ls, '>')) return TK_MERGE;  /* '<>' 表合并 */
         else if (check_next1(ls, '|')) return TK_REVPIPE;  /* '<|' 反向管道 */
         else if (ls->current == '<') {  /* '<<' 或 '<<=' */
           next(ls);
@@ -1175,6 +1216,21 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           return TK_IDIV;  /* '//' 整除运算符 */
         }
         else if (check_next1(ls, '=')) return TK_DIVEQ;  /* '/=' 除法赋值 */
+        else if (ls->current != '*' && ls->current != '\n' && ls->current != '\r') {
+          /* 正则字面量：出现在值上下文中，/ 后不是 /, =, *, 换行时解析为 regex */
+          switch (ls->lasttoken) {
+            /* 前一个 token 是表达式终结符，/ 是除法 */
+            case TK_NAME: case TK_FLT: case TK_INT:
+            case TK_STRING: case TK_INTERPSTRING: case TK_RAWSTRING:
+            case TK_NIL: case TK_TRUE: case TK_FALSE:
+            case ')': case ']': case '}':
+            case TK_PLUSPLUS:
+              return '/';
+            default:
+              /* 前一个 token 是操作符/关键字/分隔符，/ 是正则起始 */
+              return read_regex(ls, seminfo);
+          }
+        }
         else return '/';
       }
       case '~': {
@@ -1189,7 +1245,10 @@ static int llex (LexState *ls, SemInfo *seminfo) {
       }
       case '&':{
         next(ls);
-        if(check_next1(ls,'&')) return TK_AND;
+        if(check_next1(ls,'&')) {
+          if(check_next1(ls,'=')) return TK_ANDANDEQ;  /* '&&=' 逻辑与赋值 */
+          return TK_AND;  /* '&&' 逻辑与（等价于 'and'） */
+        }
         else if(check_next1(ls,'=')) return TK_BANDEQ;  /* '&=' 位与赋值 */
         else return '&';
       }
@@ -1227,17 +1286,27 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         next(ls);
         return '@';
       }
-      case '$':{  /* '$' 宏调用前缀 或 '$$' 运算符调用前缀 */
+      case '$':{  /* '$' 宏调用前缀, '$$' 运算符, '$"..."' 插值字符串 */
         next(ls);
         if (ls->current == '$') {
           next(ls);
           return TK_DOLLDOLL;  /* $$ 运算符调用 */
         }
+        if (ls->current == '"' || ls->current == '\'') {
+          /* $"...{expr}..." 字符串插值 */
+          int has_interpolation = 0;
+          read_string(ls, ls->current, seminfo, &has_interpolation, 1);
+          if (has_interpolation) return TK_INTERPSTRING;
+          else return TK_STRING;
+        }
         return TK_DOLLAR;
       }
       case '|':{
         next(ls);
-        if(check_next1(ls,'|')) return '@';  /* '||' */
+        if(check_next1(ls,'|')) {
+          if(check_next1(ls,'=')) return TK_OROREQ;  /* '||=' 逻辑或赋值 */
+          return '@';  /* '||' */
+        }
         else if(ls->current == '?') {  /* '|?' 可能是安全管道 '|?>' */
           next(ls);
           if(check_next1(ls,'>')) return TK_SAFEPIPE;  /* '|?>' 安全管道 */
@@ -1375,7 +1444,7 @@ void luaX_next (LexState *ls) {
   ls->lastbuff = ls->buff;
   ls->tokpos = ls->curpos;
   if (ls->lookahead.token != TK_EOS) {  /* is there a look-ahead token? */
-    ls->t = ls->lookahead;  /* use this one (struct copy, includes linenumber) */
+    ls->t = ls->lookahead;  /* use this one (struct copy, includes linenumber and nospace) */
     ls->linenumber = ls->t.linenumber;  /* 同步行号到当前token */
     if (ls->lookahead2.token != TK_EOS) {
        ls->lookahead = ls->lookahead2;
@@ -1390,6 +1459,13 @@ void luaX_next (LexState *ls) {
     }
   }
   else {
+    /* 检测当前 token 与前一个 token 之间是否有空白字符 */
+    /* ls->current 是前一个 token 结束后的第一个字符，若为空白则有空格 */
+    {
+      int c = ls->current;
+      ls->t.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                         c == '\n' || c == '\r');
+    }
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
     ls->t.linenumber = ls->linenumber;  /* 记录token所在行号 */
   }
@@ -1402,6 +1478,12 @@ int luaX_lookahead (LexState *ls) {
   }
   /* 保存当前行号，llex() 会更新 ls->linenumber，但 lookahead 不应改变当前 token 的行号 */
   int saved_linenumber = ls->linenumber;
+  /* 检测当前 token 与 lookahead 之间是否有空白字符 */
+  {
+    int c = ls->current;
+    ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                               c == '\n' || c == '\r');
+  }
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
   ls->lookahead.linenumber = ls->linenumber;  /* 记录lookahead token所在行号 */
   ls->linenumber = saved_linenumber;  /* 恢复当前行号 */
@@ -1411,12 +1493,24 @@ int luaX_lookahead (LexState *ls) {
 int luaX_lookahead2 (LexState *ls) {
   int saved_linenumber = ls->linenumber;
   if (ls->lookahead.token == TK_EOS) {
+    /* 检测当前 token 与 lookahead 之间是否有空白字符 */
+    {
+      int c = ls->current;
+      ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                                 c == '\n' || c == '\r');
+    }
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
   }
   if (ls->lookahead2.token != TK_EOS) {
     ls->linenumber = saved_linenumber;
     return ls->lookahead2.token;
+  }
+  /* 检测 lookahead 与 lookahead2 之间是否有空白字符 */
+  {
+    int c = ls->current;
+    ls->lookahead2.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                                c == '\n' || c == '\r');
   }
   ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
   ls->lookahead2.linenumber = ls->linenumber;  /* 记录token所在行号 */
@@ -1427,16 +1521,34 @@ int luaX_lookahead2 (LexState *ls) {
 int luaX_lookahead3 (LexState *ls) {
   int saved_linenumber = ls->linenumber;
   if (ls->lookahead.token == TK_EOS) {
+    /* 检测当前 token 与 lookahead 之间是否有空白字符 */
+    {
+      int c = ls->current;
+      ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                                 c == '\n' || c == '\r');
+    }
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;
   }
   if (ls->lookahead2.token == TK_EOS) {
+    /* 检测 lookahead 与 lookahead2 之间是否有空白字符 */
+    {
+      int c = ls->current;
+      ls->lookahead2.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                                  c == '\n' || c == '\r');
+    }
     ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
     ls->lookahead2.linenumber = ls->linenumber;
   }
   if (ls->lookahead3.token != TK_EOS) {
     ls->linenumber = saved_linenumber;
     return ls->lookahead3.token;
+  }
+  /* 检测 lookahead2 与 lookahead3 之间是否有空白字符 */
+  {
+    int c = ls->current;
+    ls->lookahead3.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
+                                c == '\n' || c == '\r');
   }
   ls->lookahead3.token = llex(ls, &ls->lookahead3.seminfo);
   ls->lookahead3.linenumber = ls->linenumber;

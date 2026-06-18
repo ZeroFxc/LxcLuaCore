@@ -92,6 +92,7 @@ typedef struct expdesc {
   int t;  /**< patch list of 'exit when true' */
   int f;  /**< patch list of 'exit when false' */
   unsigned int nodiscard:1; /**< Result is from a nodiscard function */
+  unsigned int is_pipe_self:1; /**< 管道运算符中的方法引用（obj:method），需要多传self参数 */
 } expdesc;
 
 

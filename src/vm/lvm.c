@@ -4001,6 +4001,97 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         checkGC(L, ra + 1);
         vmbreak;
       }
+      vmcase(OP_MERGE) {
+        /* 表合并操作符：a <> b
+        ** 创建一个新表，先复制 R[B] 的所有键值对，再复制 R[C] 的（覆盖同名键）
+        */
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        TValue *rc = vRC(i);
+        
+        if (l_unlikely(!ttistable(rb) || !ttistable(rc))) {
+          luaG_runerror(L, "attempt to merge non-table values");
+        }
+        
+        Table *t1 = hvalue(rb);
+        Table *t2 = hvalue(rc);
+        Table *result = luaH_new(L);
+        
+        /* 复制第一个表的数组部分 */
+        if (t1->alimit > 0) {
+          unsigned int j;
+          for (j = 0; j < t1->alimit; j++) {
+            TValue *v = &t1->array[j];
+            if (!ttisnil(v))
+              luaH_setint(L, result, (lua_Integer)(j + 1), v);
+          }
+        }
+        /* 遍历第一个表的哈希部分 */
+        if (t1->lsizenode > 0) {
+          unsigned int j;
+          for (j = 0; j < (1u << t1->lsizenode); j++) {
+            Node *n = gnode(t1, j);
+            if (!ttisnil(gval(n))) {
+              TValue k;
+              getnodekey(L, &k, n);
+              luaH_set(L, result, &k, gval(n));
+            }
+          }
+        }
+        
+        /* 复制第二个表的数组部分（覆盖同名键） */
+        if (t2->alimit > 0) {
+          unsigned int j;
+          for (j = 0; j < t2->alimit; j++) {
+            TValue *v = &t2->array[j];
+            if (!ttisnil(v))
+              luaH_setint(L, result, (lua_Integer)(j + 1), v);
+          }
+        }
+        /* 遍历第二个表的哈希部分（覆盖同名键） */
+        if (t2->lsizenode > 0) {
+          unsigned int j;
+          for (j = 0; j < (1u << t2->lsizenode); j++) {
+            Node *n = gnode(t2, j);
+            if (!ttisnil(gval(n))) {
+              TValue k;
+              getnodekey(L, &k, n);
+              luaH_set(L, result, &k, gval(n));
+            }
+          }
+        }
+        
+        sethvalue2s(L, ra, result);
+        checkGC(L, ra + 1);
+        vmbreak;
+      }
+      vmcase(OP_REGEX) {
+        /* 正则字面量：从常量 K[Bx] 中解析 pattern 和 flags
+        ** K[Bx] 格式为 "pattern\0flags"
+        */
+        StkId ra = RA(i);
+        TString *ts = tsvalue(&cl->p->k[GETARG_Bx(i)]);
+        const char *data = getstr(ts);
+        size_t patlen = strlen(data);
+        const char *flags = data + patlen + 1;
+        
+        Table *t = luaH_new(L);
+        TValue key, val;
+        TString *pat_str = luaS_newlstr(L, data, patlen);
+        TString *flag_str = luaS_newlstr(L, flags, strlen(flags));
+        
+        setsvalue2n(L, &key, luaS_newliteral(L, "pattern"));
+        setsvalue2n(L, &val, pat_str);
+        luaH_set(L, t, &key, &val);
+        
+        setsvalue2n(L, &key, luaS_newliteral(L, "flags"));
+        setsvalue2n(L, &val, flag_str);
+        luaH_set(L, t, &key, &val);
+        
+        sethvalue2s(L, ra, t);
+        checkGC(L, ra + 1);
+        vmbreak;
+      }
       vmcase(OP_GETCMDS) {
         while (L->top.p < base + cl->p->maxstacksize)
              setnilvalue(s2v(L->top.p++));

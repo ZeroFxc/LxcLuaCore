@@ -421,6 +421,10 @@ OP_AWAIT,/*	A B	R[A] := await(R[B]) (协程 yield Promise，resume时结果写�
 OP_GENERICWRAP,/* A B	R[A] := generic_wrap(R[B], R[B+1], R[B+2])	*/
 OP_CHECKTYPE,/*	A B C	if (check_type(R[A], R[B]) != true) error(K[C])	*/
 
+OP_MERGE,/*	A B C	R[A] := merge(R[B], R[C]) (表合并)		*/
+
+OP_REGEX,/*	A Bx	R[A] := regex(K[Bx]) (正则字面量)		*/
+
 OP_EXTRAARG,/*	Ax	extra (larger) argument for previous opcode	*/
 
 OP_CUSTOM/*	A	dispatch to custom opcode handler (opcode in Ax)	*/

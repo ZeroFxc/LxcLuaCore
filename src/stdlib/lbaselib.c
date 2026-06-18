@@ -549,6 +549,50 @@ static int pairscont (lua_State *L, int status, lua_KContext k) {
   return 3;
 }
 
+
+/*
+** range 迭代器函数 - 用于 for in 循环中生成数值范围
+** 用法: for i in range(start, limit, step) do ... end
+**   start: 起始值
+**   limit: 结束值（包含）
+**   step: 步长（可选，默认 1）
+*/
+static int range_iter (lua_State *L) {
+  lua_Integer state = lua_tointeger(L, lua_upvalueindex(1));
+  lua_Integer limit = lua_tointeger(L, lua_upvalueindex(2));
+  lua_Integer step = lua_tointeger(L, lua_upvalueindex(3));
+  
+  if ((step > 0 && state > limit) || (step < 0 && state < limit)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  
+  lua_pushinteger(L, state);
+  state += step;
+  lua_pushinteger(L, state);
+  lua_replace(L, lua_upvalueindex(1));  /* 更新状态 */
+  return 1;
+}
+
+
+static int luaB_range (lua_State *L) {
+  lua_Integer start = luaL_checkinteger(L, 1);
+  lua_Integer limit = luaL_checkinteger(L, 2);
+  lua_Integer step = luaL_optinteger(L, 3, 1);
+  
+  if (step == 0)
+    luaL_error(L, "step cannot be zero");
+  
+  lua_pushinteger(L, start);   /* upvalue 1: 当前状态 */
+  lua_pushinteger(L, limit);   /* upvalue 2: 结束值 */
+  lua_pushinteger(L, step);    /* upvalue 3: 步长 */
+  lua_pushcclosure(L, range_iter, 3);
+  lua_pushinteger(L, start);   /* 初始状态 */
+  lua_pushnil(L);              /* 初始控制值 */
+  return 3;  /* 返回迭代器函数、状态、初始控制值 */
+}
+
+
 static int luaB_pairs (lua_State *L) {
   luaL_checkany(L, 1);
   if (luaL_getmetafield(L, 1, "__pairs") == LUA_TNIL) {  /* no metamethod? */
@@ -2864,6 +2908,7 @@ static const luaL_Reg base_funcs[] = {
   {"loadstring", luaB_load},
   {"next", luaB_next},
   {"pairs", luaB_pairs},
+  {"range", luaB_range},
   {"pcall", luaB_pcall},
   {"print", luaB_print},
   {"warn", luaB_warn},
