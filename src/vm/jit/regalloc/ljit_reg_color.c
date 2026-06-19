@@ -1,4 +1,5 @@
 #include "ljit_regalloc.h"
+#include "../core/ljit_debug.h"
 #include "../../../jit/sljitLir.h"
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,9 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
 
     int available_regs[] = {SLJIT_S2, SLJIT_S3, SLJIT_S4, SLJIT_S5};
     int num_available_regs = sizeof(available_regs) / sizeof(available_regs[0]);
+
+    JIT_DBG(MOD_REG_COLOR, "graph coloring: max_vregs=%d, num_regs=%d (SLJIT_S2-S5)",
+        max_vregs, num_available_regs);
 
     // Initialize mappings
     for (int i = 0; i < max_vregs; i++) {
@@ -153,4 +157,13 @@ void ljit_reg_color(ljit_ctx_t *ctx) {
     free(stack);
     free(degrees);
     free(status);
+
+    /* 调试: 打印着色结果 */
+    int colored_count = 0, spilled_count = 0;
+    for (int i = 0; i < max_vregs; i++) {
+        if (info->is_spilled[i] == 0) colored_count++;
+        else if (info->intervals[i].start != -1) spilled_count++;
+    }
+    JIT_DBG(MOD_REG_COLOR, "coloring done: colored=%d, spilled=%d, unused=%d",
+        colored_count, spilled_count, max_vregs - colored_count - spilled_count);
 }

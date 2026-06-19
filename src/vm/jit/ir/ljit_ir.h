@@ -68,7 +68,9 @@ typedef enum {
     IR_SPACESHIP, IR_LEN, IR_CLOSE, IR_TBC, IR_EQK, IR_TEST, IR_TESTSET,
     IR_TFORPREP, IR_SETLIST, IR_GETVARG, IR_ERRNNIL, IR_IS, IR_TESTNIL,
     IR_INHERIT, IR_GETSUPER, IR_SETMETHOD, IR_SETSTATIC, IR_GETPROP, IR_SETPROP, IR_INSTANCEOF, IR_IMPLEMENT, IR_SETIFACEFLAG, IR_ADDMETHOD, IR_IN, IR_SLICE,
-    IR_CASE, IR_NEWCONCEPT, IR_NEWNAMESPACE, IR_LINKNAMESPACE, IR_NEWSUPER, IR_SETSUPER, IR_GETCMDS, IR_GETOPS, IR_ASYNCWRAP, IR_GENERICWRAP, IR_CHECKTYPE, IR_EXTRAARG
+    IR_CASE, IR_NEWCONCEPT, IR_NEWNAMESPACE, IR_LINKNAMESPACE, IR_NEWSUPER, IR_SETSUPER, IR_GETCMDS, IR_GETOPS, IR_ASYNCWRAP, IR_GENERICWRAP, IR_CHECKTYPE, IR_EXTRAARG,
+    /* LXCLUA 扩展 - trait/mixin/await/merge/regex */
+    IR_SETTRAITFLAG, IR_SETTRAITREQUIRE, IR_USETRAIT, IR_AWAIT, IR_MERGE, IR_REGEX
 } ljit_ir_op_t;
 
 /* IR Node Structure (Doubly-linked list) */
@@ -78,6 +80,7 @@ typedef struct ljit_ir_node {
     ljit_ir_val_t src1;
     ljit_ir_val_t src2;
     int original_pc;  /* Maps back to original bytecode PC */
+    int self_rec;     /* 自递归标记: 1表示IR_CALL的目标函数与当前函数相同 */
     struct ljit_ir_node *prev;
     struct ljit_ir_node *next;
 } ljit_ir_node_t;
@@ -87,6 +90,9 @@ typedef struct ljit_bb {
     int end_pc;
     struct ljit_bb *next;
 } ljit_bb_t;
+
+/* 递归调用返回地址栈，用于自递归时跳过 C 函数调用开销 */
+#define MAX_REC_DEPTH 256
 
 typedef struct ljit_ctx {
     lua_State *L;
@@ -102,6 +108,10 @@ typedef struct ljit_ctx {
     int *jump_targets;
     void *analyze_info; /* Pointer to ljit_analyze_info_t */
     void *regalloc_info; /* Pointer to ljit_regalloc_info_t */
+    /* 自递归调用支持 */
+    void *rec_ret_stack[MAX_REC_DEPTH]; /* 返回地址栈 */
+    int rec_ret_top;                     /* 栈顶指针 */
+    struct sljit_label *rec_entry_label; /* 函数入口标签 */
 } ljit_ctx_t;
 
 void *ljit_context_create(lua_State *L, Proto *proto);

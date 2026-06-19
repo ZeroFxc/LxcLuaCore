@@ -2398,6 +2398,10 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   StkId base;
   const Instruction *pc;
   int trap;
+  #ifdef JIT_VERBOSE_LOG
+  fprintf(stderr, "[JIT-DBG] luaV_execute enter, ci=%p, L->ci=%p\n", ci, L->ci);
+  fflush(stderr);
+#endif
 #if LUA_USE_JUMPTABLE
 #include "ljumptab.h"
 #endif
@@ -2405,25 +2409,74 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   trap = L->hookmask;
  returning:  /* trap already set */
   cl = ci_func(ci);
+  #ifdef JIT_VERBOSE_LOG
+  fprintf(stderr, "[JIT-DBG] after ci_func, cl=%p, cl->p=%p, jit_trace=%p\n", cl, cl->p, cl->p->jit_trace);
+  fflush(stderr);
+#endif
 
   /** VM protection detection: If the function enables VM protection, use a custom VM interpreter */
 #ifndef LUA_NOJIT
   extern int XCLUA_JIT_ENABLED;
-  if (XCLUA_JIT_ENABLED && !cl->p->jit_trace) {
-    luaJIT_compile(L, cl->p);
+  extern int XCLUA_JIT_HOTCOUNT;
+  #ifdef JIT_VERBOSE_LOG
+  fprintf(stderr, "[JIT-DBG] XCLUA_JIT_ENABLED=%d, jit_trace=%p, hotcount=%d, threshold=%d\n",
+      XCLUA_JIT_ENABLED, cl->p->jit_trace, cl->p->jit_hotcount, XCLUA_JIT_HOTCOUNT);
+  fflush(stderr);
+#endif
+  /*
+   * 排除主 chunk / 顶层 Lua 函数的 JIT 编译:
+   * 主 chunk 由 C 代码(lua_pcall)调用, 其 ci->previous 是 C 帧(CIST_C).
+   * 若编译这类函数的 JIT 代码, 从子函数返回时 goto returning 会触发
+   * JIT 重新执行整个脚本, 造成无限递归.
+   */
+  int is_toplevel = (ci->previous != NULL && (ci->previous->callstatus & CIST_C));
+#ifdef JIT_VERBOSE_LOG
+  fprintf(stderr, "[JIT-DBG] hotcheck: ci=%p, ci->prev=%p, base_ci=%p, sizecode=%d, enabled=%d, toplevel=%d\n",
+      ci, ci->previous, &L->base_ci, cl->p->sizecode, XCLUA_JIT_ENABLED, is_toplevel);
+  fflush(stderr);
+#endif
+  if (XCLUA_JIT_ENABLED && !cl->p->jit_trace && !cl->p->jit_failed
+      && !is_toplevel) {
+    cl->p->jit_hotcount++;
+    if (cl->p->jit_hotcount >= XCLUA_JIT_HOTCOUNT) {
+#ifdef JIT_VERBOSE_LOG
+      fprintf(stderr, "[JIT-DBG] hotcount reached %d, calling luaJIT_compile\n", cl->p->jit_hotcount);
+      fflush(stderr);
+#endif
+      luaJIT_compile(L, cl->p);
+    }
   }
   if (XCLUA_JIT_ENABLED && cl->p->jit_trace) {
     typedef int (*jit_func_t)(StkId);
     jit_func_t func = (jit_func_t)cl->p->jit_trace;
     base = ci->func.p + 1;
+#ifdef JIT_VERBOSE_LOG
+    fprintf(stderr, "[JIT] calling jit func=%p, base=%p, ci=%p, L->ci=%p\n", func, base, ci, L->ci);
+    fprintf(stderr, "[JIT] BEFORE: ci->callstatus=%d, ci->previous=%p, ci->next=%p, ci->func.p=%p\n",
+        ci->callstatus, ci->previous, ci->next, ci->func.p);
+    if (ci->previous) fprintf(stderr, "[JIT]   prev->callstatus=%d, prev->func.p=%p\n",
+        ci->previous->callstatus, ci->previous->func.p);
+#endif
     int jit_done = func(base);
+#ifdef JIT_VERBOSE_LOG
+    fprintf(stderr, "[JIT] AFTER: ci->callstatus=%d, L->ci=%p, L->ci->callstatus=%d, CIST_FRESH=%d\n",
+        ci->callstatus, L->ci, L->ci ? L->ci->callstatus : -1, CIST_FRESH);
+    fprintf(stderr, "[JIT] jit_done=%d, ci->callstatus=%d, CIST_FRESH=%d\n", jit_done, ci->callstatus, CIST_FRESH);
+#endif
     if (jit_done) {
       if (!(ci->callstatus & CIST_FRESH)) {
         ci = L->ci;
         goto returning;
       }
+#ifdef JIT_VERBOSE_LOG
+      fprintf(stderr, "[JIT] returning from luaV_execute\n");
+#endif
       return;
     }
+    luaJIT_record_fallback();
+#ifdef JIT_VERBOSE_LOG
+    fprintf(stderr, "[JIT] fallback to interpreter\n");
+#endif
   }
 #endif
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {

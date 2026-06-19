@@ -1,0 +1,179 @@
+C:\Users\ruilo\Downloads>lxclua.exe -e "jit.on();jit.threshold(0);local function f(n)if n<2 then return n end;return f(n-1)+f(n-2) end;local function bench(name)local s=os.clock();local res=f(30);local dur=os.clock()-s;print(string.format('[JIT] fib30=%d cost=%.4fs',res,dur)) end;bench('jit_test');"
+=(command line):1: warning: unused local variable 'name' [unused]
+Lua warning: =(command line):1: warning: unused local variable 'name' [unused]
+
+[00:00:00.006] [JIT-CTL] JIT enabled, XCLUA_JIT_ENABLED=1
+[00:00:00.009] [JIT-CTL] JIT hotcount threshold set to 0
+[00:00:00.012] [JIT] compiling, sizecode=20, maxstacksize=9
+[00:00:00.015] [JIT-IR] context created: 0000000004861120, proto=000000000484a430, sizecode=20
+[00:00:00.018] [JIT] analyze...
+[00:00:00.020] [JIT-ANA] start: maxstacksize=9, sizecode=20
+[00:00:00.022] [JIT-IR-BB] build basic blocks: sizecode=20
+[00:00:00.024] [JIT-IR-BB] built 1 basic blocks, head=000000000485eae0
+[00:00:00.028] [JIT-ANA] dataflow analysis: sizecode=20, max_regs=9
+[00:00:00.031] [JIT-ANA] type inference: sizecode=20
+[00:00:00.033] [JIT-ANA] done
+[00:00:00.035] [JIT] translate...
+[00:00:00.035] [JIT-TR] translate sizecode=20, maxstacksize=9
+[00:00:00.040] [JIT-TR]   pc=0 op=11 A=1 Bx=0
+[00:00:00.042] [JIT-TR]   pc=1 op=14 A=1 Bx=65537
+[00:00:00.044] [JIT-TR]   pc=2 op=69 A=1 Bx=131073
+[00:00:00.046] [JIT-TR]   pc=3 op=9 A=2 Bx=1
+[00:00:00.047] [JIT-TR]   pc=4 op=1 A=3 Bx=1073741853
+[00:00:00.050] [JIT-TR]   pc=5 op=69 A=2 Bx=131074
+[00:00:00.053] [JIT-TR]   pc=6 op=11 A=3 Bx=0
+[00:00:00.055] [JIT-TR]   pc=7 op=14 A=3 Bx=65539
+[00:00:00.057] [JIT-TR]   pc=8 op=69 A=3 Bx=131073
+[00:00:00.059] [JIT-TR]   pc=9 op=35 A=3 Bx=65539
+[00:00:00.062] [JIT-TR]   pc=10 op=47 A=3 Bx=524289
+[00:00:00.065] [JIT-TR]   pc=11 op=11 A=4 Bx=131072
+[00:00:00.066] [JIT-TR]   pc=12 op=11 A=5 Bx=196608
+[00:00:00.068] [JIT-TR]   pc=13 op=14 A=5 Bx=262149
+[00:00:00.071] [JIT-TR]   pc=14 op=3 A=6 Bx=5
+[00:00:00.073] [JIT-TR]   pc=15 op=0 A=7 Bx=2
+[00:00:00.076] [JIT-TR]   pc=16 op=0 A=8 Bx=3
+[00:00:00.078] [JIT-TR]   pc=17 op=69 A=5 Bx=4
+[00:00:00.081] [JIT-TR]   pc=18 op=69 A=4 Bx=65536
+[00:00:00.083] [JIT-TR]   pc=19 op=72 A=0 Bx=1
+[00:00:00.086] [JIT-IR-LIST] append first node: op=46, pc=0
+[00:00:00.088] [JIT] optimize...
+[00:00:00.090] [JIT-OPT] start
+[00:00:00.090] [JIT-OPT] constant folding...
+[00:00:00.093] [JIT-OPT] CSE...
+[00:00:00.094] [JIT-OPT] peephole...
+[00:00:00.096] [JIT-OPT] DCE...
+[00:00:00.098] [JIT-OPT] inlining...
+[00:00:00.100] [JIT-OPT] done
+[00:00:00.102] [JIT] regalloc...
+[00:00:00.103] [JIT-REG] regalloc start
+[00:00:00.105] [JIT-REG] live interval analysis...
+[00:00:00.108] [JIT-REG-LIVE] live intervals: max_vregs=9, livein_count=0
+[00:00:00.110] [JIT-REG-LIVE]   R0: [19, 19], livein=0
+[00:00:00.114] [JIT-REG-LIVE]   R1: [1, 10], livein=0
+[00:00:00.116] [JIT-REG-LIVE]   R2: [4, 15], livein=0
+[00:00:00.119] [JIT-REG-LIVE]   R3: [5, 16], livein=0
+[00:00:00.122] [JIT-REG-LIVE]   R4: [11, 18], livein=0
+[00:00:00.125] [JIT-REG-LIVE]   R5: [12, 17], livein=0
+[00:00:00.127] [JIT-REG-LIVE]   R6: [14, 14], livein=0
+[00:00:00.129] [JIT-REG-LIVE]   R7: [15, 15], livein=0
+[00:00:00.131] [JIT-REG-LIVE]   R8: [16, 16], livein=0
+[00:00:00.134] [JIT-REG] interference graph...
+[00:00:00.137] [JIT-REG-GRAPH] interference graph: max_vregs=9, total_edges=19, livein_interference=0
+[00:00:00.142] [JIT-REG] graph coloring...
+[00:00:00.145] [JIT-REG-COLOR] graph coloring: max_vregs=9, num_regs=4 (SLJIT_S2-S5)
+[00:00:00.148] [JIT-REG-COLOR] coloring done: colored=8, spilled=1, unused=0
+[00:00:00.152] [JIT-REG] spill handling...
+[00:00:00.154] [JIT-REG-SPILL] spill slots: max_vregs=9, tvalue_size=16
+[00:00:00.158] [JIT-REG] applying mappings...
+[00:00:00.161] [JIT-REG] register mapping (maxstack=9):
+[00:00:00.163] [JIT-REG]   R0 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.167] [JIT-REG]   R1 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.170] [JIT-REG]   R2 -> spilled=1, phys_reg=0 (SLJIT_S-1=0)
+[00:00:00.173] [JIT-REG]   R3 -> spilled=0, phys_reg=8 (SLJIT_S-2=8)
+[00:00:00.177] [JIT-REG]   R4 -> spilled=0, phys_reg=9 (SLJIT_S-1=9)
+[00:00:00.180] [JIT-REG]   R5 -> spilled=0, phys_reg=10 (SLJIT_S0=10)
+[00:00:00.184] [JIT-REG]   R6 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.188] [JIT-REG]   R7 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.191] [JIT-REG]   R8 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.195] [JIT-REG] node pc=0 op=46: dest(reg=1,sp=0,pr=11) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.199] [JIT-REG] node pc=1 op=50: dest(reg=1,sp=0,pr=11) src1(reg=1,sp=0,pr=11) src2(reg=-1,sp=0,pr=0)
+[00:00:00.206] [JIT-REG] node pc=2 op=33: dest(reg=1,sp=0,pr=11) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.211] [JIT-REG] node pc=3 op=44: dest(reg=2,sp=1,pr=0) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.216] [JIT-REG] node pc=4 op=3: dest(reg=3,sp=0,pr=8) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.222] [JIT-REG] node pc=5 op=33: dest(reg=2,sp=1,pr=0) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.227] [JIT-REG] node pc=6 op=46: dest(reg=3,sp=0,pr=8) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.233] [JIT-REG] node pc=7 op=50: dest(reg=3,sp=0,pr=8) src1(reg=3,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.238] [JIT-REG] node pc=8 op=33: dest(reg=3,sp=0,pr=8) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.244] [JIT-REG] node pc=9 op=8: dest(reg=3,sp=0,pr=8) src1(reg=3,sp=0,pr=8) src2(reg=1,sp=0,pr=11)
+[00:00:00.249] [JIT-REG] node pc=11 op=46: dest(reg=4,sp=0,pr=9) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.254] [JIT-REG] node pc=12 op=46: dest(reg=5,sp=0,pr=10) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.259] [JIT-REG] node pc=13 op=50: dest(reg=5,sp=0,pr=10) src1(reg=5,sp=0,pr=10) src2(reg=-1,sp=0,pr=0)
+[00:00:00.266] [JIT-REG] node pc=14 op=2: dest(reg=6,sp=0,pr=11) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.270] [JIT-REG] node pc=15 op=1: dest(reg=7,sp=0,pr=11) src1(reg=2,sp=1,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.276] [JIT-REG] node pc=16 op=1: dest(reg=8,sp=0,pr=11) src1(reg=3,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.281] [JIT-REG] node pc=17 op=33: dest(reg=5,sp=0,pr=10) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.287] [JIT-REG] node pc=18 op=33: dest(reg=4,sp=0,pr=9) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.292] [JIT-REG] node pc=19 op=29: dest(reg=-1,sp=0,pr=0) src1(reg=0,sp=0,pr=11) src2(reg=-1,sp=0,pr=0)
+[00:00:00.298] [JIT] codegen...
+[00:00:00.300] [JIT-CG-CONV] MOV: pc=15, R2 -> R7 (src_ofs=32, dst_ofs=112, src_sp=1, dst_sp=0)
+[00:00:00.304] [JIT-CG-CONV] MOV: pc=16, R3 -> R8 (src_ofs=48, dst_ofs=128, src_sp=0, dst_sp=0)
+[00:00:00.309] [JIT] codegen done, code=0000000004940010
+[00:00:00.311] [JIT-IR] context destroy: 0000000004861120
+[00:00:00.314] [JIT] compile OK, code=0000000004940010, total_ok=1
+[00:00:00.319] [JIT] compiling, sizecode=15, maxstacksize=4
+[00:00:00.320] [JIT-IR] context created: 0000000004861120, proto=0000000004855a40, sizecode=15
+[00:00:00.326] [JIT] analyze...
+[00:00:00.328] [JIT-ANA] start: maxstacksize=4, sizecode=15
+[00:00:00.331] [JIT-IR-BB] build basic blocks: sizecode=15
+[00:00:00.334] [JIT-IR-BB] built 5 basic blocks, head=000000000485e940
+[00:00:00.337] [JIT-ANA] dataflow analysis: sizecode=15, max_regs=4
+[00:00:00.341] [JIT-ANA] type inference: sizecode=15
+[00:00:00.343] [JIT-ANA] done
+[00:00:00.344] [JIT] translate...
+[00:00:00.346] [JIT-TR] translate sizecode=15, maxstacksize=4
+[00:00:00.349] [JIT-TR]   pc=0 op=63 A=0 Bx=16385
+[00:00:00.351] [JIT-TR]   pc=1 op=57 A=0 Bx=32768
+[00:00:00.353] [JIT-TR]   pc=2 op=73 A=0 Bx=2
+[00:00:00.356] [JIT-TR]   pc=3 op=9 A=1 Bx=0
+[00:00:00.358] [JIT-TR]   pc=4 op=21 A=2 Bx=1073610752
+[00:00:00.362] [JIT-TR]   pc=5 op=48 A=0 Bx=540672
+[00:00:00.363] [JIT-TR]   pc=6 op=69 A=1 Bx=131074
+[00:00:00.366] [JIT-TR]   pc=7 op=9 A=2 Bx=0
+[00:00:00.368] [JIT-TR]   pc=8 op=21 A=3 Bx=1073545216
+[00:00:00.370] [JIT-TR]   pc=9 op=48 A=0 Bx=540673
+[00:00:00.373] [JIT-TR]   pc=10 op=69 A=2 Bx=131074
+[00:00:00.376] [JIT-TR]   pc=11 op=34 A=1 Bx=131073
+[00:00:00.378] [JIT-TR]   pc=12 op=47 A=1 Bx=458754
+[00:00:00.381] [JIT-TR]   pc=13 op=73 A=1 Bx=2
+[00:00:00.382] [JIT-TR]   pc=14 op=72 A=0 Bx=1
+[00:00:00.384] [JIT-IR-LIST] append first node: op=22, pc=0
+[00:00:00.388] [JIT-TR] OP_CALL pc=6: detected self-recursion (upval[0] self, SETUPVAL in outer scope)
+[00:00:00.392] [JIT-TR] OP_CALL pc=10: detected self-recursion (upval[0] self, SETUPVAL in outer scope)
+[00:00:00.397] [JIT] optimize...
+[00:00:00.399] [JIT-OPT] start
+[00:00:00.401] [JIT-OPT] constant folding...
+[00:00:00.402] [JIT-OPT] CSE...
+[00:00:00.405] [JIT-OPT] peephole...
+[00:00:00.406] [JIT-OPT] DCE...
+[00:00:00.408] [JIT-OPT] inlining...
+[00:00:00.409] [JIT-OPT] done
+[00:00:00.410] [JIT] regalloc...
+[00:00:00.413] [JIT-REG] regalloc start
+[00:00:00.415] [JIT-REG] live interval analysis...
+[00:00:00.417] [JIT-REG-LIVE] live intervals: max_vregs=4, livein_count=1
+[00:00:00.420] [JIT-REG-LIVE]   R0: [1, 12], livein=1
+[00:00:00.424] [JIT-REG-LIVE]   R1: [4, 11], livein=0
+[00:00:00.426] [JIT-REG-LIVE]   R2: [5, 10], livein=0
+[00:00:00.428] [JIT-REG-LIVE]   R3: [8, 8], livein=0
+[00:00:00.431] [JIT-REG] interference graph...
+[00:00:00.433] [JIT-REG-GRAPH] interference graph: max_vregs=4, total_edges=6, livein_interference=0
+[00:00:00.438] [JIT-REG] graph coloring...
+[00:00:00.440] [JIT-REG-COLOR] graph coloring: max_vregs=4, num_regs=4 (SLJIT_S2-S5)
+[00:00:00.445] [JIT-REG-COLOR] coloring done: colored=4, spilled=0, unused=0
+[00:00:00.447] [JIT-REG] spill handling...
+[00:00:00.450] [JIT-REG-SPILL] spill slots: max_vregs=4, tvalue_size=16
+[00:00:00.454] [JIT-REG] applying mappings...
+[00:00:00.456] [JIT-REG] register mapping (maxstack=4):
+[00:00:00.459] [JIT-REG]   R0 -> spilled=0, phys_reg=8 (SLJIT_S-2=8)
+[00:00:00.462] [JIT-REG]   R1 -> spilled=0, phys_reg=9 (SLJIT_S-1=9)
+[00:00:00.466] [JIT-REG]   R2 -> spilled=0, phys_reg=10 (SLJIT_S0=10)
+[00:00:00.468] [JIT-REG]   R3 -> spilled=0, phys_reg=11 (SLJIT_S1=11)
+[00:00:00.473] [JIT-REG] node pc=0 op=22: dest(reg=-1,sp=0,pr=0) src1(reg=0,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.477] [JIT-REG] node pc=1 op=27: dest(reg=-1,sp=0,pr=0) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.483] [JIT-REG] node pc=2 op=29: dest(reg=-1,sp=0,pr=0) src1(reg=0,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.488] [JIT-REG] node pc=3 op=44: dest(reg=1,sp=0,pr=9) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.494] [JIT-REG] node pc=4 op=7: dest(reg=2,sp=0,pr=10) src1(reg=0,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.498] [JIT-REG] node pc=6 op=33: dest(reg=1,sp=0,pr=9) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.503] [JIT-REG] node pc=7 op=44: dest(reg=2,sp=0,pr=10) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.508] [JIT-REG] node pc=8 op=7: dest(reg=3,sp=0,pr=11) src1(reg=0,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.514] [JIT-REG] node pc=10 op=33: dest(reg=2,sp=0,pr=10) src1(reg=-1,sp=0,pr=0) src2(reg=-1,sp=0,pr=0)
+[00:00:00.519] [JIT-REG] node pc=11 op=7: dest(reg=1,sp=0,pr=9) src1(reg=1,sp=0,pr=9) src2(reg=2,sp=0,pr=10)
+[00:00:00.524] [JIT-REG] node pc=13 op=29: dest(reg=-1,sp=0,pr=0) src1(reg=1,sp=0,pr=9) src2(reg=-1,sp=0,pr=0)
+[00:00:00.529] [JIT-REG] node pc=14 op=29: dest(reg=-1,sp=0,pr=0) src1(reg=0,sp=0,pr=8) src2(reg=-1,sp=0,pr=0)
+[00:00:00.534] [JIT] codegen...
+[00:00:00.536] [JIT-CG-ARITH] ADD: pc=4, dest=R2(sp=0,pr=10), src1=R0(sp=0,pr=8), src2=R-1(sp=0,pr=0)
+[00:00:00.541] [JIT-CG-ARITH] ADD: pc=8, dest=R3(sp=0,pr=11), src1=R0(sp=0,pr=8), src2=R-2(sp=0,pr=0)
+[00:00:00.547] [JIT-CG-ARITH] ADD: pc=11, dest=R1(sp=0,pr=9), src1=R1(sp=0,pr=9), src2=R2(sp=0,pr=10)
+[00:00:00.552] [JIT] codegen done, code=000000000494fd98
+[00:00:00.554] [JIT-IR] context destroy: 0000000004861120
+[00:00:00.558] [JIT] compile OK, code=000000000494fd98, total_ok=2

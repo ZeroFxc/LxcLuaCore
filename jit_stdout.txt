@@ -1,0 +1,12 @@
+sum(1) = 1, expected = 1, OK
+sum(2) = 2, expected = 3, FAIL
+sum(3) = 3, expected = 6, FAIL
+sum(4) = 4, expected = 10, FAIL
+sum(5) = 5, expected = 15, FAIL
+sum(6) = 6, expected = 21, FAIL
+sum(7) = 7, expected = 28, FAIL
+sum(8) = 8, expected = 36, FAIL
+sum(9) = 9, expected = 45, FAIL
+sum(10) = 10, expected = 55, FAIL
+
+sum(1000) = 1000, expected = 500500, FAIL

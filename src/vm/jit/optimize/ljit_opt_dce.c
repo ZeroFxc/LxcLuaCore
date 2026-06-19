@@ -1,5 +1,6 @@
 #include "ljit_opt.h"
 #include "../ir/ljit_ir.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 
 /*
@@ -62,6 +63,8 @@ void ljit_opt_dce(ljit_ctx_t *ctx) {
 
                     if (!is_used) {
                         /* 将 node 从链表中移除 */
+                        JIT_DBG(MOD_OPT_DCE, "remove dead: pc=%d, op=%d, dest=R%d",
+                            node->original_pc, node->op, dest_reg);
                         if (node->prev) node->prev->next = node->next;
                         else ctx->ir_head = node->next;
 

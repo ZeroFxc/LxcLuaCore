@@ -1,5 +1,6 @@
 #include "ljit_opt.h"
 #include "../ir/ljit_ir.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 
 /* Helper to check if two IR values are exactly identical */
@@ -93,6 +94,8 @@ void ljit_opt_cse(ljit_ctx_t *ctx) {
 
             if (found_match && match_node) {
                 /* Transform node into an IR_MOV using the matched node's result register */
+                JIT_DBG(MOD_OPT_CSE, "eliminate: pc=%d, op=%d -> MOV from R%d (pc=%d)",
+                    node->original_pc, node->op, match_node->dest.v.reg, match_node->original_pc);
                 node->op = IR_MOV;
                 node->src1 = match_node->dest;
                 node->src2.type = IR_VAL_NONE;

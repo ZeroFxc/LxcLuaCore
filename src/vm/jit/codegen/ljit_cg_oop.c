@@ -1,6 +1,7 @@
 #include "ljit_codegen.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
+#include "../core/ljit_debug.h"
 
 void SLJIT_FUNC ljit_icall_newclass(lua_State *L, TString *classname);
 void SLJIT_FUNC ljit_icall_newobj(lua_State *L, int nargs, StkId rb, StkId ra);
@@ -12,6 +13,9 @@ void ljit_cg_emit_newclass(void *node_ptr, void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
+
+    JIT_DBG(MOD_CG_OOP, "NEWCLASS: pc=%d, dest=R%d, k_idx=%d",
+        node->original_pc, node->dest.v.reg, node->src1.v.i);
 
     /* R0 = ctx->L */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
@@ -31,6 +35,9 @@ void ljit_cg_emit_newobj(void *node_ptr, void *ctx_ptr) {
     if (!node || !ctx || !compiler) return;
 
     int tvalue_size = sizeof(TValue);
+
+    JIT_DBG(MOD_CG_OOP, "NEWOBJ: pc=%d, dest=R%d, src1=R%d, nargs=%d",
+        node->original_pc, node->dest.v.reg, node->src1.v.reg, node->src2.v.i);
 
     /* R0 = ctx->L */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);

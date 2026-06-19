@@ -1,10 +1,13 @@
 #include "ljit_ir.h"
 #include "../../../core/lopcodes.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 #include <string.h>
 
 ljit_bb_t *ljit_ir_bb_build(Proto *proto) {
     if (!proto || proto->sizecode == 0) return NULL;
+
+    JIT_DBG(MOD_IR_BB, "build basic blocks: sizecode=%d", proto->sizecode);
 
     // Allocate array to mark basic block leaders
     char *is_leader = (char *)calloc(proto->sizecode, sizeof(char));
@@ -134,5 +137,10 @@ ljit_bb_t *ljit_ir_bb_build(Proto *proto) {
     }
 
     free(is_leader);
+    /* 统计BB数量 */
+    int bb_count = 0;
+    ljit_bb_t *tmp = head;
+    while (tmp) { bb_count++; tmp = tmp->next; }
+    JIT_DBG(MOD_IR_BB, "built %d basic blocks, head=%p", bb_count, head);
     return head;
 }

@@ -1,6 +1,8 @@
 #include "ljit_ir.h"
 #include "../frontend/ljit_analyze.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
+#include <string.h>
 
 void *ljit_context_create(lua_State *L, Proto *proto) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)malloc(sizeof(ljit_ctx_t));
@@ -18,6 +20,10 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
         ctx->jump_targets = NULL;
         ctx->analyze_info = NULL;
         ctx->regalloc_info = NULL;
+        ctx->rec_ret_top = 0;
+        ctx->rec_entry_label = NULL;
+        memset(ctx->rec_ret_stack, 0, sizeof(ctx->rec_ret_stack));
+        JIT_DBG(MOD_IR, "context created: %p, proto=%p, sizecode=%d", ctx, proto, proto->sizecode);
     }
     return (void *)ctx;
 }
@@ -25,6 +31,7 @@ void *ljit_context_create(lua_State *L, Proto *proto) {
 void ljit_context_destroy(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (ctx) {
+        JIT_DBG(MOD_IR, "context destroy: %p", ctx);
         ljit_ir_node_t *curr = ctx->ir_head;
         while (curr) {
             ljit_ir_node_t *next = curr->next;

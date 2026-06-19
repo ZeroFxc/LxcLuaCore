@@ -372,6 +372,7 @@ Proto *luaF_newproto (lua_State *L) {
   f->call_queue = NULL;
 #ifndef LUA_NOJIT
   f->jit_failed = 0;
+  f->jit_hotcount = 0;
 #endif
   return f;
 }
