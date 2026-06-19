@@ -150,10 +150,41 @@ LOCAL_SRC_FILES := \
 	src/utils/lcrypto.c \
 	src/utils/luuid.c \
 	src/utils/lrsa.c \
-	src/utils/lecc.c
+	src/utils/lecc.c \
+	pcre2/src/pcre2_auto_possess.c \
+	pcre2/src/pcre2_chartables.c \
+	pcre2/src/pcre2_chkdint.c \
+	pcre2/src/pcre2_compile.c \
+	pcre2/src/pcre2_compile_cgroup.c \
+	pcre2/src/pcre2_compile_class.c \
+	pcre2/src/pcre2_config.c \
+	pcre2/src/pcre2_context.c \
+	pcre2/src/pcre2_convert.c \
+	pcre2/src/pcre2_dfa_match.c \
+	pcre2/src/pcre2_error.c \
+	pcre2/src/pcre2_extuni.c \
+	pcre2/src/pcre2_find_bracket.c \
+	pcre2/src/pcre2_jit_compile.c \
+	pcre2/src/pcre2_maketables.c \
+	pcre2/src/pcre2_match.c \
+	pcre2/src/pcre2_match_data.c \
+	pcre2/src/pcre2_match_next.c \
+	pcre2/src/pcre2_newline.c \
+	pcre2/src/pcre2_ord2utf.c \
+	pcre2/src/pcre2_pattern_info.c \
+	pcre2/src/pcre2_script_run.c \
+	pcre2/src/pcre2_serialize.c \
+	pcre2/src/pcre2_string_utils.c \
+	pcre2/src/pcre2_study.c \
+	pcre2/src/pcre2_substitute.c \
+	pcre2/src/pcre2_substring.c \
+	pcre2/src/pcre2_tables.c \
+	pcre2/src/pcre2_ucd.c \
+	pcre2/src/pcre2_valid_utf.c \
+	pcre2/src/pcre2_xclass.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include
-LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
+LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 
 # QuickJS 配置
 LOCAL_CFLAGS += -I$(LOCAL_PATH)/quickjs -D_GNU_SOURCE -DCONFIG_VERSION=\"2024-01-13\"

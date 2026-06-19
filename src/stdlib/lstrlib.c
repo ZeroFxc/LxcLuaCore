@@ -33,6 +33,20 @@
 #include "crc.h"
 #include "sha256.h"
 #include "csprng.h"
+#include "config.h"
+#include "pcre2.h"
+
+/* LXCLUA 正则引擎开关，由 jit.regex.pcre2.on()/jit.regex.pcre2.off() 控制 */
+extern int XCLUA_PCRE2_ENABLED;
+/* LXCLUA 正则 JIT 开关，由 jit.regex.on()/jit.regex.off() 控制 */
+extern int XCLUA_REGEX_JIT_ENABLED;
+
+/* 原版 Lua 正则引擎常量 */
+#define L_ESC       '%'
+#define SPECIALS    "^$*+?.([%-"
+#define MAXCCALLS   200
+#define CAP_UNFINISHED  (-1)
+#define CAP_POSITION    (-2)
 
 
 /*
@@ -650,44 +664,668 @@ static const luaL_Reg stringmetamethods[] = {
 
 /*
 ** {===========================================
-** PATTERN MATCHING
+** PATTERN MATCHING (PCRE2 引擎)
 ** ============================================
 */
 
+/* PCRE2 特殊字符 */
+#define SPECIALS	"\\^$.*+?()[]{}|"
 
-#define CAP_UNFINISHED	(-1)
+/* 捕获常量 */
 #define CAP_POSITION	(-2)
+#define L_ESC		'%'
 
+/* 前向声明：纯文本查找 */
+static const char *lmemfind (const char *s1, size_t l1,
+                               const char *s2, size_t l2);
 
+/* PCRE2 + 原版 Lua 双引擎匹配状态 */
 typedef struct MatchState {
-  const char *src_init;  /* init of source string */
-  const char *src_end;  /* end ('\0') of source string */
-  const char *p_end;  /* end ('\0') of pattern */
+  /* 公共字段 */
+  const char *src_init;
+  const char *src_end;
   lua_State *L;
-  int matchdepth;  /* control for recursive depth (to avoid C stack overflow) */
-  int level;  /* total number of captures (finished or unfinished) */
+  /* PCRE2 引擎字段 */
+  pcre2_code *code;
+  pcre2_match_data *mdata;
+  PCRE2_SIZE *ovector;
+  uint32_t ovec_count;
+  /* 原版 Lua 引擎字段 */
+  const char *p_end;
+  int matchdepth;
+  int level;
   struct {
     const char *init;
-    ptrdiff_t len;  /* length or special value (CAP_*) */
+    ptrdiff_t len;
   } capture[LUA_MAXCAPTURES];
 } MatchState;
 
+/* ===== PCRE2 正则编译缓存（LRU） ===== */
+/* 只缓存 pcre2_code（不可变），不缓存 pcre2_match_data（每次调用 pcre2_match 会修改其内部数据） */
+#define PATTERN_CACHE_SIZE 16
 
-/* recursive function */
-static const char *match (MatchState *ms, const char *s, const char *p);
+typedef struct PatternCacheEntry {
+  char *pattern;           /* 模式字符串副本 */
+  size_t pattern_len;      /* 模式长度 */
+  pcre2_code *code;        /* 编译后的正则 */
+  int last_used;           /* LRU 计数器，值越大表示最近使用过 */
+} PatternCacheEntry;
 
+static PatternCacheEntry pattern_cache[PATTERN_CACHE_SIZE];
+static int pattern_cache_counter = 0;
+static int pattern_cache_initialized = 0;
 
-/* maximum recursion depth for 'match' */
-#if !defined(MAXCCALLS)
-#define MAXCCALLS	200
-#endif
+/* 初始化缓存 */
+static void init_cache (void) {
+  memset(pattern_cache, 0, sizeof(pattern_cache));
+  pattern_cache_initialized = 1;
+}
 
+/* 从缓存中查找已编译的模式，返回 code 或 NULL */
+static pcre2_code *cache_lookup (const char *p, size_t lp) {
+  if (!pattern_cache_initialized) init_cache();
+  for (int i = 0; i < PATTERN_CACHE_SIZE; i++) {
+    PatternCacheEntry *e = &pattern_cache[i];
+    if (e->pattern != NULL && e->pattern_len == lp
+        && memcmp(e->pattern, p, lp) == 0) {
+      e->last_used = ++pattern_cache_counter;
+      return e->code;
+    }
+  }
+  return NULL;
+}
 
-#define L_ESC		'%'
-#define SPECIALS	"^$*+?.([%-"
+/* 将编译后的模式加入缓存，缓存满时淘汰最久未使用的条目 */
+static void cache_insert (const char *p, size_t lp, pcre2_code *code) {
+  if (!pattern_cache_initialized) init_cache();
+  int slot = -1;
+  int min_used = INT_MAX;
+  for (int i = 0; i < PATTERN_CACHE_SIZE; i++) {
+    if (pattern_cache[i].pattern == NULL) { slot = i; break; }
+    if (pattern_cache[i].last_used < min_used) {
+      min_used = pattern_cache[i].last_used;
+      slot = i;
+    }
+  }
+  /* 淘汰旧条目 */
+  if (pattern_cache[slot].pattern != NULL) {
+    free(pattern_cache[slot].pattern);
+    pcre2_code_free(pattern_cache[slot].code);
+  }
+  /* 存入新条目 */
+  pattern_cache[slot].pattern = (char *)malloc(lp + 1);
+  memcpy(pattern_cache[slot].pattern, p, lp);
+  pattern_cache[slot].pattern[lp] = '\0';
+  pattern_cache[slot].pattern_len = lp;
+  pattern_cache[slot].code = code;
+  pattern_cache[slot].last_used = ++pattern_cache_counter;
+}
 
+/*
+** 将 Lua 正则模式转换为 PCRE2 模式
+** 支持转换：%d→\d, %w→\w, %s→\s, %a→[a-zA-Z], %l→[a-z], %u→[A-Z],
+**   %x→[0-9a-fA-F], %p→[!-/:-@[-`{-~], %g→[!-~], %c→[\\x00-\\x1f\\x7f],
+**   %z→\\0, %%→%, %1-%9→\1-\9, %X→\\X (转义魔法字符),
+**   -→*? (懒惰量词)
+** 返回转换后的字符串（调用者需 free），失败返回 NULL
+*/
+static char *lua_pattern_to_pcre2 (const char *p, size_t lp, size_t *out_len) {
+  /* 预估输出缓冲区：最坏情况 %p→38字节(19x膨胀)，加结尾\0 */
+  size_t bufsz = lp * 20 + 16;
+  char *buf = (char *)malloc(bufsz);
+  if (!buf) return NULL;
+  size_t pos = 0;
+  int in_bracket = 0;  /* 是否在 [...] 字符集内部 */
 
-static int check_capture (MatchState *ms, int l) {
+  for (size_t i = 0; i < lp; i++) {
+    char c = p[i];
+    if (c == '[') {
+      in_bracket = 1;
+      buf[pos++] = c;
+    }
+    else if (c == ']') {
+      in_bracket = 0;
+      buf[pos++] = c;
+    }
+    else if (c == '%' && i + 1 < lp) {
+      char nc = p[++i];
+      switch (nc) {
+        case 'd': memcpy(buf + pos, "\\d", 2); pos += 2; break;
+        case 'w': memcpy(buf + pos, "\\w", 2); pos += 2; break;
+        case 's': memcpy(buf + pos, "\\s", 2); pos += 2; break;
+        case 'a': memcpy(buf + pos, "[a-zA-Z]", 8); pos += 8; break;
+        case 'l': memcpy(buf + pos, "[a-z]", 5); pos += 5; break;
+        case 'u': memcpy(buf + pos, "[A-Z]", 5); pos += 5; break;
+        case 'x': memcpy(buf + pos, "[0-9a-fA-F]", 11); pos += 11; break;
+        case 'p': memcpy(buf + pos, "[\\x21-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\x7e]", 38); pos += 38; break;
+        case 'g': memcpy(buf + pos, "[!-~]", 5); pos += 5; break;
+        case 'c': memcpy(buf + pos, "[\\x00-\\x1f\\x7f]", 15); pos += 15; break;
+        case 'z': memcpy(buf + pos, "\\0", 2); pos += 2; break;
+        case '%': buf[pos++] = '%'; break;
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+          buf[pos++] = '\\';
+          buf[pos++] = nc;
+          break;
+        case 'b': case 'f':  /* %bxy 和 %f[set] 保留原样，PCRE2 不支持 */
+          buf[pos++] = '%';
+          buf[pos++] = nc;
+          break;
+        default:  /* %. → \. 等转义魔法字符 */
+          buf[pos++] = '\\';
+          buf[pos++] = nc;
+          break;
+      }
+    }
+    else if (c == '-' && !in_bracket) {
+      /* Lua 懒惰量词 → PCRE2 *? */
+      memcpy(buf + pos, "*?", 2); pos += 2;
+    }
+    else {
+      buf[pos++] = c;
+    }
+  }
+  buf[pos] = '\0';
+  *out_len = pos;
+  return buf;
+}
+
+/* 编译正则模式（带缓存） */
+static pcre2_code *pcre2_compile_pattern (lua_State *L, const char *p, size_t lp,
+                                     pcre2_match_data **mdata) {
+  /* 先查 LRU 缓存 */
+  pcre2_code *code = cache_lookup(p, lp);
+  if (code != NULL) {
+    *mdata = pcre2_match_data_create_from_pattern(code, NULL);
+    if (*mdata == NULL) luaL_error(L, "内存不足");
+    return code;
+  }
+  /* 缓存未命中，先将 Lua 模式转换为 PCRE2 模式 */
+  size_t pcre2_len;
+  char *pcre2_pat = lua_pattern_to_pcre2(p, lp, &pcre2_len);
+  if (!pcre2_pat) luaL_error(L, "内存不足");
+
+  int errcode;
+  PCRE2_SIZE erroffset;
+  code = pcre2_compile((PCRE2_SPTR)pcre2_pat, pcre2_len, 0, &errcode, &erroffset, NULL);
+  if (code == NULL) {
+    PCRE2_UCHAR errbuf[256];
+    pcre2_get_error_message(errcode, errbuf, sizeof(errbuf));
+    luaL_error(L, "正则编译错误 (位置 %d): %s\n  原始模式: %s\n  转换后: %s",
+               (int)erroffset + 1, (const char *)errbuf, p, pcre2_pat);
+  }
+  free(pcre2_pat);
+
+  *mdata = pcre2_match_data_create_from_pattern(code, NULL);
+  if (*mdata == NULL) {
+    pcre2_code_free(code);
+    luaL_error(L, "内存不足");
+  }
+  /* 仅在 jit.regex.on() 后才启用 PCRE2 JIT */
+  if (XCLUA_REGEX_JIT_ENABLED) {
+    pcre2_jit_compile(code, PCRE2_JIT_COMPLETE);
+  }
+  /* 加入缓存（用原始 Lua 模式做 key） */
+  cache_insert(p, lp, code);
+  return code;
+}
+
+/* 释放匹配数据。code 由缓存管理，不在此释放 */
+static void pcre2_free_pattern (pcre2_code *code, pcre2_match_data *mdata) {
+  if (mdata) pcre2_match_data_free(mdata);
+  (void)code;
+}
+
+/* 检查模式是否包含特殊字符 */
+static int pcre2_nospecials (const char *p, size_t l) {
+  size_t upto = 0;
+  do {
+    if (strpbrk(p + upto, SPECIALS))
+      return 0;
+    upto += strlen(p + upto) + 1;
+  } while (upto <= l);
+  return 1;
+}
+
+/* 获取第 i 个捕获组信息 */
+static ptrdiff_t pcre2_get_onecapture (MatchState *ms, int i, const char *s,
+                                  const char *e, const char **cap) {
+  if (i == 0) {
+    *cap = s;
+    return (e - s);
+  }
+  else if (i * 2 < (int)ms->ovec_count) {
+    PCRE2_SIZE start = ms->ovector[i * 2];
+    PCRE2_SIZE end = ms->ovector[i * 2 + 1];
+    if (start == PCRE2_UNSET) {
+      *cap = NULL;
+      return CAP_POSITION;
+    }
+    *cap = ms->src_init + start;
+    return (end - start);
+  }
+  else {
+    luaL_error(ms->L, "无效的捕获索引 %%%d", i);
+    return 0;
+  }
+}
+
+/* 将第 i 个捕获组压入栈 */
+static void pcre2_push_onecapture (MatchState *ms, int i, const char *s,
+                              const char *e) {
+  const char *cap;
+  ptrdiff_t l = pcre2_get_onecapture(ms, i, s, e, &cap);
+  if (l == CAP_POSITION)
+    lua_pushnil(ms->L);
+  else
+    lua_pushlstring(ms->L, cap, (size_t)l);
+}
+
+/* 将所有捕获组压入栈（有捕获组时跳过全匹配） */
+static int pcre2_push_captures (MatchState *ms, const char *s, const char *e) {
+  int i;
+  int nlevels = (int)(ms->ovec_count / 2);
+  if (nlevels <= 1) {
+    /* 没有捕获组，返回全匹配 */
+    const char *cap;
+    ptrdiff_t l = pcre2_get_onecapture(ms, 0, s, e, &cap);
+    lua_pushlstring(ms->L, cap, (size_t)l);
+    return 1;
+  }
+  /* 有捕获组，跳过全匹配，只返回捕获组 */
+  luaL_checkstack(ms->L, nlevels - 1, "捕获过多");
+  for (i = 1; i < nlevels; i++) {
+    pcre2_push_onecapture(ms, i, s, e);
+  }
+  return nlevels - 1;
+}
+
+/* 执行 PCRE2 匹配 */
+static int pcre2_do_match (MatchState *ms, const char *s) {
+  PCRE2_SIZE offset = s - ms->src_init;
+  int rc = pcre2_match(ms->code, (PCRE2_SPTR)ms->src_init,
+                        ms->src_end - ms->src_init,
+                        offset, 0, ms->mdata, NULL);
+  if (rc < 0) {
+    if (rc == PCRE2_ERROR_NOMATCH)
+      return 0;
+    PCRE2_UCHAR errbuf[256];
+    pcre2_get_error_message(rc, errbuf, sizeof(errbuf));
+    luaL_error(ms->L, "正则匹配错误: %s", (const char *)errbuf);
+    return 0;
+  }
+  ms->ovector = pcre2_get_ovector_pointer(ms->mdata);
+  /* pcre2_get_ovector_count 返回的是 pair 数，代码内部按元素数使用，需乘以 2 */
+  ms->ovec_count = pcre2_get_ovector_count(ms->mdata) * 2;
+  return 1;
+}
+
+/* str_find_aux: 查找/匹配的统一实现 */
+static int pcre2_str_find_aux (lua_State *L, int find) {
+  size_t ls, lp;
+  const char *s = luaL_checklstring(L, 1, &ls);
+  const char *p = luaL_checklstring(L, 2, &lp);
+  size_t init = posrelatI(luaL_optinteger(L, 3, 1), ls) - 1;
+  if (init > ls) {
+    luaL_pushfail(L);
+    return 1;
+  }
+  if (find && (lua_toboolean(L, 4) || pcre2_nospecials(p, lp))) {
+    const char *s2 = lmemfind(s + init, ls - init, p, lp);
+    if (s2) {
+      lua_pushinteger(L, ct_diff2S(s2 - s) + 1);
+      lua_pushinteger(L, cast_st2S(ct_diff2sz(s2 - s) + lp));
+      return 2;
+    }
+  }
+  else {
+    pcre2_match_data *mdata;
+    pcre2_code *code = pcre2_compile_pattern(L, p, lp, &mdata);
+    MatchState ms;
+    ms.L = L;
+    ms.src_init = s;
+    ms.src_end = s + ls;
+    ms.code = code;
+    ms.mdata = mdata;
+    ms.ovector = NULL;
+    ms.ovec_count = 0;
+
+    int anchor = (*p == '^');
+    const char *s1 = s + init;
+    if (anchor) s1 = s;
+
+    int found = 0;
+    if (anchor) {
+      found = pcre2_do_match(&ms, s1);
+    }
+    else {
+      while (s1 <= ms.src_end) {
+        if (pcre2_do_match(&ms, s1)) { found = 1; break; }
+        s1++;
+      }
+    }
+
+    if (found) {
+      const char *match_start = ms.src_init + ms.ovector[0];
+      const char *match_end = ms.src_init + ms.ovector[1];
+      if (find) {
+        lua_pushinteger(L, ct_diff2S(match_start - s) + 1);
+        lua_pushinteger(L, ct_diff2S(match_end - s));
+        int n = pcre2_push_captures(&ms, match_start, match_end);
+        pcre2_free_pattern(code, mdata);
+        return n + 2;
+      }
+      else {
+        int n = pcre2_push_captures(&ms, match_start, match_end);
+        pcre2_free_pattern(code, mdata);
+        return n;
+      }
+    }
+    pcre2_free_pattern(code, mdata);
+  }
+  luaL_pushfail(L);
+  return 1;
+}
+
+static int pcre2_str_find (lua_State *L) {
+  return pcre2_str_find_aux(L, 1);
+}
+
+static int pcre2_str_match (lua_State *L) {
+  return pcre2_str_find_aux(L, 0);
+}
+
+/* -- gfind -- */
+
+static int pcre2_gfind_aux (lua_State *L) {
+  size_t ls, lp;
+  const char *s = lua_tolstring(L, lua_upvalueindex(1), &ls);
+  const char *p = lua_tolstring(L, lua_upvalueindex(2), &lp);
+  lua_Integer init = posrelat(luaL_optinteger(L, lua_upvalueindex(3), 1), ls);
+  if (init < 1) init = 1;
+  else if (init > (lua_Integer)ls + 1) return 0;
+  if (lua_toboolean(L, lua_upvalueindex(4)) || pcre2_nospecials(p, lp)) {
+    const char *s2 = lmemfind(s + init - 1, ls - (size_t)init + 1, p, lp);
+    if (s2) {
+      lua_pushinteger(L, (s2 - s) + 1);
+      lua_pushinteger(L, (s2 - s) + lp);
+      lua_pushinteger(L, (s2 - s) + lp + 1);
+      lua_replace(L, lua_upvalueindex(3));
+      return 2;
+    }
+  }
+  else {
+    pcre2_match_data *mdata;
+    pcre2_code *code = pcre2_compile_pattern(L, p, lp, &mdata);
+    MatchState ms;
+    ms.L = L;
+    ms.src_init = s;
+    ms.src_end = s + ls;
+    ms.code = code;
+    ms.mdata = mdata;
+    ms.ovector = NULL;
+    ms.ovec_count = 0;
+
+    int anchor = (*p == '^');
+    const char *s1 = s + init - 1;
+    if (anchor) s1 = s;
+
+    if (anchor) {
+      if (pcre2_do_match(&ms, s1)) {
+        const char *match_start = ms.src_init + ms.ovector[0];
+        const char *match_end = ms.src_init + ms.ovector[1];
+        lua_pushinteger(L, (match_start - s) + 1);
+        lua_pushinteger(L, (match_end - s));
+        lua_pushinteger(L, ms.ovector[1] + 1);
+        lua_replace(L, lua_upvalueindex(3));
+        int n = pcre2_push_captures(&ms, match_start, match_end);
+        pcre2_free_pattern(code, mdata);
+        return n + 2;
+      }
+    }
+    else {
+      while (s1 <= ms.src_end) {
+        if (pcre2_do_match(&ms, s1)) {
+          const char *match_start = ms.src_init + ms.ovector[0];
+          const char *match_end = ms.src_init + ms.ovector[1];
+          lua_pushinteger(L, (match_start - s) + 1);
+          lua_pushinteger(L, (match_end - s));
+          lua_pushinteger(L, ms.ovector[1] + 1);
+          lua_replace(L, lua_upvalueindex(3));
+          int n = pcre2_push_captures(&ms, match_start, match_end);
+          pcre2_free_pattern(code, mdata);
+          return n + 2;
+        }
+        s1++;
+      }
+    }
+    pcre2_free_pattern(code, mdata);
+  }
+  return 0;
+}
+
+static int pcre2_gfind (lua_State *L) {
+  luaL_checkstring(L, 1);
+  luaL_checkstring(L, 2);
+  int b = lua_toboolean(L, 3);
+  lua_settop(L, 2);
+  lua_pushinteger(L, 0);
+  lua_pushboolean(L, b);
+  lua_pushcclosure(L, pcre2_gfind_aux, 4);
+  return 1;
+}
+
+/* -- gmatch -- */
+
+typedef struct GMatchState {
+  const char *src;
+  const char *p;
+  const char *lastmatch;
+  pcre2_code *code;
+  pcre2_match_data *mdata;
+  MatchState ms;
+} GMatchState;
+
+static int pcre2_gmatch_aux (lua_State *L) {
+  GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
+  const char *src;
+  gm->ms.L = L;
+  for (src = gm->src; src <= gm->ms.src_end; src++) {
+    if (pcre2_do_match(&gm->ms, src)) {
+      const char *match_start = gm->ms.src_init + gm->ms.ovector[0];
+      const char *e = gm->ms.src_init + gm->ms.ovector[1];
+      PCRE2_SIZE mlen = gm->ms.ovector[1] - gm->ms.ovector[0];
+      if (mlen == 0 && match_start == gm->lastmatch) {
+        if (match_start < gm->ms.src_end) {
+          gm->src = match_start + 1;
+          gm->lastmatch = match_start + 1;
+        }
+        else
+          gm->src = gm->ms.src_end + 1;
+        return pcre2_push_captures(&gm->ms, match_start, e);
+      }
+      if (e != gm->lastmatch || mlen == 0) {
+        gm->src = gm->lastmatch = e;
+        return pcre2_push_captures(&gm->ms, match_start, e);
+      }
+    }
+  }
+  return 0;
+}
+
+static int pcre2_gmatch (lua_State *L) {
+  size_t ls, lp;
+  const char *s = luaL_checklstring(L, 1, &ls);
+  const char *p = luaL_checklstring(L, 2, &lp);
+  size_t init = posrelatI(luaL_optinteger(L, 3, 1), ls) - 1;
+  GMatchState *gm;
+  lua_settop(L, 2);
+  gm = (GMatchState *)lua_newuserdatauv(L, sizeof(GMatchState), 0);
+  if (init > ls) init = ls + 1;
+  gm->code = pcre2_compile_pattern(L, p, lp, &gm->mdata);
+  gm->ms.L = L;
+  gm->ms.src_init = s;
+  gm->ms.src_end = s + ls;
+  gm->ms.code = gm->code;
+  gm->ms.mdata = gm->mdata;
+  gm->ms.ovector = NULL;
+  gm->ms.ovec_count = 0;
+  gm->src = s + init;
+  gm->p = p;
+  gm->lastmatch = NULL;
+  lua_pushcclosure(L, pcre2_gmatch_aux, 3);
+  return 1;
+}
+
+/* -- gsub -- */
+
+static void pcre2_add_s (MatchState *ms, luaL_Buffer *b, const char *s,
+                    const char *e) {
+  size_t l;
+  lua_State *L = ms->L;
+  const char *news = lua_tolstring(L, 3, &l);
+  const char *p;
+  while ((p = (char *)memchr(news, '$', l)) != NULL) {
+    luaL_addlstring(b, news, ct_diff2sz(p - news));
+    p++;
+    if (*p == '$')
+      luaL_addchar(b, '$');
+    else if (*p == '0' || *p == '&')
+      luaL_addlstring(b, s, ct_diff2sz(e - s));
+    else if (isdigit(cast_uchar(*p))) {
+      const char *cap;
+      ptrdiff_t resl = pcre2_get_onecapture(ms, *p - '0', s, e, &cap);
+      if (resl == CAP_POSITION)
+        luaL_addvalue(b);
+      else if (cap)
+        luaL_addlstring(b, cap, cast_sizet(resl));
+      else
+        luaL_addstring(b, "");
+    }
+    else
+      luaL_error(L, "替换字符串中无效使用 '$'");
+    l -= ct_diff2sz(p + 1 - news);
+    news = p + 1;
+  }
+  luaL_addlstring(b, news, l);
+}
+
+static int pcre2_add_value (MatchState *ms, luaL_Buffer *b, const char *s,
+                       const char *e, int tr) {
+  lua_State *L = ms->L;
+  switch (tr) {
+    case LUA_TFUNCTION: {
+      int n;
+      lua_pushvalue(L, 3);
+      n = pcre2_push_captures(ms, s, e);
+      lua_call(L, n, 1);
+      break;
+    }
+    case LUA_TTABLE: {
+      pcre2_push_onecapture(ms, 0, s, e);
+      lua_gettable(L, 3);
+      break;
+    }
+    default: {
+      pcre2_add_s(ms, b, s, e);
+      return 1;
+    }
+  }
+  if (!lua_toboolean(L, -1)) {
+    lua_pop(L, 1);
+    luaL_addlstring(b, s, ct_diff2sz(e - s));
+    return 0;
+  }
+  else if (l_unlikely(!lua_isstring(L, -1)))
+    return luaL_error(L, "无效的替换值 (a %s)", luaL_typename(L, -1));
+  else {
+    luaL_addvalue(b);
+    return 1;
+  }
+}
+
+static int pcre2_str_gsub (lua_State *L) {
+  size_t srcl, lp;
+  const char *src = luaL_checklstring(L, 1, &srcl);
+  const char *p = luaL_checklstring(L, 2, &lp);
+  const char *lastmatch = NULL;
+  int tr = lua_type(L, 3);
+  lua_Integer max_s = luaL_optinteger(L, 4, cast_st2S(srcl) + 1);
+  int anchor = (*p == '^');
+  lua_Integer n = 0;
+  int changed = 0;
+  luaL_Buffer b;
+  luaL_argexpected(L, tr == LUA_TNUMBER || tr == LUA_TSTRING ||
+                   tr == LUA_TFUNCTION || tr == LUA_TTABLE, 3,
+                   "string/function/table");
+  luaL_buffinit(L, &b);
+
+  pcre2_match_data *mdata;
+  pcre2_code *code = pcre2_compile_pattern(L, p, lp, &mdata);
+  MatchState ms;
+  ms.L = L;
+  ms.src_init = src;
+  ms.src_end = src + srcl;
+  ms.code = code;
+  ms.mdata = mdata;
+  ms.ovector = NULL;
+  ms.ovec_count = 0;
+
+  while (n < max_s) {
+    if (pcre2_do_match(&ms, src)) {
+      const char *match_start = ms.src_init + ms.ovector[0];
+      const char *e = ms.src_init + ms.ovector[1];
+      PCRE2_SIZE mlen = ms.ovector[1] - ms.ovector[0];
+
+      if (e == lastmatch) {
+        if (src < ms.src_end) {
+          luaL_addchar(&b, *src++);
+          continue;
+        }
+        else break;
+      }
+
+      /* 添加匹配前的未匹配文本 */
+      luaL_addlstring(&b, src, ct_diff2sz(match_start - src));
+
+      n++;
+      changed = pcre2_add_value(&ms, &b, match_start, e, tr) | changed;
+      src = lastmatch = e;
+
+      if (mlen == 0 && src < ms.src_end)
+        luaL_addchar(&b, *src++);
+    }
+    else if (src < ms.src_end)
+      luaL_addchar(&b, *src++);
+    else break;
+    if (anchor) break;
+  }
+
+  pcre2_free_pattern(code, mdata);
+
+  if (!changed)
+    lua_pushvalue(L, 1);
+  else {
+    luaL_addlstring(&b, src, ct_diff2sz(ms.src_end - src));
+    luaL_pushresult(&b);
+  }
+  lua_pushinteger(L, n);
+  return 2;
+}
+
+/* }=========================================== */
+
+/*
+** {===========================================
+** 原始 Lua 正则引擎（lua_ 前缀）
+** ============================================
+*/
+
+/* 原始 Lua 正则特殊字符（不同于 PCRE2 的 SPECIALS） */
+#define LUA_SPECIALS "^$*+?.([%-"
+
+/* 原始 Lua 正则内部函数 */
+static int lua_check_capture (MatchState *ms, int l) {
   l -= '1';
   if (l_unlikely(l < 0 || l >= ms->level ||
                  ms->capture[l].len == CAP_UNFINISHED))
@@ -695,16 +1333,14 @@ static int check_capture (MatchState *ms, int l) {
   return l;
 }
 
-
-static int capture_to_close (MatchState *ms) {
+static int lua_capture_to_close (MatchState *ms) {
   int level = ms->level;
   for (level--; level>=0; level--)
     if (ms->capture[level].len == CAP_UNFINISHED) return level;
   return luaL_error(ms->L, "无效的模式捕获");
 }
 
-
-static const char *classend (MatchState *ms, const char *p) {
+static const char *lua_classend (MatchState *ms, const char *p) {
   switch (*p++) {
     case L_ESC: {
       if (l_unlikely(p == ms->p_end))
@@ -713,11 +1349,11 @@ static const char *classend (MatchState *ms, const char *p) {
     }
     case '[': {
       if (*p == '^') p++;
-      do {  /* look for a ']' */
+      do {
         if (l_unlikely(p == ms->p_end))
           luaL_error(ms->L, "格式错误的模式 (缺少 ']')");
         if (*(p++) == L_ESC && p < ms->p_end)
-          p++;  /* skip escapes (e.g. '%]') */
+          p++;
       } while (*p != ']');
       return p+1;
     }
@@ -727,8 +1363,7 @@ static const char *classend (MatchState *ms, const char *p) {
   }
 }
 
-
-static int match_class (int c, int cl) {
+static int lua_match_class (int c, int cl) {
   int res;
   switch (tolower(cl)) {
     case 'a' : res = isalpha(c); break;
@@ -741,7 +1376,7 @@ static int match_class (int c, int cl) {
     case 'u' : res = isupper(c); break;
     case 'w' : res = isalnum(c); break;
     case 'x' : res = isxdigit(c); break;
-    case 'z' : res = (c == 0); break;  /* deprecated option */
+    case 'z' : res = (c == 0); break;
     case 'n' : res = (c == '\n' || c == '\r'); break;
     case 'r' : res = (c == '\r'); break;
     case 't' : res = (c == '\t'); break;
@@ -754,17 +1389,16 @@ static int match_class (int c, int cl) {
   return (islower(cl) ? res : !res);
 }
 
-
-static int matchbracketclass (int c, const char *p, const char *ec) {
+static int lua_matchbracketclass (int c, const char *p, const char *ec) {
   int sig = 1;
   if (*(p+1) == '^') {
     sig = 0;
-    p++;  /* skip the '^' */
+    p++;
   }
   while (++p < ec) {
     if (*p == L_ESC) {
       p++;
-      if (match_class(c, cast_uchar(*p)))
+      if (lua_match_class(c, cast_uchar(*p)))
         return sig;
     }
     else if ((*(p+1) == '-') && (p+2 < ec)) {
@@ -777,24 +1411,22 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
   return !sig;
 }
 
-
-static int singlematch (MatchState *ms, const char *s, const char *p,
+static int lua_singlematch (MatchState *ms, const char *s, const char *p,
                         const char *ep) {
   if (s >= ms->src_end)
     return 0;
   else {
     int c = cast_uchar(*s);
     switch (*p) {
-      case '.': return 1;  /* matches any char */
-      case L_ESC: return match_class(c, cast_uchar(*(p+1)));
-      case '[': return matchbracketclass(c, p, ep-1);
+      case '.': return 1;
+      case L_ESC: return lua_match_class(c, cast_uchar(*(p+1)));
+      case '[': return lua_matchbracketclass(c, p, ep-1);
       default:  return (cast_uchar(*p) == c);
     }
   }
 }
 
-
-static const char *matchbalance (MatchState *ms, const char *s,
+static const char *lua_matchbalance (MatchState *ms, const char *s,
                                    const char *p) {
   if (l_unlikely(p >= ms->p_end - 1))
     luaL_error(ms->L, "格式错误的模式 (缺少 '%%b' 的参数)");
@@ -810,118 +1442,38 @@ static const char *matchbalance (MatchState *ms, const char *s,
       else if (*s == b) cont++;
     }
   }
-  return NULL;  /* string ends out of balance */
-}
-
-
-static const char *max_expand (MatchState *ms, const char *s,
-                                 const char *p, const char *ep) {
-  ptrdiff_t i = 0;  /* counts maximum expand for item */
-  while (singlematch(ms, s + i, p, ep))
-    i++;
-  /* keeps trying to match with the maximum repetitions */
-  while (i>=0) {
-    const char *res = match(ms, (s+i), ep+1);
-    if (res) return res;
-    i--;  /* else didn't match; reduce 1 repetition to try again */
-  }
   return NULL;
 }
 
+/* 前向声明：原始 Lua 递归匹配函数 */
+static const char *lua_match (MatchState *ms, const char *s, const char *p);
 
-static const char *range_expand (MatchState *ms, const char *s,
-                                 const char *p, const char *ep, int min, int max, const char *next_p) {
-  ptrdiff_t i = 0;  /* counts maximum expand for item */
-  while ((max == -1 || i < max) && singlematch(ms, s + i, p, ep))
+static const char *lua_max_expand (MatchState *ms, const char *s,
+                                 const char *p, const char *ep) {
+  ptrdiff_t i = 0;
+  while (lua_singlematch(ms, s + i, p, ep))
     i++;
-  if (i < min) return NULL;
-  while (i >= min) {
-    const char *res = match(ms, (s+i), next_p);
+  while (i>=0) {
+    const char *res = lua_match(ms, (s+i), ep+1);
     if (res) return res;
     i--;
   }
   return NULL;
 }
 
-static int parse_repetition(const char *ep, int *min, int *max, const char **next_p) {
-  if (*ep != '{') return 0;
-  const char *p = ep + 1;
-  int l_min = 0, l_max = -1;
-  int has_min = 0, has_max = 0;
-  
-  if (isdigit(cast_uchar(*p))) {
-    while (isdigit(cast_uchar(*p))) {
-      l_min = l_min * 10 + (*p - '0');
-      p++;
-    }
-    has_min = 1;
-  }
-  
-  if (*p == ',') {
-    p++;
-    if (isdigit(cast_uchar(*p))) {
-      l_max = 0;
-      while (isdigit(cast_uchar(*p))) {
-        l_max = l_max * 10 + (*p - '0');
-        p++;
-      }
-      has_max = 1;
-    }
-  } else {
-    if (has_min) {
-      l_max = l_min;
-      has_max = 1;
-    }
-  }
-  
-  if (*p == '}') {
-    *min = has_min ? l_min : 0;
-    *max = has_max ? l_max : -1;
-    *next_p = p + 1;
-    return 1;
-  }
-  
-  return 0;
-}
-
-static const char *find_matching_paren(const char *p, const char *p_end) {
-  int level = 1;
-  while (p < p_end) {
-    if (*p == L_ESC) p += 2;
-    else if (*p == '(') level++, p++;
-    else if (*p == ')') {
-      level--;
-      if (level == 0) return p;
-      p++;
-    } else if (*p == '[') {
-      p++;
-      if (*p == '^') p++;
-      do {
-        if (*p == L_ESC) p += 2;
-        else p++;
-      } while (p < p_end && *p != ']');
-      if (p < p_end) p++;
-    } else {
-      p++;
-    }
-  }
-  return NULL;
-}
-
-static const char *min_expand (MatchState *ms, const char *s,
+static const char *lua_min_expand (MatchState *ms, const char *s,
                                  const char *p, const char *ep) {
   for (;;) {
-    const char *res = match(ms, s, ep+1);
+    const char *res = lua_match(ms, s, ep+1);
     if (res != NULL)
       return res;
-    else if (singlematch(ms, s, p, ep))
-      s++;  /* try with one more repetition */
+    else if (lua_singlematch(ms, s, p, ep))
+      s++;
     else return NULL;
   }
 }
 
-
-static const char *start_capture (MatchState *ms, const char *s,
+static const char *lua_start_capture (MatchState *ms, const char *s,
                                     const char *p, int what) {
   const char *res;
   int level = ms->level;
@@ -929,26 +1481,24 @@ static const char *start_capture (MatchState *ms, const char *s,
   ms->capture[level].init = s;
   ms->capture[level].len = what;
   ms->level = level+1;
-  if ((res=match(ms, s, p)) == NULL)  /* match failed? */
-    ms->level--;  /* undo capture */
+  if ((res=lua_match(ms, s, p)) == NULL)
+    ms->level--;
   return res;
 }
 
-
-static const char *end_capture (MatchState *ms, const char *s,
+static const char *lua_end_capture (MatchState *ms, const char *s,
                                   const char *p) {
-  int l = capture_to_close(ms);
+  int l = lua_capture_to_close(ms);
   const char *res;
-  ms->capture[l].len = s - ms->capture[l].init;  /* close capture */
-  if ((res = match(ms, s, p)) == NULL)  /* match failed? */
-    ms->capture[l].len = CAP_UNFINISHED;  /* undo capture */
+  ms->capture[l].len = s - ms->capture[l].init;
+  if ((res = lua_match(ms, s, p)) == NULL)
+    ms->capture[l].len = CAP_UNFINISHED;
   return res;
 }
 
-
-static const char *match_capture (MatchState *ms, const char *s, int l) {
+static const char *lua_match_capture (MatchState *ms, const char *s, int l) {
   size_t len;
-  l = check_capture(ms, l);
+  l = lua_check_capture(ms, l);
   len = cast_sizet(ms->capture[l].len);
   if ((size_t)(ms->src_end-s) >= len &&
       memcmp(ms->capture[l].init, s, len) == 0)
@@ -956,146 +1506,96 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
   else return NULL;
 }
 
-
-static const char *match (MatchState *ms, const char *s, const char *p) {
+static const char *lua_match (MatchState *ms, const char *s, const char *p) {
   if (l_unlikely(ms->matchdepth-- == 0))
     luaL_error(ms->L, "模式过于复杂");
   init: /* using goto to optimize tail recursion */
-  if (p != ms->p_end) {  /* end of pattern? */
+  if (p != ms->p_end) {
     switch (*p) {
-      case '(': {  /* start capture */
-        if (*(p + 1) == ')')  /* position capture? */
-          s = start_capture(ms, s, p + 2, CAP_POSITION);
-        else if (*(p + 1) == '?' && *(p + 2) == '=') { /* positive lookahead */
-          const char *r_end = find_matching_paren(p + 3, ms->p_end);
-          if (!r_end) luaL_error(ms->L, "malformed pattern (missing ')')");
-          const char *old_p_end = ms->p_end;
-          ms->p_end = r_end;
-          const char *res = match(ms, s, p + 3);
-          ms->p_end = old_p_end;
-          if (res != NULL) { s = s; p = r_end + 1; goto init; }
-          else s = NULL;
-        }
-        else if (*(p + 1) == '?' && *(p + 2) == '!') { /* negative lookahead */
-          const char *r_end = find_matching_paren(p + 3, ms->p_end);
-          if (!r_end) luaL_error(ms->L, "malformed pattern (missing ')')");
-          const char *old_p_end = ms->p_end;
-          ms->p_end = r_end;
-          const char *res = match(ms, s, p + 3);
-          ms->p_end = old_p_end;
-          if (res == NULL) { s = s; p = r_end + 1; goto init; }
-          else s = NULL;
-        }
-        else if (*(p + 1) == '?' && *(p + 2) == '>') { /* atomic match */
-          const char *r_end = find_matching_paren(p + 3, ms->p_end);
-          if (!r_end) luaL_error(ms->L, "malformed pattern (missing ')')");
-          const char *old_p_end = ms->p_end;
-          ms->p_end = r_end;
-          const char *res = match(ms, s, p + 3);
-          ms->p_end = old_p_end;
-          if (res != NULL) { s = res; p = r_end + 1; goto init; }
-          else s = NULL;
-        }
+      case '(': {
+        if (*(p + 1) == ')')
+          s = lua_start_capture(ms, s, p + 2, CAP_POSITION);
         else
-          s = start_capture(ms, s, p + 1, CAP_UNFINISHED);
+          s = lua_start_capture(ms, s, p + 1, CAP_UNFINISHED);
         break;
       }
-      case ')': {  /* end capture */
-        s = end_capture(ms, s, p + 1);
+      case ')': {
+        s = lua_end_capture(ms, s, p + 1);
         break;
       }
       case '$': {
-        if ((p + 1) != ms->p_end)  /* is the '$' the last char in pattern? */
-          goto dflt;  /* no; go to default */
-        s = (s == ms->src_end) ? s : NULL;  /* check end of string */
+        if ((p + 1) != ms->p_end)
+          goto lua_dflt;
+        s = (s == ms->src_end) ? s : NULL;
         break;
       }
-      case L_ESC: {  /* escaped sequences not in the format class[*+?-]? */
+      case L_ESC: {
         switch (*(p + 1)) {
-          case 'b': {  /* balanced string? */
-            s = matchbalance(ms, s, p + 2);
+          case 'b': {
+            s = lua_matchbalance(ms, s, p + 2);
             if (s != NULL) {
-              p += 4; goto init;  /* return match(ms, s, p + 4); */
-            }  /* else fail (s == NULL) */
+              p += 4; goto init;
+            }
             break;
           }
-          case 'f': {  /* frontier? */
+          case 'f': {
             const char *ep; char previous;
             p += 2;
             if (l_unlikely(*p != '['))
               luaL_error(ms->L, "在 '%%f' 后的模式中缺少 '['");
-            ep = classend(ms, p);  /* points to what is next */
+            ep = lua_classend(ms, p);
             previous = (s == ms->src_init) ? '\0' : *(s - 1);
-            if (!matchbracketclass(cast_uchar(previous), p, ep - 1) &&
-               matchbracketclass(cast_uchar(*s), p, ep - 1)) {
-              p = ep; goto init;  /* return match(ms, s, ep); */
+            if (!lua_matchbracketclass(cast_uchar(previous), p, ep - 1) &&
+               lua_matchbracketclass(cast_uchar(*s), p, ep - 1)) {
+              p = ep; goto init;
             }
-            s = NULL;  /* match failed */
+            s = NULL;
             break;
           }
           case '0': case '1': case '2': case '3':
           case '4': case '5': case '6': case '7':
-          case '8': case '9': {  /* capture results (%0-%9)? */
-            s = match_capture(ms, s, cast_uchar(*(p + 1)));
+          case '8': case '9': {
+            s = lua_match_capture(ms, s, cast_uchar(*(p + 1)));
             if (s != NULL) {
-              p += 2; goto init;  /* return match(ms, s, p + 2) */
+              p += 2; goto init;
             }
             break;
           }
-          default: goto dflt;
+          default: goto lua_dflt;
         }
         break;
       }
-      default: dflt: {  /* pattern class plus optional suffix */
-        const char *ep = classend(ms, p);  /* points to optional suffix */
-        int rep_min, rep_max;
-        const char *next_p;
-        int is_rep = 0;
-        
-        if (*ep == '{' && parse_repetition(ep, &rep_min, &rep_max, &next_p)) {
-          is_rep = 1;
-        }
-
-        if (is_rep) {
-          s = range_expand(ms, s, p, ep, rep_min, rep_max, next_p);
+      default: lua_dflt: {
+        const char *ep = lua_classend(ms, p);
+        if (!lua_singlematch(ms, s, p, ep)) {
+          if (*ep == '*' || *ep == '?' || *ep == '-') {
+            p = ep + 1; goto init;
+          }
+          else
+            s = NULL;
         }
         else {
-          /* does not match at least once? */
-          if (!singlematch(ms, s, p, ep)) {
-          int rep_min, rep_max;
-          const char *next_p;
-            if (*ep == '*' || *ep == '?' || *ep == '-') {  /* accept empty? */
-              p = ep + 1; goto init;  /* return match(ms, s, ep + 1); */
-            }
-          else if (*ep == '{' && parse_repetition(ep, &rep_min, &rep_max, &next_p) && rep_min == 0) {
-            p = next_p; goto init;
-          }
-            else  /* '+' or no suffix */
-              s = NULL;  /* fail */
-          }
-          else {  /* matched once */
-            switch (*ep) {  /* handle optional suffix */
-              case '?': {  /* optional */
-                const char *res;
-                if ((res = match(ms, s + 1, ep + 1)) != NULL)
-                  s = res;
-                else {
-                  p = ep + 1; goto init;  /* else return match(ms, s, ep + 1); */
-                }
-                break;
+          switch (*ep) {
+            case '?': {
+              const char *res;
+              if ((res = lua_match(ms, s + 1, ep + 1)) != NULL)
+                s = res;
+              else {
+                p = ep + 1; goto init;
               }
-              case '+':  /* 1 or more repetitions */
-                s++;  /* 1 match already done */
-                /* FALLTHROUGH */
-              case '*':  /* 0 or more repetitions */
-                s = max_expand(ms, s, p, ep);
-                break;
-              case '-':  /* 0 or more repetitions (minimum) */
-                s = min_expand(ms, s, p, ep);
-                break;
-              default:  /* no suffix */
-                s++; p = ep; goto init;  /* return match(ms, s + 1, ep); */
+              break;
             }
+            case '+':
+              s++;
+              /* FALLTHROUGH */
+            case '*':
+              s = lua_max_expand(ms, s, p, ep);
+              break;
+            case '-':
+              s = lua_min_expand(ms, s, p, ep);
+              break;
+            default:
+              s++; p = ep; goto init;
           }
         }
         break;
@@ -1106,38 +1606,8 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
   return s;
 }
 
-
-
-static const char *lmemfind (const char *s1, size_t l1,
-                               const char *s2, size_t l2) {
-  if (l2 == 0) return s1;  /* empty strings are everywhere */
-  else if (l2 > l1) return NULL;  /* avoids a negative 'l1' */
-  else {
-    const char *init;  /* to search for a '*s2' inside 's1' */
-    l2--;  /* 1st char will be checked by 'memchr' */
-    l1 = l1-l2;  /* 's2' cannot be found after that */
-    while (l1 > 0 && (init = (const char *)memchr(s1, *s2, l1)) != NULL) {
-      init++;   /* 1st char is already checked */
-      if (memcmp(init, s2+1, l2) == 0)
-        return init-1;
-      else {  /* correct 'l1' and 's1' to try again */
-        l1 -= ct_diff2sz(init - s1);
-        s1 = init;
-      }
-    }
-    return NULL;  /* not found */
-  }
-}
-
-
-/*
-** get information about the i-th capture. If there are no captures
-** and 'i==0', return information about the whole match, which
-** is the range 's'..'e'. If the capture is a string, return
-** its length and put its address in '*cap'. If it is an integer
-** (a position), push it on the stack and return CAP_POSITION.
-*/
-static ptrdiff_t get_onecapture (MatchState *ms, int i, const char *s,
+/* 原始 Lua 正则：获取第 i 个捕获组信息 */
+static ptrdiff_t lua_get_onecapture (MatchState *ms, int i, const char *s,
                               const char *e, const char **cap) {
   if (i >= ms->level) {
     if (l_unlikely(i != 0))
@@ -1157,43 +1627,38 @@ static ptrdiff_t get_onecapture (MatchState *ms, int i, const char *s,
   }
 }
 
-
-/*
-** Push the i-th capture on the stack.
-*/
-static void push_onecapture (MatchState *ms, int i, const char *s,
+/* 原始 Lua 正则：将第 i 个捕获组压入栈 */
+static void lua_push_onecapture (MatchState *ms, int i, const char *s,
                                                     const char *e) {
   const char *cap;
-  ptrdiff_t l = get_onecapture(ms, i, s, e, &cap);
+  ptrdiff_t l = lua_get_onecapture(ms, i, s, e, &cap);
   if (l != CAP_POSITION)
     lua_pushlstring(ms->L, cap, cast_sizet(l));
-  /* else position was already pushed */
 }
 
-
-static int push_captures (MatchState *ms, const char *s, const char *e) {
+/* 原始 Lua 正则：将所有捕获组压入栈 */
+static int lua_push_captures (MatchState *ms, const char *s, const char *e) {
   int i;
   int nlevels = (ms->level == 0 && s) ? 1 : ms->level;
   luaL_checkstack(ms->L, nlevels, "too many captures");
   for (i = 0; i < nlevels; i++)
-    push_onecapture(ms, i, s, e);
-  return nlevels;  /* number of strings pushed */
+    lua_push_onecapture(ms, i, s, e);
+  return nlevels;
 }
 
-
-/* check whether pattern has no special characters */
-static int nospecials (const char *p, size_t l) {
+/* 原始 Lua 正则：检查模式是否不含特殊字符 */
+static int lua_nospecials (const char *p, size_t l) {
   size_t upto = 0;
   do {
-    if (strpbrk(p + upto, SPECIALS))
-      return 0;  /* pattern has a special character */
-    upto += strlen(p + upto) + 1;  /* may have more after \0 */
+    if (strpbrk(p + upto, LUA_SPECIALS))
+      return 0;
+    upto += strlen(p + upto) + 1;
   } while (upto <= l);
-  return 1;  /* no special chars found */
+  return 1;
 }
 
-
-static void prepstate (MatchState *ms, lua_State *L,
+/* 原始 Lua 正则：初始化匹配状态 */
+static void lua_prepstate (MatchState *ms, lua_State *L,
                        const char *s, size_t ls, const char *p, size_t lp) {
   ms->L = L;
   ms->matchdepth = MAXCCALLS;
@@ -1202,25 +1667,23 @@ static void prepstate (MatchState *ms, lua_State *L,
   ms->p_end = p + lp;
 }
 
-
-static void reprepstate (MatchState *ms) {
+/* 原始 Lua 正则：重置匹配状态 */
+static void lua_reprepstate (MatchState *ms) {
   ms->level = 0;
   lua_assert(ms->matchdepth == MAXCCALLS);
 }
 
-
-static int str_find_aux (lua_State *L, int find) {
+/* 原始 Lua 正则：str_find_aux 实现 */
+static int lua_str_find_aux (lua_State *L, int find) {
   size_t ls, lp;
   const char *s = luaL_checklstring(L, 1, &ls);
   const char *p = luaL_checklstring(L, 2, &lp);
   size_t init = posrelatI(luaL_optinteger(L, 3, 1), ls) - 1;
-  if (init > ls) {  /* start after string's end? */
-    luaL_pushfail(L);  /* cannot find anything */
+  if (init > ls) {
+    luaL_pushfail(L);
     return 1;
   }
-  /* explicit request or no special characters? */
-  if (find && (lua_toboolean(L, 4) || nospecials(p, lp))) {
-    /* do a plain search */
+  if (find && (lua_toboolean(L, 4) || lua_nospecials(p, lp))) {
     const char *s2 = lmemfind(s + init, ls - init, p, lp);
     if (s2) {
       lua_pushinteger(L, ct_diff2S(s2 - s) + 1);
@@ -1233,46 +1696,46 @@ static int str_find_aux (lua_State *L, int find) {
     const char *s1 = s + init;
     int anchor = (*p == '^');
     if (anchor) {
-      p++; lp--;  /* skip anchor character */
+      p++; lp--;
     }
-    prepstate(&ms, L, s, ls, p, lp);
+    lua_prepstate(&ms, L, s, ls, p, lp);
     do {
       const char *res;
-      reprepstate(&ms);
-      if ((res=match(&ms, s1, p)) != NULL) {
+      lua_reprepstate(&ms);
+      if ((res=lua_match(&ms, s1, p)) != NULL) {
         if (find) {
-          lua_pushinteger(L, ct_diff2S(s1 - s) + 1);  /* start */
-          lua_pushinteger(L, ct_diff2S(res - s));   /* end */
-          return push_captures(&ms, NULL, 0) + 2;
+          lua_pushinteger(L, ct_diff2S(s1 - s) + 1);
+          lua_pushinteger(L, ct_diff2S(res - s));
+          return lua_push_captures(&ms, NULL, 0) + 2;
         }
         else
-          return push_captures(&ms, s1, res);
+          return lua_push_captures(&ms, s1, res);
       }
     } while (s1++ < ms.src_end && !anchor);
   }
-  luaL_pushfail(L);  /* not found */
+  luaL_pushfail(L);
   return 1;
 }
 
-
-static int str_find (lua_State *L) {
-  return str_find_aux(L, 1);
+static int lua_str_find (lua_State *L) {
+  return lua_str_find_aux(L, 1);
 }
 
+static int lua_str_match (lua_State *L) {
+  return lua_str_find_aux(L, 0);
+}
 
-//mod DifierLine
-static int gfind_aux (lua_State *L) {
+/* 原始 Lua 正则：gfind_aux */
+static int lua_gfind_aux (lua_State *L) {
     size_t ls, lp;
     const char *s = lua_tolstring(L, lua_upvalueindex(1), &ls);
     const char *p = lua_tolstring(L, lua_upvalueindex(2), &lp);
     lua_Integer init = posrelat(luaL_optinteger(L, lua_upvalueindex(3), 1), ls);
     if (init < 1) init = 1;
-    else if (init > (lua_Integer)ls + 1) {  /* start after string's end? */
-        return 0;  /* cannot find anything */
+    else if (init > (lua_Integer)ls + 1) {
+        return 0;
     }
-    /* explicit request or no special characters? */
-    if (lua_toboolean(L, lua_upvalueindex(4)) || nospecials(p, lp)) {
-        /* do a plain search */
+    if (lua_toboolean(L, lua_upvalueindex(4)) || lua_nospecials(p, lp)) {
         const char *s2 = lmemfind(s + init - 1, ls - (size_t)init + 1, p, lp);
         if (s2) {
             lua_pushinteger(L, (s2 - s) + 1);
@@ -1287,7 +1750,7 @@ static int gfind_aux (lua_State *L) {
         const char *s1 = s + init - 1;
         int anchor = (*p == '^');
         if (anchor) {
-            p++; lp--;  /* skip anchor character */
+            p++; lp--;
         }
         ms.L = L;
         ms.matchdepth = MAXCCALLS;
@@ -1298,79 +1761,70 @@ static int gfind_aux (lua_State *L) {
             const char *res;
             ms.level = 0;
             lua_assert(ms.matchdepth == MAXCCALLS);
-            if ((res=match(&ms, s1, p)) != NULL) {
-                lua_pushinteger(L, (s1 - s) + 1);  /* start */
-                lua_pushinteger(L, res - s);   /* end */
+            if ((res=lua_match(&ms, s1, p)) != NULL) {
+                lua_pushinteger(L, (s1 - s) + 1);
+                lua_pushinteger(L, res - s);
                 lua_pushinteger(L, res - s + 1);
                 lua_replace(L, lua_upvalueindex(3));
-                return push_captures(&ms, NULL, 0) + 2;
+                return lua_push_captures(&ms, NULL, 0) + 2;
             }
         } while (s1++ < ms.src_end && !anchor);
     }
-    return 0;  /* not found */
+    return 0;
 }
 
-
-static int gfind (lua_State *L) {
+static int lua_gfind (lua_State *L) {
     luaL_checkstring(L, 1);
     luaL_checkstring(L, 2);
     int b = lua_toboolean(L, 3);
     lua_settop(L, 2);
     lua_pushinteger(L, 0);
     lua_pushboolean(L, b);
-    lua_pushcclosure(L, gfind_aux, 4);
+    lua_pushcclosure(L, lua_gfind_aux, 4);
     return 1;
 }
 
+/* 原始 Lua 正则：gmatch_aux */
+typedef struct LuaGMatchState {
+  const char *src;
+  const char *p;
+  const char *lastmatch;
+  MatchState ms;
+} LuaGMatchState;
 
-static int str_match (lua_State *L) {
-  return str_find_aux(L, 0);
-}
-
-
-/* state for 'gmatch' */
-typedef struct GMatchState {
-  const char *src;  /* current position */
-  const char *p;  /* pattern */
-  const char *lastmatch;  /* end of last match */
-  MatchState ms;  /* match state */
-} GMatchState;
-
-
-static int gmatch_aux (lua_State *L) {
-  GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
+static int lua_gmatch_aux (lua_State *L) {
+  LuaGMatchState *gm = (LuaGMatchState *)lua_touserdata(L, lua_upvalueindex(3));
   const char *src;
   gm->ms.L = L;
   for (src = gm->src; src <= gm->ms.src_end; src++) {
     const char *e;
-    reprepstate(&gm->ms);
-    if ((e = match(&gm->ms, src, gm->p)) != NULL && e != gm->lastmatch) {
+    lua_reprepstate(&gm->ms);
+    if ((e = lua_match(&gm->ms, src, gm->p)) != NULL && e != gm->lastmatch) {
       gm->src = gm->lastmatch = e;
-      return push_captures(&gm->ms, src, e);
+      return lua_push_captures(&gm->ms, src, e);
     }
   }
-  return 0;  /* not found */
+  return 0;
 }
 
-
-static int gmatch (lua_State *L) {
+static int lua_gmatch (lua_State *L) {
   size_t ls, lp;
   const char *s = luaL_checklstring(L, 1, &ls);
   const char *p = luaL_checklstring(L, 2, &lp);
   size_t init = posrelatI(luaL_optinteger(L, 3, 1), ls) - 1;
-  GMatchState *gm;
-  lua_settop(L, 2);  /* keep strings on closure to avoid being collected */
-  gm = (GMatchState *)lua_newuserdatauv(L, sizeof(GMatchState), 0);
-  if (init > ls)  /* start after string's end? */
-    init = ls + 1;  /* avoid overflows in 's + init' */
-  prepstate(&gm->ms, L, s, ls, p, lp);
+  LuaGMatchState *gm;
+  lua_settop(L, 2);
+  gm = (LuaGMatchState *)lua_newuserdatauv(L, sizeof(LuaGMatchState), 0);
+  if (init > ls)
+    init = ls + 1;
+  lua_prepstate(&gm->ms, L, s, ls, p, lp);
   gm->src = s + init; gm->p = p; gm->lastmatch = NULL;
-  lua_pushcclosure(L, gmatch_aux, 3);
+  lua_pushcclosure(L, lua_gmatch_aux, 3);
   return 1;
 }
 
-
-static void add_s (MatchState *ms, luaL_Buffer *b, const char *s,
+/* 原始 Lua 正则：gsub 辅助函数 */
+static void lua_add_s (MatchState *ms, luaL_Buffer *b, const char *s,
                                                    const char *e) {
   size_t l;
   lua_State *L = ms->L;
@@ -1378,16 +1832,16 @@ static void add_s (MatchState *ms, luaL_Buffer *b, const char *s,
   const char *p;
   while ((p = (char *)memchr(news, L_ESC, l)) != NULL) {
     luaL_addlstring(b, news, ct_diff2sz(p - news));
-    p++;  /* skip ESC */
-    if (*p == L_ESC)  /* '%%' */
+    p++;
+    if (*p == L_ESC)
       luaL_addchar(b, *p);
-    else if (*p == '0')  /* '%0' */
+    else if (*p == '0')
         luaL_addlstring(b, s, ct_diff2sz(e - s));
-    else if (isdigit(cast_uchar(*p))) {  /* '%n' */
+    else if (isdigit(cast_uchar(*p))) {
       const char *cap;
-      ptrdiff_t resl = get_onecapture(ms, *p - '1', s, e, &cap);
+      ptrdiff_t resl = lua_get_onecapture(ms, *p - '1', s, e, &cap);
       if (resl == CAP_POSITION)
-        luaL_addvalue(b);  /* add position to accumulated result */
+        luaL_addvalue(b);
       else
         luaL_addlstring(b, cap, cast_sizet(resl));
     }
@@ -1399,59 +1853,52 @@ static void add_s (MatchState *ms, luaL_Buffer *b, const char *s,
   luaL_addlstring(b, news, l);
 }
 
-
-/*
-** Add the replacement value to the string buffer 'b'.
-** Return true if the original string was changed. (Function calls and
-** table indexing resulting in nil or false do not change the subject.)
-*/
-static int add_value (MatchState *ms, luaL_Buffer *b, const char *s,
+static int lua_add_value (MatchState *ms, luaL_Buffer *b, const char *s,
                                       const char *e, int tr) {
   lua_State *L = ms->L;
   switch (tr) {
-    case LUA_TFUNCTION: {  /* call the function */
+    case LUA_TFUNCTION: {
       int n;
-      lua_pushvalue(L, 3);  /* push the function */
-      n = push_captures(ms, s, e);  /* all captures as arguments */
-      lua_call(L, n, 1);  /* call it */
+      lua_pushvalue(L, 3);
+      n = lua_push_captures(ms, s, e);
+      lua_call(L, n, 1);
       break;
     }
-    case LUA_TTABLE: {  /* index the table */
-      push_onecapture(ms, 0, s, e);  /* first capture is the index */
+    case LUA_TTABLE: {
+      lua_push_onecapture(ms, 0, s, e);
       lua_gettable(L, 3);
       break;
     }
-    default: {  /* LUA_TNUMBER or LUA_TSTRING */
-      add_s(ms, b, s, e);  /* add value to the buffer */
-      return 1;  /* something changed */
+    default: {
+      lua_add_s(ms, b, s, e);
+      return 1;
     }
   }
-  if (!lua_toboolean(L, -1)) {  /* nil or false? */
-    lua_pop(L, 1);  /* remove value */
-    luaL_addlstring(b, s, ct_diff2sz(e - s));  /* keep original text */
-    return 0;  /* no changes */
+  if (!lua_toboolean(L, -1)) {
+    lua_pop(L, 1);
+    luaL_addlstring(b, s, ct_diff2sz(e - s));
+    return 0;
   }
   else if (l_unlikely(!lua_isstring(L, -1)))
     return luaL_error(L, "invalid replacement value (a %s)",
                          luaL_typename(L, -1));
   else {
-    luaL_addvalue(b);  /* add result to accumulator */
-    return 1;  /* something changed */
+    luaL_addvalue(b);
+    return 1;
   }
 }
 
-
-static int str_gsub (lua_State *L) {
+/* 原始 Lua 正则：gsub */
+static int lua_str_gsub (lua_State *L) {
   size_t srcl, lp;
-  const char *src = luaL_checklstring(L, 1, &srcl);  /* subject */
-  const char *p = luaL_checklstring(L, 2, &lp);  /* pattern */
-  const char *lastmatch = NULL;  /* end of last match */
-  int tr = lua_type(L, 3);  /* replacement type */
-  /* max replacements */
+  const char *src = luaL_checklstring(L, 1, &srcl);
+  const char *p = luaL_checklstring(L, 2, &lp);
+  const char *lastmatch = NULL;
+  int tr = lua_type(L, 3);
   lua_Integer max_s = luaL_optinteger(L, 4, cast_st2S(srcl) + 1);
   int anchor = (*p == '^');
-  lua_Integer n = 0;  /* replacement count */
-  int changed = 0;  /* change flag */
+  lua_Integer n = 0;
+  int changed = 0;
   MatchState ms;
   luaL_Buffer b;
   luaL_argexpected(L, tr == LUA_TNUMBER || tr == LUA_TSTRING ||
@@ -1459,33 +1906,84 @@ static int str_gsub (lua_State *L) {
                       "string/function/table");
   luaL_buffinit(L, &b);
   if (anchor) {
-    p++; lp--;  /* skip anchor character */
+    p++; lp--;
   }
-  prepstate(&ms, L, src, srcl, p, lp);
+  lua_prepstate(&ms, L, src, srcl, p, lp);
   while (n < max_s) {
     const char *e;
-    reprepstate(&ms);  /* (re)prepare state for new match */
-    if ((e = match(&ms, src, p)) != NULL && e != lastmatch) {  /* match? */
+    lua_reprepstate(&ms);
+    if ((e = lua_match(&ms, src, p)) != NULL && e != lastmatch) {
       n++;
-      changed = add_value(&ms, &b, src, e, tr) | changed;
+      changed = lua_add_value(&ms, &b, src, e, tr) | changed;
       src = lastmatch = e;
     }
-    else if (src < ms.src_end)  /* otherwise, skip one character */
+    else if (src < ms.src_end)
       luaL_addchar(&b, *src++);
-    else break;  /* end of subject */
+    else break;
     if (anchor) break;
   }
-  if (!changed)  /* no changes? */
-    lua_pushvalue(L, 1);  /* return original string */
-  else {  /* something changed */
+  if (!changed)
+    lua_pushvalue(L, 1);
+  else {
     luaL_addlstring(&b, src, ct_diff2sz(ms.src_end - src));
-    luaL_pushresult(&b);  /* create and return new string */
+    luaL_pushresult(&b);
   }
-  lua_pushinteger(L, n);  /* number of substitutions */
+  lua_pushinteger(L, n);
   return 2;
 }
 
 /* }=========================================== */
+
+/*
+** {===========================================
+** 双引擎调度包装函数
+** 根据 XCLUA_PCRE2_ENABLED 选择 PCRE2 或原始 Lua 引擎
+** ============================================
+*/
+
+static int str_find (lua_State *L) {
+  return XCLUA_PCRE2_ENABLED ? pcre2_str_find(L) : lua_str_find(L);
+}
+
+static int str_match (lua_State *L) {
+  return XCLUA_PCRE2_ENABLED ? pcre2_str_match(L) : lua_str_match(L);
+}
+
+static int gfind (lua_State *L) {
+  return XCLUA_PCRE2_ENABLED ? pcre2_gfind(L) : lua_gfind(L);
+}
+
+static int gmatch (lua_State *L) {
+  return XCLUA_PCRE2_ENABLED ? pcre2_gmatch(L) : lua_gmatch(L);
+}
+
+static int str_gsub (lua_State *L) {
+  return XCLUA_PCRE2_ENABLED ? pcre2_str_gsub(L) : lua_str_gsub(L);
+}
+
+/* }=========================================== */
+
+/* 纯文本查找（被 str_split / str_contains 等复用） */
+static const char *lmemfind (const char *s1, size_t l1,
+                               const char *s2, size_t l2) {
+  if (l2 == 0) return s1;
+  else if (l2 > l1) return NULL;
+  else {
+    const char *init;
+    l2--;
+    l1 = l1-l2;
+    while (l1 > 0 && (init = (const char *)memchr(s1, *s2, l1)) != NULL) {
+      init++;
+      if (memcmp(init, s2+1, l2) == 0)
+        return init-1;
+      else {
+        l1 -= ct_diff2sz(init - s1);
+        s1 = init;
+      }
+    }
+    return NULL;
+  }
+}
 
 /*
 ** {===========================================

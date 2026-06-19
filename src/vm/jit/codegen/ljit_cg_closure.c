@@ -1,6 +1,7 @@
 #include "ljit_codegen.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
+#include "../core/ljit_debug.h"
 
 void SLJIT_FUNC ljit_icall_closure(lua_State *L, Proto *p, StkId base, StkId ra);
 
@@ -11,6 +12,9 @@ void ljit_cg_emit_closure(void *node_ptr, void *ctx_ptr) {
     if (!node || !ctx || !compiler) return;
 
     int tvalue_size = sizeof(TValue);
+
+    JIT_DBG(MOD_CG_CLOS, "CLOSURE: pc=%d, dest=R%d, proto_idx=%d",
+        node->original_pc, node->dest.v.reg, node->src1.v.i);
 
     /* R0 = L */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);

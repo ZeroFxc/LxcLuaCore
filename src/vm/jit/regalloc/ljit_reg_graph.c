@@ -1,4 +1,5 @@
 #include "ljit_regalloc.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 
 void ljit_reg_graph(ljit_ctx_t *ctx) {
@@ -29,12 +30,24 @@ void ljit_reg_graph(ljit_ctx_t *ctx) {
      * 如果两个live-in寄存器共享同一物理寄存器, 后加载的会覆盖先加载的.
      * 因此必须确保所有live-in寄存器分配到不同的物理寄存器.
      */
+    int livein_interference = 0;
     for (int i = 0; i < max_vregs; i++) {
         if (!info->is_livein || !info->is_livein[i]) continue;
         for (int j = i + 1; j < max_vregs; j++) {
             if (!info->is_livein[j]) continue;
             info->interference_graph[i * max_vregs + j] = 1;
             info->interference_graph[j * max_vregs + i] = 1;
+            livein_interference++;
         }
     }
+
+    /* 调试: 打印干涉图统计 */
+    int total_edges = 0;
+    for (int i = 0; i < max_vregs; i++) {
+        for (int j = i + 1; j < max_vregs; j++) {
+            if (info->interference_graph[i * max_vregs + j]) total_edges++;
+        }
+    }
+    JIT_DBG(MOD_REG_GRAPH, "interference graph: max_vregs=%d, total_edges=%d, livein_interference=%d",
+        max_vregs, total_edges, livein_interference);
 }

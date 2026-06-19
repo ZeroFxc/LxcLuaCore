@@ -1,4 +1,5 @@
 #include "ljit_analyze.h"
+#include "../core/ljit_debug.h"
 #include "../../../core/lopcodes.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,8 @@ void ljit_analyze_dataflow(ljit_ctx_t *ctx) {
 
     ljit_analyze_info_t *info = (ljit_analyze_info_t *)ctx->analyze_info;
     Proto *proto = ctx->proto;
+
+    JIT_DBG(MOD_ANALYZE, "dataflow analysis: sizecode=%d, max_regs=%d", proto->sizecode, info->max_regs);
 
     for (int pc = 0; pc < proto->sizecode; pc++) {
         Instruction i = proto->code[pc];
@@ -70,6 +73,8 @@ void ljit_analyze_type_inference(ljit_ctx_t *ctx) {
 
     ljit_analyze_info_t *info = (ljit_analyze_info_t *)ctx->analyze_info;
     Proto *proto = ctx->proto;
+
+    JIT_DBG(MOD_ANALYZE, "type inference: sizecode=%d", proto->sizecode);
 
     for (int pc = 0; pc < proto->sizecode; pc++) {
         Instruction i = proto->code[pc];
@@ -170,6 +175,8 @@ void ljit_analyze_destroy(ljit_ctx_t *ctx) {
 void ljit_analyze(ljit_ctx_t *ctx) {
     if (!ctx || !ctx->proto) return;
 
+    JIT_DBG(MOD_ANALYZE, "start: maxstacksize=%d, sizecode=%d", ctx->proto->maxstacksize, ctx->proto->sizecode);
+
     // Allocate analyze info
     ljit_analyze_info_t *info = (ljit_analyze_info_t *)malloc(sizeof(ljit_analyze_info_t));
     if (info) {
@@ -204,4 +211,6 @@ void ljit_analyze(ljit_ctx_t *ctx) {
         // Perform type inference
         ljit_analyze_type_inference(ctx);
     }
+
+    JIT_DBG(MOD_ANALYZE, "done");
 }

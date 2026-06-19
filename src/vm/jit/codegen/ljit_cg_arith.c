@@ -1,6 +1,7 @@
 #include "ljit_codegen.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
+#include "../core/ljit_debug.h"
 #include "../../../core/lobject.h"
 
 void ljit_cg_emit_load_operand(struct ljit_ctx *ctx, int target_reg, void *val_ptr) {
@@ -70,6 +71,12 @@ void ljit_cg_emit_add(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
+    JIT_DBG(MOD_CG_ARITH, "ADD: pc=%d, dest=R%d(sp=%d,pr=%d), src1=R%d(sp=%d,pr=%d), src2=R%d(sp=%d,pr=%d)",
+        node->original_pc,
+        node->dest.v.reg, node->dest.is_spilled, node->dest.phys_reg,
+        node->src1.v.reg, node->src1.is_spilled, node->src1.phys_reg,
+        node->src2.v.reg, node->src2.is_spilled, node->src2.phys_reg);
+
     ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
     ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
@@ -96,7 +103,9 @@ void ljit_cg_emit_div(void *node_ptr, void *ctx_ptr) {
 
     ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
     ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
-    sljit_emit_op0(compiler, SLJIT_DIV_SW);
+    /* Windows x64 上 SLJIT_DIV_SW 有 bug: 除数保存到 TMP_REG1 后 idiv 却用 RDX(已被 CDQ 覆盖)
+     * 改用 SLJIT_DIVMOD_SW 正确使用 TMP_REG1 作为除数 */
+    sljit_emit_op0(compiler, SLJIT_DIVMOD_SW);
     ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
 }
 
@@ -108,7 +117,7 @@ void ljit_cg_emit_idiv(void *node_ptr, void *ctx_ptr) {
 
     ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
     ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
-    sljit_emit_op0(compiler, SLJIT_DIV_SW);
+    sljit_emit_op0(compiler, SLJIT_DIVMOD_SW);
     ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
 }
 
@@ -120,7 +129,7 @@ void ljit_cg_emit_mod(void *node_ptr, void *ctx_ptr) {
 
     ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
     ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
-    sljit_emit_op0(compiler, SLJIT_DIV_SW);
+    sljit_emit_op0(compiler, SLJIT_DIVMOD_SW);
     ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R1);
 }
 

@@ -1,6 +1,7 @@
 #include "ljit_codegen.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
+#include "../core/ljit_debug.h"
 
 void ljit_cg_emit_conv(void *node, void *ctx) {
     (void)node;
@@ -18,6 +19,10 @@ void ljit_cg_emit_mov(void *node_ptr, void *ctx_ptr) {
     /* 所有MOV操作: 源栈位置和目标栈位置 */
     int src_ofs = node->src1.stack_ofs;
     int dst_ofs = node->dest.stack_ofs;
+
+    JIT_DBG(MOD_CG_CONV, "MOV: pc=%d, R%d -> R%d (src_ofs=%d, dst_ofs=%d, src_sp=%d, dst_sp=%d)",
+        node->original_pc, node->src1.v.reg, node->dest.v.reg,
+        src_ofs, dst_ofs, node->src1.is_spilled, node->dest.is_spilled);
 
     /* 始终将完整的16字节TValue从源复制到目标 (value_ + tt_) */
     if (dst_ofs != src_ofs) {

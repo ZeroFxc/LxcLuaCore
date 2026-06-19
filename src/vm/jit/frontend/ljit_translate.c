@@ -1,10 +1,19 @@
+#include <stdio.h>
 #include "ljit_analyze.h"
+#include "../core/ljit_debug.h"
 #include "../../../core/lopcodes.h"
 
 void ljit_translate(ljit_ctx_t *ctx) {
     if (!ctx || !ctx->proto) return;
 
     Proto *proto = ctx->proto;
+
+    JIT_DBG(MOD_TR, "translate sizecode=%d, maxstacksize=%d", proto->sizecode, proto->maxstacksize);
+    for (int pc = 0; pc < proto->sizecode; pc++) {
+        Instruction i = proto->code[pc];
+        OpCode op = GET_OPCODE(i);
+        JIT_DBG(MOD_TR, "  pc=%d op=%d A=%d Bx=%d", pc, op, GETARG_A(i), GETARG_Bx(i));
+    }
 
     for (int pc = 0; pc < proto->sizecode; pc++) {
         Instruction i = proto->code[pc];
@@ -235,6 +244,7 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_node_t *node = ljit_ir_new(IR_FORPREP, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                 node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                JIT_DBG(MOD_TR, "FORPREP pc=%d A=%d Bx=%d", pc, GETARG_A(i), GETARG_Bx(i));
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -242,6 +252,7 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_node_t *node = ljit_ir_new(IR_FORLOOP, pc);
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                 node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_Bx(i);
+                JIT_DBG(MOD_TR, "FORLOOP pc=%d A=%d Bx=%d", pc, GETARG_A(i), GETARG_Bx(i));
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -289,6 +300,122 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                 node->src1.type = IR_VAL_INT; node->src1.v.i = GETARG_B(i) - 1;
                 node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i) - 1;
+
+                /*
+                 * 自递归检测: 扫描当前pc之前的字节码, 查找最后写入目标寄存器A的指令.
+                 * 若为OP_CLOSURE且加载的Proto与当前函数相同, 则标记为自递归调用.
+                 * 这使codegen可以跳过运行时Proto比较, 直接使用ljit_jitcall_self快速路径.
+                 */
+                int func_reg = GETARG_A(i);
+                for (int scan = pc - 1; scan >= 0; scan--) {
+                    Instruction si = proto->code[scan];
+                    OpCode sop = GET_OPCODE(si);
+                    int sa = GETARG_A(si);
+                    /* 检查该指令是否写入func_reg */
+                    int writes_reg = 0;
+                    switch (sop) {
+                        case OP_MOVE: case OP_LOADI: case OP_LOADF: case OP_LOADK:
+                        case OP_LOADKX: case OP_LOADFALSE: case OP_LOADTRUE:
+                        case OP_LOADNIL: case OP_GETUPVAL: case OP_GETTABUP:
+                        case OP_GETTABLE: case OP_GETI: case OP_GETFIELD:
+                        case OP_NEWTABLE: case OP_ADD: case OP_SUB: case OP_MUL:
+                        case OP_MOD: case OP_POW: case OP_DIV: case OP_IDIV:
+                        case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL:
+                        case OP_SHR: case OP_SHLI: case OP_SHRI: case OP_UNM:
+                        case OP_BNOT: case OP_NOT: case OP_LEN: case OP_CONCAT:
+                        case OP_CALL: case OP_TAILCALL: case OP_NEWCLASS:
+                        case OP_NEWOBJ: case OP_CLOSURE: case OP_SELF:
+                        case OP_ADDK: case OP_SUBK: case OP_MULK: case OP_MODK:
+                        case OP_POWK: case OP_DIVK: case OP_IDIVK: case OP_BANDK:
+                        case OP_BORK: case OP_BXORK: case OP_VARARG:
+                            writes_reg = (sa == func_reg); break;
+                        default: break;
+                    }
+                    if (writes_reg) {
+                        if (sop == OP_CLOSURE) {
+                            int bx = GETARG_Bx(si);
+                            if (bx < proto->sizep && proto->p[bx] == ctx->proto) {
+                                node->self_rec = 1;
+                                JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (closure at pc=%d)", pc, scan);
+                            }
+                        } else if (sop == OP_GETUPVAL) {
+                            /*
+                             * OP_GETUPVAL 路径: 局部递归函数通过 upvalue 访问自身.
+                             * 追踪 OP_GETUPVAL -> OP_SETUPVAL -> OP_CLOSURE 链,
+                             * 确认 upvalue 中存储的是当前函数自身的闭包.
+                             * 典型场景: local function f(n) ... return f(n-1) + f(n-2) end
+                             *
+                             * 注意: 若 SETUPVAL 在外层函数(如 main chunk)中,
+                             * 当前函数内无法追踪到, 此时通过 upval_idx==0 做启发式判断.
+                             */
+                            int upval_idx = GETARG_B(si);
+                            int found_chain = 0;
+                            for (int scan2 = scan - 1; scan2 >= 0; scan2--) {
+                                Instruction si2 = proto->code[scan2];
+                                if (GET_OPCODE(si2) == OP_SETUPVAL && GETARG_B(si2) == upval_idx) {
+                                    int src_reg = GETARG_A(si2);
+                                    found_chain = 1;
+                                    /* 追踪 SETUPVAL 的源寄存器, 查找对应的 OP_CLOSURE */
+                                    for (int scan3 = scan2 - 1; scan3 >= 0; scan3--) {
+                                        Instruction si3 = proto->code[scan3];
+                                        OpCode sop3 = GET_OPCODE(si3);
+                                        if (sop3 == OP_CLOSURE && GETARG_A(si3) == src_reg) {
+                                            int bx = GETARG_Bx(si3);
+                                            if (bx < proto->sizep && proto->p[bx] == ctx->proto) {
+                                                node->self_rec = 1;
+                                                JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (upval at pc=%d, closure at pc=%d)", pc, scan, scan3);
+                                            }
+                                            break;
+                                        }
+                                        /* 若遇到其他写入 src_reg 的指令, 停止追踪 */
+                                        int writes_src = 0;
+                                        switch (sop3) {
+                                            case OP_MOVE: case OP_LOADI: case OP_LOADF: case OP_LOADK:
+                                            case OP_LOADKX: case OP_LOADFALSE: case OP_LOADTRUE:
+                                            case OP_LOADNIL: case OP_GETUPVAL: case OP_GETTABUP:
+                                            case OP_GETTABLE: case OP_GETI: case OP_GETFIELD:
+                                            case OP_NEWTABLE: case OP_ADD: case OP_SUB: case OP_MUL:
+                                            case OP_MOD: case OP_POW: case OP_DIV: case OP_IDIV:
+                                            case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL:
+                                            case OP_SHR: case OP_SHLI: case OP_SHRI: case OP_UNM:
+                                            case OP_BNOT: case OP_NOT: case OP_LEN: case OP_CONCAT:
+                                            case OP_CALL: case OP_TAILCALL: case OP_NEWCLASS:
+                                            case OP_NEWOBJ: case OP_CLOSURE: case OP_SELF:
+                                            case OP_ADDK: case OP_SUBK: case OP_MULK: case OP_MODK:
+                                            case OP_POWK: case OP_DIVK: case OP_IDIVK: case OP_BANDK:
+                                            case OP_BORK: case OP_BXORK: case OP_VARARG:
+                                                writes_src = (GETARG_A(si3) == src_reg); break;
+                                            default: break;
+                                        }
+                                        if (writes_src && sop3 != OP_CLOSURE) break;
+                                    }
+                                    break;
+                                }
+                            }
+                            /*
+                             * 若 SETUPVAL 链在当前函数内未找到,
+                             * 但 upval_idx == 0(第一个upvalue通常是递归函数自身),
+                             * 则标记为自递归调用.
+                             */
+                            if (!found_chain && upval_idx == 0) {
+                                node->self_rec = 1;
+                                JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (upval[0] self, SETUPVAL in outer scope)", pc);
+                            }
+                        }
+                        break; /* 找到最后写入指令, 停止扫描 */
+                    }
+                }
+                /*
+                 * 若扫描到函数开头仍未找到写入 func_reg 的指令,
+                 * 且 func_reg == 0, 则说明函数通过 R0 隐式传入
+                 * (Lua 调用约定: R0 始终是当前被调用的函数自身).
+                 * 这是典型的自递归调用模式.
+                 */
+                if (!node->self_rec && func_reg == 0) {
+                    node->self_rec = 1;
+                    JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (R0 implicit, no explicit write)", pc);
+                }
+
                 ljit_ir_append(ctx, node);
                 break;
             }
@@ -530,6 +657,42 @@ void ljit_translate(ljit_ctx_t *ctx) {
             }
             case OP_SETIFACEFLAG: {
                 ljit_ir_node_t *node = ljit_ir_new(IR_SETIFACEFLAG, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETTRAITFLAG: {
+                /* R[A] 设置为 Trait 标志 */
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETTRAITFLAG, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_SETTRAITREQUIRE: {
+                /* R[A].__trait_requires[K[B]] := C */
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETTRAITREQUIRE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_USETRAIT: {
+                /* R[A] use R[B]: 将trait方法复制到类中 */
+                ljit_ir_node_t *node = ljit_ir_new(IR_USETRAIT, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_AWAIT: {
+                /* R[A] := await(R[B]): 协程异步等待 */
+                ljit_ir_node_t *node = ljit_ir_new(IR_AWAIT, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_MERGE: {
+                /* R[A] := merge(R[B], R[C]): 表合并 */
+                ljit_ir_node_t *node = ljit_ir_new(IR_MERGE, pc);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_REGEX: {
+                /* R[A] := regex(K[Bx]): 正则字面量 */
+                ljit_ir_node_t *node = ljit_ir_new(IR_REGEX, pc);
                 ljit_ir_append(ctx, node);
                 break;
             }

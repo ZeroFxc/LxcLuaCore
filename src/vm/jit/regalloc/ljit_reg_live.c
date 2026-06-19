@@ -1,4 +1,5 @@
 #include "ljit_regalloc.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 
 static void update_interval(ljit_regalloc_info_t *info, ljit_ir_val_t *val, int time, int max_vregs) {
@@ -87,9 +88,19 @@ void ljit_reg_live(ljit_ctx_t *ctx) {
     }
 
     /* 标记live-in: 首次使用早于首次定义(或从未定义) */
+    int livein_count = 0;
     for (int i = 0; i < max_vregs; i++) {
         if (first_use[i] < first_def[i]) {
             info->is_livein[i] = 1;
+            livein_count++;
+        }
+    }
+
+    JIT_DBG(MOD_REG_LIVE, "live intervals: max_vregs=%d, livein_count=%d", max_vregs, livein_count);
+    for (int i = 0; i < max_vregs; i++) {
+        if (info->intervals[i].start != -1) {
+            JIT_DBG(MOD_REG_LIVE, "  R%d: [%d, %d], livein=%d",
+                i, info->intervals[i].start, info->intervals[i].end, info->is_livein[i]);
         }
     }
 

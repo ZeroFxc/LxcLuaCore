@@ -1,6 +1,7 @@
 #include "ljit_codegen.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
+#include "../core/ljit_debug.h"
 #include "../../../core/lfunc.h"
 #include "../../../core/ldo.h"
 #include "../../../core/lobject.h"
@@ -148,6 +149,36 @@ void ljit_cg_emit_concat(void *node_ptr, void *ctx_ptr) {
     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W), SLJIT_IMM, (sljit_sw)ljit_icall_concat);
 }
 
+void ljit_cg_emit_forprep(void *node_ptr, void *ctx_ptr);
+
+/* 从 Lua 栈重新加载指定虚拟寄存器到物理寄存器 (用于循环变量更新后同步) */
+static void ljit_cg_reload_vreg(ljit_ctx_t *ctx, struct sljit_compiler *compiler, int vreg) {
+    int tvalue_size = sizeof(TValue);
+    ljit_ir_node_t *scan = ctx->ir_head;
+    int reloaded = 0;
+    while (scan && !reloaded) {
+        if (scan->dest.type == IR_VAL_REG && scan->dest.v.reg == vreg
+            && !scan->dest.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, scan->dest.phys_reg, 0,
+                SLJIT_MEM1(SLJIT_S0), (sljit_sw)(vreg * tvalue_size));
+            reloaded = 1;
+        }
+        if (!reloaded && scan->src1.type == IR_VAL_REG
+            && scan->src1.v.reg == vreg && !scan->src1.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, scan->src1.phys_reg, 0,
+                SLJIT_MEM1(SLJIT_S0), (sljit_sw)(vreg * tvalue_size));
+            reloaded = 1;
+        }
+        if (!reloaded && scan->src2.type == IR_VAL_REG
+            && scan->src2.v.reg == vreg && !scan->src2.is_spilled) {
+            sljit_emit_op1(compiler, SLJIT_MOV, scan->src2.phys_reg, 0,
+                SLJIT_MEM1(SLJIT_S0), (sljit_sw)(vreg * tvalue_size));
+            reloaded = 1;
+        }
+        scan = scan->next;
+    }
+}
+
 void ljit_cg_emit_forprep(void *node_ptr, void *ctx_ptr) {
     ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
@@ -158,6 +189,8 @@ void ljit_cg_emit_forprep(void *node_ptr, void *ctx_ptr) {
     int bx = node->src1.v.i;
     int tvalue_size = sizeof(TValue);
 
+    JIT_DBG(MOD_CG_CTRL, "FORPREP: pc=%d, ra=R%d, bx=%d", node->original_pc, ra, bx);
+
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
         SLJIT_IMM, (sljit_sw)(ra * tvalue_size));
@@ -165,33 +198,8 @@ void ljit_cg_emit_forprep(void *node_ptr, void *ctx_ptr) {
         SLJIT_IMM, (sljit_sw)ljit_icall_forprep);
 
     /* C 函数调用已修改 Lua 栈上的 ra+3 (用户可见循环变量),
-     * 但此前 live-in scan 分配的 phys_reg 仍是旧值,
-     * 必须在进入循环体前从栈重新加载 */
-    {
-        ljit_ir_node_t *scan = ctx->ir_head;
-        int reloaded = 0;
-        while (scan && !reloaded) {
-            if (scan->dest.type == IR_VAL_REG && scan->dest.v.reg == ra + 3
-                && !scan->dest.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->dest.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            if (!reloaded && scan->src1.type == IR_VAL_REG
-                && scan->src1.v.reg == ra + 3 && !scan->src1.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->src1.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            if (!reloaded && scan->src2.type == IR_VAL_REG
-                && scan->src2.v.reg == ra + 3 && !scan->src2.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->src2.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            scan = scan->next;
-        }
-    }
+     * 必须在进入循环体前从栈重新加载到寄存器 */
+    ljit_cg_reload_vreg(ctx, compiler, ra + 3);
 
     struct sljit_jump *jmp = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
         SLJIT_R0, 0, SLJIT_IMM, 0);
@@ -213,15 +221,19 @@ void ljit_cg_emit_forloop(void *node_ptr, void *ctx_ptr) {
     int tvalue_size = sizeof(TValue);
     int value_size = sizeof(Value);
 
-    /* 检查 ra+2 的 tt_ 字段是否为 LUA_VNUMINT (整数步长) */
-    sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R3, 0,
+    JIT_DBG(MOD_CG_CTRL, "FORLOOP: pc=%d, ra=R%d, bx=%d", node->original_pc, ra, bx);
+
+    /* ===== 类型检查: step 必须是整数才能走快速路径 ===== */
+    /* 读取 ra+2 的 tt_ 字节 (位于 TValue 偏移 sizeof(Value) 处) */
+    sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_R3, 0,
         SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 2) * tvalue_size + value_size));
+    /* LUA_VNUMINT = 3, 非整数则跳转到浮点回退路径 */
     struct sljit_jump *to_float = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
-        SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        SLJIT_R3, 0, SLJIT_IMM, 3);
 
     /* ===== 内联整数 FORLOOP 快速路径 ===== */
 
-    /* 加载循环计数器 count = *(ra+1).value_ (有符号整数) */
+    /* 加载循环计数器 count = *(ra+1).value_ */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0,
         SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 1) * tvalue_size));
 
@@ -252,31 +264,7 @@ void ljit_cg_emit_forloop(void *node_ptr, void *ctx_ptr) {
         (sljit_sw)((ra + 3) * tvalue_size), SLJIT_R2, 0);
 
     /* 重新加载 ra+3 的 phys_reg: 栈已更新, 但非spilled的S寄存器仍是旧值 */
-    {
-        ljit_ir_node_t *scan = ctx->ir_head;
-        int reloaded = 0;
-        while (scan && !reloaded) {
-            if (scan->dest.type == IR_VAL_REG && scan->dest.v.reg == ra + 3
-                && !scan->dest.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->dest.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            if (!reloaded && scan->src1.type == IR_VAL_REG
-                && scan->src1.v.reg == ra + 3 && !scan->src1.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->src1.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            if (!reloaded && scan->src2.type == IR_VAL_REG
-                && scan->src2.v.reg == ra + 3 && !scan->src2.is_spilled) {
-                sljit_emit_op1(compiler, SLJIT_MOV, scan->src2.phys_reg, 0,
-                    SLJIT_MEM1(SLJIT_S0), (sljit_sw)((ra + 3) * tvalue_size));
-                reloaded = 1;
-            }
-            scan = scan->next;
-        }
-    }
+    ljit_cg_reload_vreg(ctx, compiler, ra + 3);
 
     /* 跳回循环体起始 */
     struct sljit_jump *jmp_loop = sljit_emit_jump(compiler, SLJIT_JUMP);
@@ -304,13 +292,22 @@ void ljit_cg_emit_forloop(void *node_ptr, void *ctx_ptr) {
         SLJIT_IMM, (sljit_sw)ljit_icall_forloop);
 
     /* icall 返回后 R0 = 1(继续) 或 0(退出) */
-    struct sljit_jump *jmp_float_loop = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
+    struct sljit_jump *jmp_float_exit = sljit_emit_cmp(compiler, SLJIT_EQUAL,
         SLJIT_R0, 0, SLJIT_IMM, 0);
+
+    /* 浮点路径也需要 reload ra+3: C 函数已更新栈, 但寄存器仍是旧值 */
+    ljit_cg_reload_vreg(ctx, compiler, ra + 3);
+
+    /* 跳回循环体起始 */
+    struct sljit_jump *jmp_float_loop = sljit_emit_jump(compiler, SLJIT_JUMP);
     if (jmp_float_loop) {
         int idx2 = ctx->num_jumps++;
         ctx->jumps[idx2] = jmp_float_loop;
         ctx->jump_targets[idx2] = node->original_pc + 1 - bx;
     }
+
+    struct sljit_label *lbl_float_exit = sljit_emit_label(compiler);
+    sljit_set_label(jmp_float_exit, lbl_float_exit);
 
     struct sljit_label *lbl_done = sljit_emit_label(compiler);
     sljit_set_label(skip_float, lbl_done);

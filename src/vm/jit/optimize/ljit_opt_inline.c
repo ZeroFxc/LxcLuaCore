@@ -1,4 +1,5 @@
 #include "ljit_opt.h"
+#include "../core/ljit_debug.h"
 #include "../../../core/lopcodes.h"
 
 /*
@@ -58,6 +59,8 @@ void ljit_opt_inline(ljit_ctx_t *ctx) {
                                 /* The function does nothing and caller expects nothing.
                                    We can safely remove the IR_CALL.
                                    Replace IR_CALL with IR_NOP. */
+                                JIT_DBG(MOD_OPT_INLINE, "inline trivial: pc=%d, closure_idx=%d",
+                                    node->original_pc, found_closure_idx);
                                 node->op = IR_NOP;
                                 node->dest.type = IR_VAL_NONE;
                                 node->src1.type = IR_VAL_NONE;

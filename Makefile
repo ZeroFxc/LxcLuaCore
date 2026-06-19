@@ -30,7 +30,7 @@ override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm $(WASMTIME_INC)
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H $(WASMTIME_INC)
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
@@ -40,8 +40,8 @@ LDFLAGS= $(SYSLDFLAGS) $(MYLDFLAGS)
 LIBS= -lm $(SYSLIBS) $(MYLIBS) $(WASMTIME_LIB)
 
 # Special flags for compiler modules; -Os reduces code size.
-VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm
-CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/lua2wasm $(WASMTIME_INC)
+VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm:pcre2/src
+CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/lua2wasm -Ipcre2 $(WASMTIME_INC)
 
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
@@ -63,10 +63,13 @@ LUA2WASM_LIB_O= $(BUILDDIR)/lua2wasmlib.o
 LUA2WASM_CLI_O= $(BUILDDIR)/lua2wasm_main.o
 WAT2WASM_CLI_O= $(BUILDDIR)/wat2wasm_cli.o
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lnativeparser.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o lsmgrlib.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lcrypto.o luuid.o lrsa.o lecc.o)
+# PCRE2 正则引擎库
+PCRE2_CFLAGS = -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
+PCRE2_O= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_compile.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
-BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O)
-BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS)
+BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O) $(PCRE2_O)
+BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS) $(PCRE2_O)
 
 LUA_T=	lxclua
 LUA_O=	$(BUILDDIR)/lua.o
@@ -164,6 +167,10 @@ $(BUILDDIR)/lspsrv_features.o: src/lspsrv/lspsrv_features.c src/lspsrv/lspsrv.h 
 
 $(BUILDDIR)/lspsrv_util.o: src/lspsrv/lspsrv_util.c src/lspsrv/lspsrv.h | $(BUILDDIR)
 	$(CC) $(LSP_CFLAGS) $(CMCFLAGS) -Isrc/lspsrv -c $< -o $@
+
+# --- PCRE2 正则引擎库 ---
+$(BUILDDIR)/pcre2_%.o: pcre2/src/pcre2_%.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(PCRE2_CFLAGS) -Ipcre2 -Ipcre2/src -c $< -o $@
 
 # --- lua2wasm: Lua-to-WASM 编译器 ---
 # 核心模块已编译进 $(LUA_A)，可在 Lua 中通过 require("lua2wasm") 使用

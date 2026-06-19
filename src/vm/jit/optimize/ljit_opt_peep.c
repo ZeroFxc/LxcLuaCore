@@ -1,5 +1,6 @@
 #include "ljit_opt.h"
 #include "../ir/ljit_ir.h"
+#include "../core/ljit_debug.h"
 #include <stdlib.h>
 
 void ljit_opt_peep(ljit_ctx_t *ctx) {
@@ -11,6 +12,8 @@ void ljit_opt_peep(ljit_ctx_t *ctx) {
         /* Eliminate redundant moves: IR_MOV R, R */
         if (node->op == IR_MOV && node->dest.type == IR_VAL_REG && node->src1.type == IR_VAL_REG) {
             if (node->dest.v.reg == node->src1.v.reg) {
+                JIT_DBG(MOD_OPT_PEEP, "remove redundant MOV: pc=%d, R%d <- R%d",
+                    node->original_pc, node->dest.v.reg, node->src1.v.reg);
                 node->op = IR_NOP;
             }
         }
@@ -19,6 +22,7 @@ void ljit_opt_peep(ljit_ctx_t *ctx) {
         /* ADD x, 0 -> MOV x */
         else if (node->op == IR_ADD) {
             if (node->src2.type == IR_VAL_INT && node->src2.v.i == 0) {
+                JIT_DBG(MOD_OPT_PEEP, "ADD+0 -> MOV: pc=%d, R%d", node->original_pc, node->dest.v.reg);
                 node->op = IR_MOV;
                 node->src2.type = IR_VAL_NONE;
             } else if (node->src1.type == IR_VAL_INT && node->src1.v.i == 0) {

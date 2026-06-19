@@ -1,5 +1,6 @@
 #include "ljit_opt.h"
 #include "../ir/ljit_ir.h"
+#include "../core/ljit_debug.h"
 
 /*
  * M3 Constant Folding (常量折叠)
@@ -71,6 +72,8 @@ void ljit_opt_const(ljit_ctx_t *ctx) {
 
                 if (can_fold) {
                     /* 将当前运算节点替换为 IR_LOADI，把结果直接赋给目标寄存器 */
+                    JIT_DBG(MOD_OPT_CONST, "fold: pc=%d, op=%d, val1=%lld, val2=%lld -> result=%lld",
+                        node->original_pc, node->op, (long long)val1, (long long)val2, (long long)result);
                     node->op = IR_LOADI;
                     node->src1.type = IR_VAL_INT;
                     node->src1.v.i = result;

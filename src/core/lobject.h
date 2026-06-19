@@ -765,6 +765,7 @@ typedef struct Proto {
 #ifndef LUA_NOJIT
   void *jit_trace;  /**< JIT compiled trace */
   int jit_failed;
+  int jit_hotcount;  /**< 热点计数器: 函数被调用次数, 达到阈值后触发JIT编译 */
 #endif
 } Proto;
 

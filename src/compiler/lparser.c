@@ -2077,6 +2077,11 @@ static void field (LexState *ls, ConsControl *cc) {
       break;
     }
     case TK_FUNCTION: {  /* function NAME (params) body end 简写，自动添加 self */
+      /* 如果下一个 token 是 '('，说明是匿名函数表达式，走 default 分支 */
+      if (luaX_lookahead(ls) == '(') {
+        listfield(ls, cc);
+        break;
+      }
       int reg = ls->fs->freereg;
       expdesc tab, key, val;
       int fline = ls->linenumber;
@@ -5704,9 +5709,9 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
   op = getbinopr(ls->t.token);
   /* 检测中缀函数调用: expr NAME expr => expr:NAME(expr)
      要求方法名与表达式起始在同一行，防止跨行误检测
-     且要求expression不是已完成的函数调用(VCALL) */
+     且要求expression是变量引用或表访问(vkisvar)，排除常量、函数调用、计算值 */
   if (op == OPR_NOBINOPR && ls->t.token == TK_NAME &&
-      ls->t.linenumber == expr_line && v->k != VCALL) {
+      ls->t.linenumber == expr_line && vkisvar(v->k)) {
     int la = luaX_lookahead(ls);
     if (is_infix_expr_start(la) && is_same_line_infix(ls)) {
       op = OPR_INFIX;  /* 有参中缀 */
@@ -5735,6 +5740,7 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
       }
     }
   }
+
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
     expdesc v2;
     BinOpr nextop;
@@ -5900,11 +5906,13 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
       if (op == OPR_INFIX && ls->t.linenumber != line) {
         op = OPR_NOBINOPR;
       }
-      /* 检测中缀调用 */
+      /* 检测中缀调用（仅当左操作数是变量引用/表访问时） */
       if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
-          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+          is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls) &&
+          vkisvar(v->k)) {
         op = OPR_INFIX;
       }
+  
     }
   }
   leavelevel(ls);

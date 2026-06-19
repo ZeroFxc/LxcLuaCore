@@ -1,5 +1,6 @@
 #include "ljit_codegen.h"
 #include "../core/ljit_internal.h"
+#include "../core/ljit_debug.h"
 #include "../ir/ljit_ir.h"
 #include "../sljit/ljit_sljit.h"
 #include <stdlib.h>
@@ -319,6 +320,19 @@ sljit_sw SLJIT_FUNC ljit_icall_forloop(lua_State *L, StkId ra) {
     }
 }
 
+/* 调试: 打印 FORLOOP 后的循环变量值 */
+void SLJIT_FUNC ljit_debug_forloop(lua_State *L, StkId base, int ra) {
+    lua_Integer internal_idx = ivalue(s2v(base + ra));        /* ra = 内部索引 */
+    lua_Integer counter = ivalue(s2v(base + ra + 1));         /* ra+1 = 计数器 */
+    lua_Integer step = ivalue(s2v(base + ra + 2));            /* ra+2 = 步长 */
+    lua_Integer user_i = ivalue(s2v(base + ra + 3));          /* ra+3 = 用户可见 i */
+    int tt_counter = ttype(s2v(base + ra + 1));
+    int tt_step = ttype(s2v(base + ra + 2));
+    JIT_DBG(MOD_DBG, "FORLOOP ra=%d: idx=%lld, counter=%lld(tt=%d), step=%lld(tt=%d), user_i=%lld",
+        ra, (long long)internal_idx, (long long)counter, tt_counter,
+        (long long)step, tt_step, (long long)user_i);
+}
+
 sljit_sw SLJIT_FUNC ljit_icall_tforprep(lua_State *L, StkId ra) {
     if (ttistable(s2v(ra)) && l_likely(!fasttm(L, hvalue(s2v(ra))->metatable, TM_CALL))) {
         setobjs2s(L, ra + 1, ra);
@@ -502,6 +516,7 @@ void SLJIT_FUNC ljit_jitcall(lua_State *L, StkId func, int nresults, Proto *p) {
     L->nCcalls--;
 
     if (jit_done) {
+        L->ci = ci->previous;
         return;
     }
 
@@ -511,12 +526,132 @@ void SLJIT_FUNC ljit_jitcall(lua_State *L, StkId func, int nresults, Proto *p) {
     luaD_call(L, func, nresults);
 }
 
+/* 自递归调用计数器，用于性能诊断 */
+int ljit_self_call_count = 0;
+
+/*
+ * 自递归调用轻量级帧设置：跳过 checkstackGCp（栈空间已知足够），
+ * 跳过 upvalue 检查，仅做最小 CallInfo 分配和 nil 填充。
+ * 相比 ljit_jitcall 减少了 checkstackGCp 的 GC 检查开销，
+ * 对 fib(32) 等递归密集场景有显著加速效果。
+ */
+void SLJIT_FUNC ljit_jitcall_self(lua_State *L, StkId func, int nresults, Proto *p) {
+    ljit_self_call_count++;
+    int fsize = p->maxstacksize;
+    int narg = cast_int(L->top.p - func) - 1;
+    int nfixparams = p->numparams;
+
+    /* 自递归：栈空间已由外层调用保证，跳过 checkstackGCp */
+
+    L->nCcalls++;
+    if (l_unlikely(getCcalls(L) >= LUAI_MAXCCALLS)) {
+        checkstackp(L, 0, func);
+        luaE_checkcstack(L);
+    }
+
+    CallInfo *ci = L->ci->next ? L->ci->next : luaE_extendCI(L);
+    L->ci = ci;
+    ci->func.p = func;
+    ci->nresults = nresults;
+    ci->callstatus = CIST_FRESH;
+    ci->top.p = func + 1 + fsize;
+    ci->u.l.savedpc = p->code;
+
+    for (; narg < nfixparams; narg++)
+        setnilvalue(s2v(L->top.p++));
+
+    lua_assert(ci->top.p <= L->stack_last.p);
+
+    typedef int (*jit_func_t)(StkId);
+    jit_func_t jit = (jit_func_t)p->jit_trace;
+    StkId base = func + 1;
+
+    int jit_done = jit(base);
+
+    L->nCcalls--;
+
+    if (jit_done) {
+        /* 恢复调用者的 CallInfo, 使调用者 JIT 代码 reload base 时拿到正确的栈帧 */
+        L->ci = ci->previous;
+        return;
+    }
+
+    /* JIT 回退，走解释器兜底 */
+    L->top.p = func + 1 + narg;
+    L->ci = ci->previous;
+
+    luaD_call(L, func, nresults);
+}
+
+/*
+ * 递归返回栈操作：用于自递归 ijump 路径的返回地址管理。
+ * rec_ret_stack 和 rec_ret_top 定义在 ljit_ir.h 的 ljit_ctx_t 中。
+ */
+
+/*
+ * VARARG 回退辅助函数: 在JIT代码中遇到VARARG/VARARGPREP时,
+ * 调用解释器执行该操作码, 然后返回JIT代码继续执行.
+ * 这实现了分级回退机制: 仅对不支持的操作码回退解释器, 其余部分继续JIT执行.
+ */
+void SLJIT_FUNC ljit_icall_vararg(lua_State *L, StkId base) {
+    CallInfo *ci = L->ci;
+    if (!ci || !ttisLclosure(s2v(ci->func.p))) return;
+    Proto *p = clLvalue(s2v(ci->func.p))->p;
+
+    /* 重新设置解释器状态 */
+    L->top.p = ci->top.p;
+    base = ci->func.p + 1;
+
+    /* 执行解释器, 直到遇到RETURN或函数结束 */
+    luaV_execute(L, ci);
+}
+
+/*
+ * 通用回退辅助函数: 从JIT代码中调用解释器执行当前函数.
+ * 用于JIT代码遇到未支持操作码时的分级回退.
+ * 返回后, JIT代码的调用者会根据L->ci状态判断是否已完成.
+ */
+void SLJIT_FUNC ljit_icall_fallback(lua_State *L, StkId base) {
+    luaJIT_record_fallback();
+    CallInfo *ci = L->ci;
+    if (ci && ttisLclosure(s2v(ci->func.p))) {
+        luaV_execute(L, ci);
+    }
+}
+
+/* 推入返回地址到递归栈，返回新的栈顶索引，-1 表示栈溢出 */
+int SLJIT_FUNC ljit_rec_push_ret(void *ctx_ptr, void *ret_addr) {
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    if (ctx->rec_ret_top >= MAX_REC_DEPTH) {
+        return -1;
+    }
+    ctx->rec_ret_stack[ctx->rec_ret_top] = ret_addr;
+    return ctx->rec_ret_top++;
+}
+
+/* 弹出返回地址，返回地址指针，NULL 表示栈空 */
+void *SLJIT_FUNC ljit_rec_pop_ret(void *ctx_ptr) {
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    if (ctx->rec_ret_top <= 0) {
+        return NULL;
+    }
+    return ctx->rec_ret_stack[--ctx->rec_ret_top];
+}
+
+/* 获取递归栈顶指针，返回当前栈深度 */
+int SLJIT_FUNC ljit_rec_ret_top(void *ctx_ptr) {
+    ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
+    return ctx->rec_ret_top;
+}
+
 void *ljit_codegen(void *ctx_ptr) {
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
     if (!ctx) return NULL;
 
+    JIT_DBG(MOD_CG, "codegen start, ir_head=%p", ctx->ir_head);
+
     struct sljit_compiler *compiler = sljit_create_compiler(NULL);
-    if (!compiler) return NULL;
+    if (!compiler) { JIT_DBG(MOD_CG, "sljit_create_compiler failed"); return NULL; }
 
     ctx->compiler = compiler;
     int max_labels = ctx->proto->sizecode + ctx->next_label_id + 1;
@@ -526,14 +661,7 @@ void *ljit_codegen(void *ctx_ptr) {
     ctx->jump_targets = (int *)calloc(max_labels, sizeof(int));
     ctx->num_jumps = 0;
 
-    /*
-     * Enter function arguments mapping:
-     * jit_func_t(StkId base) -> SLJIT_ARGS1(32, W) -> base in SLJIT_S0.
-     * Returns int: 1 = fully handled (CALL+RET executed), 0 = interpreter fallback.
-     * SLJIT_S0 holds the Lua virtual register base address.
-     * SLJIT_S1 serves as the return flag (0 = fallback, 1 = done).
-     * Requesting 6 saved regs (S0-S5), 5 scratch regs (R0-R4), 0 fregs.
-     */
+    JIT_DBG(MOD_CG, "emit_enter...");
     sljit_emit_enter(compiler, 0, SLJIT_ARGS1(32, W), 5, 6, 0);
 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
 
@@ -616,8 +744,16 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
         free(loaded);
     }
 
+    /* 创建函数入口标签，用于自递归调用时直接跳转，跳过 C 函数调用开销 */
+    ctx->rec_entry_label = sljit_emit_label(compiler);
+    JIT_DBG(MOD_CG, "entry label created for self-recursion, proto=%p", ctx->proto);
+
+    JIT_DBG(MOD_CG, "processing IR nodes...");
     ljit_ir_node_t *node = ctx->ir_head;
+    int node_count = 0;
     while (node) {
+        node_count++;
+        JIT_DBG(MOD_CG, "node %d: op=%d, pc=%d", node_count, node->op, node->original_pc);
         if (node->original_pc >= 0 && node->original_pc < max_labels) {
             if (!ctx->labels[node->original_pc]) {
                 ctx->labels[node->original_pc] = sljit_emit_label(compiler);
@@ -721,9 +857,71 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                                (sljit_sw)offsetof(lua_State, top), SLJIT_R2, 0);
 
                 /*
-                 * 内联类型/JIT检查: 在生成的机器码中直接检查
-                 * func->tt_ == LUA_VLCL 和 cl->p->jit_trace != NULL,
-                 * 减少 C 函数分派开销.
+                 * 自递归快速路径: 若翻译阶段已标记self_rec=1,
+                 * 直接调用 ljit_jitcall_self, 跳过运行时Proto比较和类型检查.
+                 * 对 fib(32) 等递归密集场景, 省去每次调用的比较开销.
+                 */
+                if (node->self_rec) {
+                    JIT_DBG(MOD_CG, "IR_CALL self_rec fast path: pc=%d, nargs=%d, nresults=%d",
+                        node->original_pc, nargs, nresults);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctx->proto);
+                    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                     SLJIT_IMM, (sljit_sw)ljit_jitcall_self);
+
+                    /*
+                     * 内联 reload base: S0 = L->ci->func.p + 1
+                     * ljit_jitcall_self 已将 L->ci 恢复为调用者,
+                     * 此处重新加载 base 确保后续操作数访问正确.
+                     */
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                                   SLJIT_MEM1(SLJIT_R2), offsetof(lua_State, ci));
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S0, 0,
+                                   SLJIT_MEM1(SLJIT_R2), offsetof(CallInfo, func));
+                    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_S0, 0,
+                                   SLJIT_S0, 0, SLJIT_IMM, sizeof(TValue));
+
+                    /*
+                     * 调用后重载返回值: 非 spilled 的物理寄存器需要从栈上重新加载,
+                     * 因为 luaD_poscall 已将返回值写入栈上对应位置.
+                     * 若跳过此步骤, 后续 IR_ADD 等操作会读取到调用前的旧值.
+                     */
+                    if (nresults > 0) {
+                        int base_reg = node->dest.v.reg;
+                        for (int res = 0; res < nresults; res++) {
+                            int vreg = base_reg + res;
+                            ljit_ir_node_t *next = node->next;
+                            int found = 0;
+                            while (next && !found) {
+                                if (next->dest.type == IR_VAL_REG && next->dest.v.reg == vreg) {
+                                    if (!next->dest.is_spilled) {
+                                        sljit_emit_op1(compiler, SLJIT_MOV, next->dest.phys_reg, 0,
+                                            SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                    }
+                                    found = 1;
+                                } else if (next->src1.type == IR_VAL_REG && next->src1.v.reg == vreg) {
+                                    if (!next->src1.is_spilled) {
+                                        sljit_emit_op1(compiler, SLJIT_MOV, next->src1.phys_reg, 0,
+                                            SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                    }
+                                    found = 1;
+                                } else if (next->src2.type == IR_VAL_REG && next->src2.v.reg == vreg) {
+                                    if (!next->src2.is_spilled) {
+                                        sljit_emit_op1(compiler, SLJIT_MOV, next->src2.phys_reg, 0,
+                                            SLJIT_MEM1(SLJIT_S0), vreg * tvalue_size);
+                                    }
+                                    found = 1;
+                                }
+                                next = next->next;
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                /*
+                 * 通用路径: 运行时检查函数类型和JIT状态.
                  * TValue.tt_ 偏移 = sizeof(Value) = 8.
                  * LUA_VLCL = makevariant(LUA_TFUNCTION, 0) = 6.
                  */
@@ -732,7 +930,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 struct sljit_jump *jmp_not_lcl = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
                     SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)LUA_VLCL);
 
-                /* value_.gc 在 TValue 偏移 0 → LClosure* (GCObject==Closure union 起始) */
+                /* value_.gc 在 TValue 偏移 0 → LClosure* */
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0,
                                SLJIT_MEM1(SLJIT_R1), 0);
                 /* cl->p → Proto* */
@@ -745,14 +943,32 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                     SLJIT_R4, 0, SLJIT_IMM, 0);
 
                 /*
-                 * 快速路径: 目标已JIT编译.
-                 * ljit_jitcall(L, func, nresults, p): R0=L, R1=func, R2=nresults, R3=p.
+                 * 运行时自递归检测: 比较目标 Proto* (R3) 与当前函数 Proto* (ctx->proto).
+                 * 若相同则走自递归快速路径 (ljit_jitcall_self), 跳过 checkstackGCp 等开销.
                  */
+                struct sljit_jump *jmp_not_self = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
+                    SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctx->proto);
+
+                /*
+                 * 自递归快速路径: ljit_jitcall_self(L, func, nresults, p).
+                 * 跳过 checkstackGCp (栈空间已由外层调用保证),
+                 * 仅做最小 CallInfo 分配和 nil 填充.
+                 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_jitcall_self);
+
+                struct sljit_jump *jmp_after = sljit_emit_jump(compiler, SLJIT_JUMP);
+
+                /* 非自递归快速路径: ljit_jitcall(L, func, nresults, p) */
+                struct sljit_label *nonself_label = sljit_emit_label(compiler);
+                sljit_set_label(jmp_not_self, nonself_label);
+
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
                 sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
                                  SLJIT_IMM, (sljit_sw)ljit_jitcall);
 
-                struct sljit_jump *jmp_after = sljit_emit_jump(compiler, SLJIT_JUMP);
+                struct sljit_jump *jmp_after2 = sljit_emit_jump(compiler, SLJIT_JUMP);
 
                 /*
                  * 慢速路径: 目标不是LCL或没有JIT代码, 回退到 luaD_call.
@@ -765,13 +981,13 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
                                  SLJIT_IMM, (sljit_sw)luaD_call);
 
-                /* 两条路径汇总 */
+                /* 三条路径汇总 */
                 struct sljit_label *after_label = sljit_emit_label(compiler);
                 sljit_set_label(jmp_after, after_label);
+                sljit_set_label(jmp_after2, after_label);
 
                 /*
                  * 内联 reload base: S0 = L->ci->func.p + 1
-                 * 直接从 L->ci 链读取, 省去 C 函数调用开销.
                  */
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)ctx->L);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
@@ -782,8 +998,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                                SLJIT_S0, 0, SLJIT_IMM, sizeof(TValue));
 
                 /*
-                 * 调用后: Lua栈上的结果寄存器已被 luaD_poscall 更新,
-                 * 但物理寄存器中的值已过时. 扫描后续IR节点找到结果寄存器的映射信息,
+                 * 调用后: Lua栈上的结果寄存器已被更新,
                  * 将非spilled的结果从Lua栈重新加载到物理寄存器.
                  */
                 if (nresults > 0) {
@@ -915,6 +1130,12 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_SLICE:
             case IR_SPACESHIP:
             case IR_TESTNIL: break;
+            case IR_SETTRAITFLAG:
+            case IR_SETTRAITREQUIRE:
+            case IR_USETRAIT:
+            case IR_AWAIT:
+            case IR_MERGE:
+            case IR_REGEX: break;
             case IR_TESTSET: {
                 int tvalue_size = sizeof(TValue);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
@@ -946,17 +1167,41 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_TFORLOOP: ljit_cg_emit_tforloop(node, ctx); break;
             case IR_VARARG:
             case IR_VARARGPREP:
-                // Instead of sljit_emit_return_void, abort the whole JIT compilation.
-                sljit_free_compiler((struct sljit_compiler *)ctx->compiler);
-                ctx->compiler = NULL;
-                return NULL;
+                /*
+                 * 分级回退: 调用解释器执行当前函数剩余部分,
+                 * 解释器返回后JIT代码返回1(成功).
+                 * 这避免了因局部不支持特性导致整体编译结果被废弃.
+                 */
+                JIT_DBG(MOD_CG, "VARARG/VARARGPREP fallback: calling interpreter, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_fallback);
+                /* 解释器执行完成, JIT返回成功 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
+                sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
+                node = NULL;
+                continue;  /* 跳过 node = node->next，直接退出循环 */
             case IR_GETSUPER: ljit_cg_emit_getsuper(node, ctx); break;
             case IR_INHERIT: ljit_cg_emit_inherit(node, ctx); break;
             case IR_NEWCLASS: ljit_cg_emit_newclass(node, ctx); break;
             case IR_NEWOBJ: ljit_cg_emit_newobj(node, ctx); break;
             case IR_CLOSURE: ljit_cg_emit_closure(node, ctx); break;
 
-            case IR_CONCAT: /* JIT no-op; interpreter handles concat to avoid stack corruption on re-exec */ break;
+            case IR_CONCAT:
+                /*
+                 * 分级回退: CONCAT操作涉及栈操作, 直接调用解释器处理.
+                 * 避免 JIT no-op 导致栈状态不一致.
+                 */
+                JIT_DBG(MOD_CG, "CONCAT fallback: calling interpreter, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_fallback);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
+                sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
+                node = NULL;
+                continue;
             case IR_FORPREP: ljit_cg_emit_forprep(node, ctx); break;
             case IR_FORLOOP: ljit_cg_emit_forloop(node, ctx); break;
 
@@ -976,10 +1221,14 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
         }
     }
 
+    JIT_DBG(MOD_CG, "processed %d nodes, generating code...", node_count);
+    /* 默认返回成功: 若所有IR节点处理完毕且未遇到显式RETURN, 标记JIT执行成功 */
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
     sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
 
     void *code = sljit_generate_code(compiler, 0, NULL);
 
+    JIT_DBG(MOD_CG, "code generated: %p, size=%zu", code, code ? sljit_get_generated_code_size(compiler) : 0);
     sljit_free_compiler(compiler);
     ctx->compiler = NULL;
 

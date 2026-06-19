@@ -1217,19 +1217,24 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         }
         else if (check_next1(ls, '=')) return TK_DIVEQ;  /* '/=' 除法赋值 */
         else if (ls->current != '*' && ls->current != '\n' && ls->current != '\r') {
-          /* 正则字面量：出现在值上下文中，/ 后不是 /, =, *, 换行时解析为 regex */
-          switch (ls->lasttoken) {
-            /* 前一个 token 是表达式终结符，/ 是除法 */
-            case TK_NAME: case TK_FLT: case TK_INT:
-            case TK_STRING: case TK_INTERPSTRING: case TK_RAWSTRING:
-            case TK_NIL: case TK_TRUE: case TK_FALSE:
-            case ')': case ']': case '}':
-            case TK_PLUSPLUS:
-              return '/';
-            default:
-              /* 前一个 token 是操作符/关键字/分隔符，/ 是正则起始 */
-              return read_regex(ls, seminfo);
+          /* 正则字面量：只有 / 后紧跟字母或 \ 时才尝试解析为正则
+           * (避免 lookahead 多读 token 时 lasttoken 未更新导致的除法/正则误判)
+           * / 后是空格、数字、运算符、括号等时一定按除法处理 */
+          if (lislalpha(ls->current) || ls->current == '\\') {
+            switch (ls->lasttoken) {
+              /* 前一个 token 是表达式终结符，/ 是除法 */
+              case TK_NAME: case TK_FLT: case TK_INT:
+              case TK_STRING: case TK_INTERPSTRING: case TK_RAWSTRING:
+              case TK_NIL: case TK_TRUE: case TK_FALSE:
+              case ')': case ']': case '}':
+              case TK_PLUSPLUS:
+                return '/';
+              default:
+                /* 前一个 token 是操作符/关键字/分隔符，/ 是正则起始 */
+                return read_regex(ls, seminfo);
+            }
           }
+          else return '/';
         }
         else return '/';
       }
