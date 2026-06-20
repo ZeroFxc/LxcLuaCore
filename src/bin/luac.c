@@ -451,6 +451,20 @@ static void PrintCode(const Proto* f)
 	printf("%d %d %d%s",a,vb,vc,ISK);
 	printf(COMMENT "%d",vc+EXTRAARGC);
 	break;
+   case OP_NEWMAP:
+	/* R[A] := [] (创建map容器，B/C未使用) */
+	printf("%d %d %d%s",a,0,0,ISK);
+	printf(COMMENT "new map");
+	break;
+   case OP_MAPGET:
+	/* R[A] := R[B][R[C]] (map下标读取) */
+	printf("%d %d %d%s",a,b,c,ISK);
+	break;
+   case OP_MAPSET:
+	/* R[A][R[B]] := RK(C) (map下标赋值) */
+	printf("%d %d %d%s",a,b,c,ISK);
+	if (isk) { printf(COMMENT); PrintConstant(f,c); }
+	break;
    case OP_SELF:
 	printf("%d %d %d%s",a,b,c,ISK);
 	if (isk) { printf(COMMENT); PrintConstant(f,c); }

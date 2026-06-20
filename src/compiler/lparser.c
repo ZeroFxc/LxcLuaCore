@@ -59,6 +59,8 @@ void statement (LexState *ls);
 void expr (LexState *ls, expdesc *v);
 static int explist (LexState *ls, expdesc *v);
 static void fixforjump (FuncState *fs, int pc, int dest, int back);
+static void parse_test_value (LexState *ls, expdesc *v, int line, int allow_or);
+static void simpleexp (LexState *ls, expdesc *v);
 
 void retstat (LexState *ls);
 static TypeHint *gettypehint (LexState *ls);
@@ -3403,6 +3405,14 @@ static void primaryexp (LexState *ls, expdesc *v) {
       luaX_next(ls);
       return;
     }
+    case TK_REGEX: {  /* 正则字面量 /pattern/flags */
+      FuncState *fs = ls->fs;
+      TString *ts = ls->t.seminfo.ts;
+      luaX_next(ls);
+      int kidx = luaK_stringK(fs, ts);
+      init_exp(v, VRELOC, luaK_codeABx(fs, OP_REGEX, 0, kidx));
+      return;
+    }
     case '{': {
       constructor(ls, v);
       return;
@@ -4058,6 +4068,140 @@ static void ifexpr (LexState *ls, expdesc *v) {
   checknext(ls, TK_END);
   luaK_exp2reg(fs, v, reg);
   luaK_patchtohere(fs, escape);
+}
+
+/**
+ * 解析测试表达式的值部分，支持链式操作符
+ * 处理: [ expr ], [ expr -op expr ], [ expr = expr ], [ cond1 -a cond2 ], [ cond1 -o cond2 ]
+ * -a 优先级高于 -o: -a 的右操作数不包含 -o 链
+ * @param allow_or 是否允许解析 -o 操作符（-a 递归调用时传 0）
+ */
+static void parse_test_value (LexState *ls, expdesc *v, int line, int allow_or) {
+  FuncState *fs = ls->fs;
+  int single_value = 1;  /* 标记是否为单值表达式（无操作符） */
+
+  /* 解析第一个值表达式 */
+  simpleexp(ls, v);
+
+  /*
+   * 内层循环: 处理比较操作符和 -a (AND)
+   * -a 优先级高于 -o，-a 的右操作数递归调用时不包含 -o
+   */
+  for (;;) {
+    /* 字符串比较: =, ==, != */
+    if (ls->t.token == '=') {
+      single_value = 0;
+      luaX_next(ls);
+      expdesc e2;
+      simpleexp(ls, &e2);
+      luaK_infix(fs, OPR_EQ, v);
+      luaK_posfix(fs, OPR_EQ, v, &e2, line);
+      continue;
+    }
+    if (ls->t.token == TK_EQ) {
+      single_value = 0;
+      luaX_next(ls);
+      expdesc e2;
+      simpleexp(ls, &e2);
+      luaK_infix(fs, OPR_EQ, v);
+      luaK_posfix(fs, OPR_EQ, v, &e2, line);
+      continue;
+    }
+    if (ls->t.token == TK_NE) {
+      single_value = 0;
+      luaX_next(ls);
+      expdesc e2;
+      simpleexp(ls, &e2);
+      luaK_infix(fs, OPR_NE, v);
+      luaK_posfix(fs, OPR_NE, v, &e2, line);
+      continue;
+    }
+
+    /* 二元比较操作符: -eq, -ne, -gt, -lt, -ge, -le */
+    /* 逻辑操作符: -a (AND) */
+    if (ls->t.token == '-') {
+      /* -o 始终留给外层循环处理（优先级最低） */
+      if (luaX_lookahead(ls) == TK_NAME &&
+          strcmp(getstr(ls->lookahead.seminfo.ts), "o") == 0) {
+        break;
+      }
+      luaX_next(ls);
+      if (ls->t.token == TK_NAME || ls->t.token == TK_NIL || ls->t.token == TK_BOOL) {
+        const char *opname = getstr(ls->t.seminfo.ts);
+        luaX_next(ls);  /* 跳过操作符名 */
+
+        BinOpr binop = OPR_NOBINOPR;
+        if (strcmp(opname, "eq") == 0) binop = OPR_EQ;
+        else if (strcmp(opname, "ne") == 0) binop = OPR_NE;
+        else if (strcmp(opname, "gt") == 0) binop = OPR_GT;
+        else if (strcmp(opname, "lt") == 0) binop = OPR_LT;
+        else if (strcmp(opname, "ge") == 0) binop = OPR_GE;
+        else if (strcmp(opname, "le") == 0) binop = OPR_LE;
+
+        if (binop != OPR_NOBINOPR) {
+          single_value = 0;
+          expdesc e2;
+          simpleexp(ls, &e2);
+          luaK_infix(fs, binop, v);
+          luaK_posfix(fs, binop, v, &e2, line);
+          continue;
+        }
+
+        /* 逻辑操作符 -a (AND): 右操作数递归解析，传递 allow_or=0 */
+        /* 先调用 infix 将 v 的 false 跳转 patch 到右操作数之前 */
+        if (strcmp(opname, "a") == 0) {
+          single_value = 0;
+          expdesc e2;
+          luaK_infix(fs, OPR_AND, v);
+          parse_test_value(ls, &e2, line, 0);
+          luaK_posfix(fs, OPR_AND, v, &e2, line);
+          continue;
+        }
+
+        /* 内层不支持 -o 或其他操作符 */
+        luaX_syntaxerror(ls, luaO_pushfstring(ls->L,
+          "unsupported operator '-%s' in test expression", opname));
+      } else {
+        luaX_syntaxerror(ls, "expected operator name after '-' in test expression");
+      }
+    }
+
+    break;
+  }
+
+  /*
+   * 外层循环: 处理 -o (OR)，优先级低于 -a
+   * 仅在 allow_or 时处理
+   */
+  if (allow_or) {
+    for (;;) {
+      if (ls->t.token == '-') {
+        luaX_next(ls);
+        if (ls->t.token == TK_NAME && strcmp(getstr(ls->t.seminfo.ts), "o") == 0) {
+          luaX_next(ls);  /* 跳过 'o' */
+          single_value = 0;
+          expdesc e2;
+          /* 先调用 infix 将 v 的 false 跳转 patch 到右操作数之前 */
+          luaK_infix(fs, OPR_OR, v);
+          /* -o 右操作数递归解析，内层可包含 -a 但不包含 -o */
+          parse_test_value(ls, &e2, line, 0);
+          luaK_posfix(fs, OPR_OR, v, &e2, line);
+          continue;
+        }
+        luaX_syntaxerror(ls, luaO_pushfstring(ls->L,
+          "expected '-o' after '-', got '-%s'", getstr(ls->t.seminfo.ts)));
+      }
+      break;
+    }
+  }
+
+  /* 单值: [ expr ] - 转换为布尔值，使用 not not expr 确保总是返回布尔 */
+  if (single_value) {
+    luaK_dischargevars(fs, v);
+    luaK_prefix(fs, OPR_NOT, v, line);
+    luaK_prefix(fs, OPR_NOT, v, line);
+    luaK_exp2nextreg(fs, v);
+  }
 }
 
 static void simpleexp (LexState *ls, expdesc *v) {
@@ -4823,214 +4967,136 @@ static void simpleexp (LexState *ls, expdesc *v) {
       }
       /**
        * 条件测试表达式语法: [ test_expr ]
-       * 类似Shell的条件测试，支持：
-       *   - 文件测试: [ -f "path" ], [ -d "path" ], [ -e "path" ] 等
-       *   - 数值比较: [ a -eq b ], [ a -lt b ] 等
-       *   - 字符串比较: [ str1 = str2 ], [ -z str ] 等
-       *   - Lua类型测试: [ -type var "table" ], [ -nil var ] 等
-       *   - 逻辑运算: [ cond1 -a cond2 ], [ ! cond ] 等
+       * 直接将测试表达式编译为字节码，不依赖 __test__ 运行时函数
        *
-       * 编译为: __test__(arg1, arg2, ...)
+       * 支持的操作：
+       *   - 逻辑非: [ ! cond ]
+       *   - 字符串测试: [ -z str ], [ -n str ]
+       *   - 类型测试: [ -nil var ], [ -bool var ], [ -func var ], [ -type var "typename" ]
+       *   - 数值比较: [ a -eq b ], [ a -ne b ], [ a -gt b ], [ a -lt b ], [ a -ge b ], [ a -le b ]
+       *   - 字符串比较: [ str1 = str2 ], [ str1 == str2 ], [ str1 != str2 ]
+       *   - 逻辑运算: [ cond1 -a cond2 ], [ cond1 -o cond2 ]
+       *   - 单值测试: [ expr ] (检查值是否为真)
        */
-      FuncState *fs = ls->fs;
-      int line = ls->linenumber;
-      expdesc func;
-      int base;
-      int nargs = 0;
-      
-      luaX_next(ls);  /* 跳过 '[' */
-      
-      /* 获取 __test__ 函数 */
-      singlevaraux(fs, luaS_newliteral(ls->L, "__test__"), &func, 1);
-      if (func.k == VVOID) {
-        /* 如果不存在，从全局表获取 */
-        expdesc key;
-        singlevaraux(fs, ls->envn, &func, 1);
-        codestring(&key, luaS_newliteral(ls->L, "__test__"));
-        luaK_indexed(fs, &func, &key);
-      }
-      luaK_exp2nextreg(fs, &func);
-      base = func.u.info;
-      
-      /* 解析条件测试表达式参数 */
-      while (ls->t.token != ']' && ls->t.token != TK_EOS) {
-        expdesc arg;
-        
-        /* 处理逻辑非操作符 (! 或 not) */
+      {
+        FuncState *fs = ls->fs;
+        int line = ls->linenumber;
+        luaX_next(ls);  /* 跳过 '[' */
+
+        /* 处理逻辑非前缀: [ ! cond ] */
+        int has_not = 0;
         if (ls->t.token == '!' || ls->t.token == TK_NOT) {
-          codestring(&arg, luaS_newliteral(ls->L, "!"));
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          luaX_next(ls);
-          continue;
+          has_not = 1;
+          luaX_next(ls);  /* 跳过 '!' */
         }
-        
-        /* 处理带 - 前缀的操作符（如 -f, -eq, -type 等）*/
+
+        /* 处理带 '-' 前缀的一元操作符 */
         if (ls->t.token == '-') {
-          luaX_next(ls);
-          if (ls->t.token == TK_NAME) {
-            /* 构造操作符字符串 "-xxx" */
-            TString *op_name = ls->t.seminfo.ts;
-            const char *name = getstr(op_name);
-            size_t len = tsslen(op_name);
-            char *buf = luaM_newvector(ls->L, len + 2, char);
-            buf[0] = '-';
-            memcpy(buf + 1, name, len);
-            buf[len + 1] = '\0';
-            TString *op_str = luaS_newlstr(ls->L, buf, len + 1);
-            luaM_freearray(ls->L, buf, len + 2);
-            codestring(&arg, op_str);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            continue;
-          } else if (ls->t.token == TK_INT) {
-            /* 负数 */
-            init_exp(&arg, VKINT, 0);
-            arg.u.ival = -ls->t.seminfo.i;
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            continue;
-          } else if (ls->t.token == TK_FLT) {
-            /* 负浮点数 */
-            init_exp(&arg, VKFLT, 0);
-            arg.u.nval = -ls->t.seminfo.r;
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            continue;
+          luaX_next(ls);  /* 跳过 '-' */
+          if (ls->t.token == TK_NAME || ls->t.token == TK_NIL || ls->t.token == TK_BOOL) {
+            const char *opname = getstr(ls->t.seminfo.ts);
+            luaX_next(ls);  /* 跳过操作符名 */
+
+            /* 字符串测试: [ -z str ], [ -n str ] */
+            if (strcmp(opname, "z") == 0 || strcmp(opname, "n") == 0) {
+              expdesc arg;
+              expr(ls, &arg);
+              luaK_prefix(fs, OPR_LEN, &arg, line);  /* 生成 #str */
+              expdesc zero;
+              init_exp(&zero, VKINT, 0);
+              zero.u.ival = 0;
+              BinOpr cmp_op = (opname[0] == 'z') ? OPR_EQ : OPR_NE;
+              luaK_infix(fs, cmp_op, &arg);
+              luaK_posfix(fs, cmp_op, &arg, &zero, line);
+              *v = arg;
+              luaK_exp2nextreg(fs, v);
+            }
+            /* 类型测试: [ -nil var ], [ -bool var ], [ -func var ] */
+            else if (strcmp(opname, "nil") == 0 || strcmp(opname, "bool") == 0 ||
+                     strcmp(opname, "func") == 0) {
+              expdesc arg;
+              expr(ls, &arg);
+              int r1 = luaK_exp2anyreg(fs, &arg);
+              /* 将简写操作符名映射到 Lua 标准类型名 */
+              const char *typename_full;
+              if (strcmp(opname, "bool") == 0)
+                typename_full = "boolean";
+              else if (strcmp(opname, "func") == 0)
+                typename_full = "function";
+              else
+                typename_full = opname;  /* "nil" 直接匹配 */
+              int type_k = luaK_stringK(fs, luaS_new(ls->L, typename_full));
+              /* OP_IS A B C k: if (type(R[A]) == K[B]) ~= k then pc++ */
+              /* k=0: 类型匹配时跳过 JMP，执行 LOADTRUE；不匹配时执行 JMP 跳到 LOADFALSE */
+              luaK_codeABCk(fs, OP_IS, r1, type_k, 0, 0);
+              int jmp_false = luaK_jump(fs);
+              luaK_codeABC(fs, OP_LOADTRUE, r1, 0, 0);
+              int jmp_end = luaK_jump(fs);
+              luaK_patchtohere(fs, jmp_false);
+              luaK_codeABC(fs, OP_LOADFALSE, r1, 0, 0);
+              luaK_patchtohere(fs, jmp_end);
+              init_exp(v, VNONRELOC, r1);
+            }
+            /* 类型测试: [ -type var "typename" ] */
+            else if (strcmp(opname, "type") == 0) {
+              expdesc arg;
+              expr(ls, &arg);
+              int r1 = luaK_exp2anyreg(fs, &arg);
+              if (ls->t.token == TK_STRING || ls->t.token == TK_RAWSTRING ||
+                  ls->t.token == TK_INTERPSTRING) {
+                int type_k = luaK_stringK(fs, ls->t.seminfo.ts);
+                luaX_next(ls);  /* 跳过类型名字符串 */
+                luaK_codeABCk(fs, OP_IS, r1, type_k, 0, 0);
+                int jmp_false = luaK_jump(fs);
+                luaK_codeABC(fs, OP_LOADTRUE, r1, 0, 0);
+                int jmp_end = luaK_jump(fs);
+                luaK_patchtohere(fs, jmp_false);
+                luaK_codeABC(fs, OP_LOADFALSE, r1, 0, 0);
+                luaK_patchtohere(fs, jmp_end);
+                init_exp(v, VNONRELOC, r1);
+              } else {
+                luaX_syntaxerror(ls, "expected type name string after -type");
+              }
+            }
+            /* 比较操作符缺少左操作数: [ -eq expr ] 等 */
+            else if (strcmp(opname, "eq") == 0 || strcmp(opname, "ne") == 0 ||
+                     strcmp(opname, "gt") == 0 || strcmp(opname, "lt") == 0 ||
+                     strcmp(opname, "ge") == 0 || strcmp(opname, "le") == 0) {
+              luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "comparison operator '-%s' requires left operand", opname));
+            }
+            /* 逻辑操作符缺少左操作数: [ -a expr ], [ -o expr ] */
+            else if (strcmp(opname, "a") == 0 || strcmp(opname, "o") == 0) {
+              luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "logical operator '-%s' requires left operand", opname));
+            }
+            /* 文件测试及不支持的扩展操作符 */
+            else {
+              luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "unsupported test operator '-%s' in [ ... ] syntax", opname));
+            }
           } else {
             luaX_syntaxerror(ls, "expected operator name after '-' in test expression");
           }
         }
-        
-        /* 处理比较操作符 */
-        if (ls->t.token == '=') {
-          codestring(&arg, luaS_newliteral(ls->L, "="));
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          luaX_next(ls);
-          continue;
+        /* 处理值表达式: [ expr ], [ expr -op expr ], [ expr = expr ] 等，支持链式 */
+        else {
+          parse_test_value(ls, v, line, 1);
         }
-        if (ls->t.token == TK_EQ) {  /* == */
-          codestring(&arg, luaS_newliteral(ls->L, "=="));
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          luaX_next(ls);
-          continue;
+
+        /* 应用逻辑非前缀 */
+        if (has_not) {
+          luaK_prefix(fs, OPR_NOT, v, line);
         }
-        if (ls->t.token == TK_NE) {  /* ~= 或 != */
-          codestring(&arg, luaS_newliteral(ls->L, "!="));
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          luaX_next(ls);
-          continue;
-        }
-        
-        /* 处理模式匹配操作符 =~ 和 !~ */
-        if (ls->t.token == '~') {
-          luaX_next(ls);
-          if (ls->t.token == '=') {
-            codestring(&arg, luaS_newliteral(ls->L, "=~"));
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            continue;
-          }
-          /* 其他情况回退处理 */
-          codestring(&arg, luaS_newliteral(ls->L, "~"));
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          continue;
-        }
-        
-        /* 处理括号表达式 - 这里使用完整表达式解析 */
-        if (ls->t.token == '(') {
-          luaX_next(ls);
-          expr(ls, &arg);
-          checknext(ls, ')');
-          luaK_exp2nextreg(fs, &arg);
-          nargs++;
-          continue;
-        }
-        
-        /* 处理简单值：字符串、数字、布尔值、nil、变量名 */
-        /* 不使用 expr() 以避免解析后续的 -a/-o 等操作符 */
-        switch (ls->t.token) {
-          case TK_STRING:
-          case TK_INTERPSTRING:
-          case TK_RAWSTRING: {
-            codestring(&arg, ls->t.seminfo.ts);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_INT: {
-            init_exp(&arg, VKINT, 0);
-            arg.u.ival = ls->t.seminfo.i;
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_FLT: {
-            init_exp(&arg, VKFLT, 0);
-            arg.u.nval = ls->t.seminfo.r;
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_TRUE: {
-            init_exp(&arg, VTRUE, 0);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_FALSE: {
-            init_exp(&arg, VFALSE, 0);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_NIL: {
-            init_exp(&arg, VNIL, 0);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            luaX_next(ls);
-            break;
-          }
-          case TK_NAME: {
-            /* 变量名 - 解析为变量引用 */
-            singlevar(ls, &arg);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            break;
-          }
-          case '{': {
-            /* 表构造器 */
-            constructor(ls, &arg);
-            luaK_exp2nextreg(fs, &arg);
-            nargs++;
-            break;
-          }
-          default: {
-            luaX_syntaxerror(ls, "unexpected token in test expression");
-          }
-        }
+
+        check_match(ls, ']', '[', line);
+        return;
       }
-      
-      check_match(ls, ']', '[', line);
-      
-      /* 生成函数调用 */
-      init_exp(v, VCALL, luaK_codeABC(fs, OP_CALL, base, nargs + 1, 2));
-      luaK_fixline(fs, line);
-      fs->freereg = base + 1;
-      return;
+    }
+    case TK_REGEX: {  /* 正则字面量 /pattern/flags */
+      FuncState *fs = ls->fs;
+      TString *ts = ls->t.seminfo.ts;
+      luaX_next(ls);
+      int kidx = luaK_stringK(fs, ts);
+      init_exp(v, VRELOC, luaK_codeABx(fs, OP_REGEX, 0, kidx));
+      break;
     }
     default: {
       suffixedexp(ls, v);
@@ -5082,6 +5148,7 @@ static BinOpr getbinopr (int op) {
     case TK_IN: return OPR_IN;
     case TK_NULLCOAL: return OPR_NULLCOAL;
     case TK_MEAN: return OPR_CASE;
+    case TK_MERGE: return OPR_MERGE;  /* '<>' 表合并 */
     default: return OPR_NOBINOPR;
   }
 }
@@ -5110,7 +5177,8 @@ static const struct {
    {2, 2}, {1, 1},           /* and, or */
    {1, 1},                   /* ?? (null coalescing, right associative) */
    {1, 1},                   /* => (case operator) */
-   {5, 5}                    /* INFIX (infix function call, left associative) */
+   {5, 5},                   /* INFIX (infix function call, left associative) */
+   {5, 5}                    /* <> (table merge, left associative) */
 };
 
 #define UNARY_PRIORITY	12  /* priority for unary operators */
@@ -5130,7 +5198,7 @@ static int is_infix_expr_start (int token) {
     case TK_TRUE: case TK_FALSE: case TK_NIL:
     case '{': case TK_NOT: case '-': case '#': case '~':
     case TK_FUNCTION: case TK_LAMBDA: case TK_IF:
-    case TK_AWAIT: case TK_DOTS:
+    case TK_AWAIT: case TK_DOTS: case TK_REGEX:
       return 1;
     default:
       return 0;
