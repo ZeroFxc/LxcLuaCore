@@ -49,6 +49,7 @@
 #include "lstate.h"
 #include "lstring.h"
 #include "ltable.h"
+#include "lmap.h"
 #include "ltm.h"
 #include "lvm.h"
 #include "lclass.h"
@@ -1765,6 +1766,11 @@ void luaV_objlen (lua_State *L, StkId ra, const TValue *rb) {
       setivalue(s2v(ra), tsvalue(rb)->u.lnglen);
       return;
     }
+    case LUA_VMAP: {
+      /* map的#返回键值对总数，无元表干预 */
+      setivalue(s2v(ra), (lua_Integer)mapvalue(rb)->count);
+      return;
+    }
     default: {  /* try metamethod */
       tm = luaT_gettmbyobj(L, rb, TM_LEN);
       if (l_unlikely(notm(tm)))  /* no metamethod? */
@@ -2613,6 +2619,14 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               Protect(luaV_finishget(L, rb, rc, ra, NULL));
            }
         }
+        else if (ttismap(rb)) {
+          const TValue *val = luaM_getval(mapvalue(rb), rc);
+          if (val != NULL) {
+            setobj2s(L, ra, val);
+          } else {
+            setnilvalue(s2v(ra));
+          }
+        }
         else
           Protect(luaV_finishget(L, rb, rc, ra, NULL));
         vmbreak;
@@ -2634,6 +2648,16 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               setivalue(&key, c);
               Protect(luaV_finishget(L, rb, &key, ra, NULL));
            }
+        }
+        else if (ttismap(rb)) {
+          TValue key;
+          setivalue(&key, c);
+          const TValue *val = luaM_getval(mapvalue(rb), &key);
+          if (val != NULL) {
+            setobj2s(L, ra, val);
+          } else {
+            setnilvalue(s2v(ra));
+          }
         }
         else {
           TValue key;
@@ -2676,6 +2700,14 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               if (h->is_shared) l_rwlock_unlock(&h->lock);
               Protect(luaV_finishget(L, rb, rc, ra, NULL));
            }
+        }
+        else if (ttismap(rb)) {
+          const TValue *val = luaM_getval(mapvalue(rb), rc);
+          if (val != NULL) {
+            setobj2s(L, ra, val);
+          } else {
+            setnilvalue(s2v(ra));
+          }
         }
         else
           Protect(luaV_finishget(L, rb, rc, ra, NULL));
@@ -2720,6 +2752,9 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               Protect(luaV_finishset(L, s2v(ra), rb, rc, NULL));
            }
         }
+        else if (ttismap(s2v(ra))) {
+          luaM_setval(L, mapvalue(s2v(ra)), rb, rc);
+        }
         else
           Protect(luaV_finishset(L, s2v(ra), rb, rc, NULL));
         vmbreak;
@@ -2742,7 +2777,13 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               setivalue(&key, c);
               Protect(luaV_finishset(L, s2v(ra), &key, rc, NULL));
            }
-        } else {
+        }
+        else if (ttismap(s2v(ra))) {
+          TValue key;
+          setivalue(&key, c);
+          luaM_setval(L, mapvalue(s2v(ra)), &key, rc);
+        }
+        else {
           TValue key;
           setivalue(&key, c);
           Protect(luaV_finishset(L, s2v(ra), &key, rc, NULL));
@@ -2766,6 +2807,9 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               if (h->is_shared) l_rwlock_unlock(&h->lock);
               Protect(luaV_finishset(L, s2v(ra), rb, rc, NULL));
            }
+        }
+        else if (ttismap(s2v(ra))) {
+          luaM_setval(L, mapvalue(s2v(ra)), rb, rc);
         }
         else
           Protect(luaV_finishset(L, s2v(ra), rb, rc, NULL));
@@ -2792,6 +2836,47 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         if (b != 0 || c != 0)
           luaH_resize(L, t, c, b);  /* idem */
         checkGC(L, ra + 1);
+        vmbreak;
+      }
+      vmcase(OP_NEWMAP) {
+        StkId ra = RA(i);
+        Map *m;
+        L->top.p = ra + 1;  /* correct top in case of emergency GC */
+        m = luaM_newmap(L);  /* 创建map容器 */
+        updatebase(ci);
+        ra = RA(i);
+        setmapvalue2s(L, ra, m);
+        checkGC(L, ra + 1);
+        vmbreak;
+      }
+      vmcase(OP_MAPGET) {
+        StkId ra = RA(i);
+        const TValue *rb = vRB(i);
+        const TValue *rc = vRC(i);
+        /* 类型校验：OP_MAPGET只能操作map对象 */
+        if (!ttismap(rb)) {
+          luaG_typeerror(L, rb, "map");
+        }
+        const TValue *val = luaM_getval(mapvalue(rb), rc);
+        if (val != NULL) {
+          setobj2s(L, ra, val);
+        }
+        else {
+          /* map无元表，键不存在时返回nil（不再触发__index） */
+          setnilvalue(s2v(ra));
+        }
+        vmbreak;
+      }
+      vmcase(OP_MAPSET) {
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        TValue *rc = vRC(i);
+        /* 类型校验：OP_MAPSET只能操作map对象 */
+        if (!ttismap(s2v(ra))) {
+          luaG_typeerror(L, s2v(ra), "map");
+        }
+        /* map无元表、无__newindex，直接赋值 */
+        luaM_setval(L, mapvalue(s2v(ra)), rb, rc);
         vmbreak;
       }
       vmcase(OP_LINKNAMESPACE) {

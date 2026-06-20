@@ -146,6 +146,9 @@ static const void *const disptab[NUM_OPCODES] = {
 &&L_OP_CHECKTYPE,
 &&L_OP_MERGE,
 &&L_OP_REGEX,
+&&L_OP_NEWMAP,
+&&L_OP_MAPGET,
+&&L_OP_MAPSET,
 &&L_OP_EXTRAARG,
 &&L_OP_CUSTOM
 

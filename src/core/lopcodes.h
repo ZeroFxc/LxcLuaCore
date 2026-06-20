@@ -425,6 +425,10 @@ OP_MERGE,/*	A B C	R[A] := merge(R[B], R[C]) (表合并)		*/
 
 OP_REGEX,/*	A Bx	R[A] := regex(K[Bx]) (正则字面量)		*/
 
+OP_NEWMAP,/*	A vB vC k	R[A] := [] (创建map容器)		*/
+OP_MAPGET,/*	A B C	R[A] := R[B][R[C]] (map下标读取)		*/
+OP_MAPSET,/*	A B C	R[A][R[B]] := RK(C) (map下标赋值)		*/
+
 OP_EXTRAARG,/*	Ax	extra (larger) argument for previous opcode	*/
 
 OP_CUSTOM/*	A	dispatch to custom opcode handler (opcode in Ax)	*/

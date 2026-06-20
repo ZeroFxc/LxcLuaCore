@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include "../../../core/lstate.h"
 #include "../../../core/ltable.h"
+#include "../../../core/lmap.h"
 #include "../../../vm/lvm.h"
 #include "../../../core/lobject.h"
 #include "../../../core/lgc.h"
 #include "../../../core/ltm.h"
 #include "../../../core/lfunc.h"
 #include "../../../core/ldo.h"
+#include "../../../core/ldebug.h"
 #include <string.h>
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
@@ -195,6 +197,35 @@ void SLJIT_FUNC ljit_icall_newtable(lua_State *L, int b, int c, StkId ra) {
     sethvalue2s(L, ra, t);
     if (b != 0 || c != 0)
         luaH_resize(L, t, c, b);
+}
+
+/* map容器icall函数 */
+void SLJIT_FUNC ljit_icall_newmap(lua_State *L, StkId ra) {
+    Map *m = luaM_newmap(L);
+    setmapvalue2s(L, ra, m);
+}
+
+void SLJIT_FUNC ljit_icall_getmap(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
+    if (ttismap(rb)) {
+        const TValue *val = luaM_getval(mapvalue(rb), rc);
+        if (val != NULL) {
+            setobj2s(L, ra, val);
+        } else {
+            setnilvalue(s2v(ra));
+        }
+    } else {
+        /* 类型错误：预期map但收到其他类型 */
+        luaG_typeerror(L, rb, "map");
+    }
+}
+
+void SLJIT_FUNC ljit_icall_setmap(lua_State *L, TValue *ra, TValue *rb, TValue *rc) {
+    if (ttismap(ra)) {
+        luaM_setval(L, mapvalue(ra), rb, rc);
+    } else {
+        /* 类型错误：预期map但收到其他类型 */
+        luaG_typeerror(L, ra, "map");
+    }
 }
 
 #include <math.h>
@@ -838,6 +869,8 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             }
             case IR_GETTABLE: ljit_cg_emit_gettable(node, ctx); break;
             case IR_SETTABLE: ljit_cg_emit_settable(node, ctx); break;
+            case IR_GETMAP: ljit_cg_emit_getmap(node, ctx); break;
+            case IR_SETMAP: ljit_cg_emit_setmap(node, ctx); break;
             case IR_CALL: {
                 int tvalue_size = sizeof(TValue);
                 int nargs = node->src1.v.i;
@@ -1034,6 +1067,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 break;
             }
             case IR_NEWTABLE: ljit_cg_emit_newtable(node, ctx); break;
+            case IR_NEWMAP: ljit_cg_emit_newmap(node, ctx); break;
             case IR_POW: ljit_cg_emit_pow(node, ctx); break;
             case IR_NOP: ljit_cg_emit_nop(node, ctx); break;
 

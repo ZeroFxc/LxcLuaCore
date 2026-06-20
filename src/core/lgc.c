@@ -28,6 +28,7 @@
 #include "lstate.h"
 #include "lstring.h"
 #include "ltable.h"
+#include "lmap.h"
 #include "ltm.h"
 #include "lthread.h"
 #include "lobfuscate.h"
@@ -136,6 +137,7 @@ static void entersweep (lua_State *L);
 static GCObject **getgclist (GCObject *o) {
   switch (o->tt) {
     case LUA_VTABLE: return &gco2t(o)->gclist;
+    case LUA_VMAP: return &gco2map(o)->gclist;
     case LUA_VLCL: return &gco2lcl(o)->gclist;
     case LUA_VCONCEPT: return &gco2concept(o)->gclist;
     case LUA_VCCL: return &gco2ccl(o)->gclist;
@@ -403,7 +405,7 @@ static void reallymarkobject (global_State *g, GCObject *o) {
       }
       /* else... */
     }  /* FALLTHROUGH */
-    case LUA_VLCL: case LUA_VCONCEPT: case LUA_VCCL: case LUA_VTABLE:
+    case LUA_VLCL: case LUA_VCONCEPT: case LUA_VCCL: case LUA_VTABLE: case LUA_VMAP:
     case LUA_VTHREAD: case LUA_VPROTO: case LUA_VNAMESPACE: {
       linkobjgclist(o, g->gray);  /* to be visited later */
       break;
@@ -694,6 +696,35 @@ static lu_mem traversetable (global_State *g, Table *h) {
 }
 
 
+/*
+** map容器的GC遍历
+** 标记map中所有键值对引用的GC对象
+** map无元表，无需处理元表
+** map无弱引用，所有键值对都是强引用
+*/
+static lu_mem traversemap (global_State *g, Map *m) {
+  lu_mem work = 0;
+  if (m->buckets != NULL) {
+    unsigned int i;
+    for (i = 0; i < m->size; i++) {
+      MapNode *node = m->buckets[i];
+      while (node != NULL) {
+        /* 标记键 */
+        if (iscollectable(&node->key))
+          markobject(g, gcvalue(&node->key));
+        /* 标记值 */
+        if (iscollectable(&node->val))
+          markobject(g, gcvalue(&node->val));
+        work += sizeof(MapNode);
+        node = node->next;
+      }
+    }
+  }
+  genlink(g, obj2gco(m));
+  return 1 + work;
+}
+
+
 /**
  * @brief Traverse a userdata.
  *
@@ -877,6 +908,7 @@ static lu_mem propagatemark (global_State *g) {
   g->gray = *getgclist(o);  /* remove from 'gray' list */
   switch (o->tt) {
     case LUA_VTABLE: return traversetable(g, gco2t(o));
+    case LUA_VMAP: return traversemap(g, gco2map(o));
     case LUA_VUSERDATA: return traverseudata(g, gco2u(o));
     case LUA_VLCL: return traverseLclosure(g, gco2lcl(o));
     case LUA_VCONCEPT: return traverseConcept(g, gco2concept(o));
@@ -1051,6 +1083,9 @@ static void freeobj (lua_State *L, GCObject *o) {
     }
     case LUA_VTABLE:
       luaH_free(L, gco2t(o));
+      break;
+    case LUA_VMAP:
+      luaM_freemap(L, gco2map(o));
       break;
     case LUA_VTHREAD:
       luaE_freethread(L, gco2th(o));

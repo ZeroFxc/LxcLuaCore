@@ -52,9 +52,11 @@ LOCAL_SRC_FILES := \
 	src/core/lstring.c \
 	src/stdlib/lstrlib.c \
 	src/core/ltable.c \
-	src/utils/libhttp.c\
+    src/core/lmap.c \
+    src/utils/libhttp.c\
 	src/stdlib/ltablib.c \
-	src/core/ltm.c \
+    src/stdlib/lmaplib.c \
+    src/core/ltm.c \
 	src/bin/lua.c \
 	src/utils/ltranslator.c \
 	src/core/lundump.c \

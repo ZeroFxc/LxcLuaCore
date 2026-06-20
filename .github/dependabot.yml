@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # GitHub Actions 工作流依赖更新
+  # 项目使用 actions/checkout、actions/cache、actions/upload-artifact、
+  # actions/download-artifact、msys2/setup-msys2、softprops/action-gh-release
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci(deps)"
+      include: "scope"
+
+  # 注意：本项目以下依赖均为源码内嵌（vendored），非 Git 子模块，
+  # 因此不在此处配置自动更新：
+  # - PCRE2 (pcre2/) — 内嵌正则引擎源码
+  # - QuickJS (quickjs/) — 内嵌 JS 引擎源码
+  # - sljit (src/jit/sljit*.c) — 内嵌 JIT 后端
+  # - wasm3 (src/wasm/m3_*.c) — 内嵌 WASM 运行时
+  # - wasmtime (wasmtime/) — 预编译库，已在 .gitignore 中排除
+  # 如需更新上述依赖，请手动同步上游仓库。

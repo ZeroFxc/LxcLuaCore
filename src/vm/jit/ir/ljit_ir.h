@@ -53,6 +53,7 @@ typedef enum {
     IR_RET,
     /* Tables/Calls (simplified) */
     IR_NEWTABLE, IR_GETTABLE, IR_SETTABLE,
+    IR_NEWMAP, IR_GETMAP, IR_SETMAP,
     IR_CALL,
 
     /* Missing Opcodes for M6 Full Coverage */

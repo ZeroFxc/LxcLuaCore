@@ -21,7 +21,7 @@
 #  define _Noreturn
 #endif
 
-#include "extra/wasi_core.h"
+#include "wasi_core.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>

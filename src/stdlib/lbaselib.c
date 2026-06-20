@@ -21,6 +21,7 @@
 #include "lualib.h"
 #include "llimits.h"
 #include "ltable.h"
+#include "lmap.h"
 #include "lfunc.h"
 #include "ldo.h"
 #include "lgc.h"
@@ -496,6 +497,18 @@ static int luaB_isstruct (lua_State *L) {
   return 1;
 }
 
+static int luaB_ismap (lua_State *L) {
+  /* ismap(val): 判断是否为map容器，与istable互斥 */
+  lua_pushboolean(L, lua_type(L, 1) == LUA_TMAP);
+  return 1;
+}
+
+static int luaB_istable (lua_State *L) {
+  /* istable(val): 判断是否为原生table，与ismap互斥 */
+  lua_pushboolean(L, lua_type(L, 1) == LUA_TTABLE);
+  return 1;
+}
+
 static int luaB_isinstance (lua_State *L) {
   lua_pushboolean(L, luaC_instanceof(L, 1, 2));
   return 1;
@@ -533,7 +546,7 @@ static int luaB_type (lua_State *L) {
 
 int luaB_next (lua_State *L) {
   int t = lua_type(L, 1);
-  luaL_argcheck(L, t == LUA_TTABLE || t == LUA_TSUPERSTRUCT, 1, "table or superstruct expected");
+  luaL_argcheck(L, t == LUA_TTABLE || t == LUA_TMAP || t == LUA_TSUPERSTRUCT, 1, "table, map or superstruct expected");
   lua_settop(L, 2);  /* create a 2nd argument if there isn't one */
   if (lua_next(L, 1))
     return 2;
@@ -595,6 +608,14 @@ static int luaB_range (lua_State *L) {
 
 static int luaB_pairs (lua_State *L) {
   luaL_checkany(L, 1);
+  int t = lua_type(L, 1);
+  /* map容器无元表，直接使用内置next遍历 */
+  if (t == LUA_TMAP) {
+    lua_pushcfunction(L, luaB_next);  /* generator */
+    lua_pushvalue(L, 1);  /* state */
+    lua_pushnil(L);  /* initial value */
+    return 3;
+  }
   if (luaL_getmetafield(L, 1, "__pairs") == LUA_TNIL) {  /* no metamethod? */
     lua_pushcfunction(L, luaB_next);  /* will return generator, */
     lua_pushvalue(L, 1);  /* state, */
@@ -625,11 +646,39 @@ static int ipairsaux (lua_State *L) {
 */
 static int luaB_ipairs (lua_State *L) {
   luaL_checkany(L, 1);
+  /* map不支持数组遍历，传入map直接报错 */
+  luaL_argcheck(L, lua_type(L, 1) != LUA_TMAP, 1, "map does not support ipairs (use mpairs)");
   lua_pushcfunction(L, ipairsaux);  /* iteration function */
   lua_pushvalue(L, 1);  /* state */
   lua_pushinteger(L, 0);  /* initial value */
   return 3;
 }
+
+
+/*
+** mpairs迭代器 - 仅用于map容器遍历
+** 传入table直接报错，与ipairs/table库完全隔离
+*/
+static int mpairsaux (lua_State *L) {
+  /* map遍历辅助函数：复用lua_next，但会类型检查 */
+  luaL_checktype(L, 1, LUA_TMAP);
+  if (lua_next(L, 1))
+    return 2;
+  else {
+    lua_pushnil(L);
+    return 1;
+  }
+}
+
+static int luaB_mpairs (lua_State *L) {
+  /* mpairs(map): 返回map专用迭代器，传入table直接报错 */
+  luaL_checktype(L, 1, LUA_TMAP);
+  lua_pushcfunction(L, mpairsaux);  /* iteration function */
+  lua_pushvalue(L, 1);  /* state */
+  lua_pushnil(L);  /* initial value */
+  return 3;
+}
+
 
 static int load_aux (lua_State *L, int status, int envidx) {
   if (l_likely(status == LUA_OK)) {
@@ -1506,10 +1555,13 @@ static const luaL_Reg env_funcs[] = {
   {"fsleep", luaB_fsleep},
   {"getmetatable", luaB_getmetatable},
   {"ipairs", luaB_ipairs},
+  {"ismap", luaB_ismap},
+  {"istable", luaB_istable},
   {"loadfile", luaB_loadfile},
   {"loadsfile", luaB_loadsfile},
   {"load", luaB_load},
   {"loadstring", luaB_load},
+  {"mpairs", luaB_mpairs},
   {"next", luaB_next},
   {"pairs", luaB_pairs},
   {"pcall", luaB_pcall},
@@ -2902,10 +2954,13 @@ static const luaL_Reg base_funcs[] = {
   {"getfenv", luaB_getfenv},
   {"getmetatable", luaB_getmetatable},
   {"ipairs", luaB_ipairs},
+  {"ismap", luaB_ismap},
+  {"istable", luaB_istable},
   {"loadfile", luaB_loadfile},
   {"loadsfile", luaB_loadsfile},
   {"load", luaB_load},
   {"loadstring", luaB_load},
+  {"mpairs", luaB_mpairs},
   {"next", luaB_next},
   {"pairs", luaB_pairs},
   {"range", luaB_range},

@@ -1,0 +1,72 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '30 6 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WASMTIME_VERSION: "v45.0.1"
+
+jobs:
+  analyze:
+    name: Analyze (C/C++)
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - 'cpp'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Cache wasmtime
+        id: cache-wasmtime
+        uses: actions/cache@v4
+        with:
+          path: wasmtime
+          key: wasmtime-${{ env.WASMTIME_VERSION }}-linux
+
+      - name: Download wasmtime
+        if: steps.cache-wasmtime.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p wasmtime
+          curl -L -o wasmtime-linux.tar.xz \
+            https://github.com/bytecodealliance/wasmtime/releases/download/${{ env.WASMTIME_VERSION }}/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-linux-c-api.tar.xz
+          tar -xf wasmtime-linux.tar.xz -C wasmtime/
+          rm wasmtime-linux.tar.xz
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libssl-dev
+
+      - name: Build project
+        run: |
+          make linux
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:cpp"

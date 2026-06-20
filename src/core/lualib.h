@@ -279,6 +279,8 @@ LUAMOD_API int (luaopen_uuid) (lua_State *L);
 LUAMOD_API int (luaopen_rsa) (lua_State *L);
 LUAMOD_API int (luaopen_ecc) (lua_State *L);
 
+LUAMOD_API int (luaopen_map) (lua_State *L);
+
 
 /**
  * @brief Opens all standard libraries.

@@ -103,6 +103,31 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 ljit_ir_append(ctx, node);
                 break;
             }
+            case OP_NEWMAP: {
+                /* R[A] := [] (iABC format, B和C未使用) */
+                ljit_ir_node_t *node = ljit_ir_new(IR_NEWMAP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_MAPGET: {
+                /* R[A] := R[B][R[C]] (iABC format) */
+                ljit_ir_node_t *node = ljit_ir_new(IR_GETMAP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
+            case OP_MAPSET: {
+                /* R[A][R[B]] := R[C] (iABC format) */
+                ljit_ir_node_t *node = ljit_ir_new(IR_SETMAP, pc);
+                node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                ljit_ir_append(ctx, node);
+                break;
+            }
             case OP_ADD:
             case OP_SUB:
             case OP_MUL:

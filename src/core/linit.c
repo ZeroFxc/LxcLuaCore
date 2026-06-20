@@ -111,6 +111,9 @@ int luaopen_rsa(lua_State *L);
 /* 声明 ecc 库的初始化函数 */
 int luaopen_ecc(lua_State *L);
 
+/* 声明 map 库的初始化函数 */
+int luaopen_map(lua_State *L);
+
 // clang and ffi libraries
 
 /*
@@ -170,6 +173,7 @@ static const luaL_Reg stdlibs[] = {
   {"uuid", luaopen_uuid},
   {"rsa", luaopen_rsa},
   {"ecc", luaopen_ecc},
+  {"map", luaopen_map},
 
 #ifdef __linux__
   {"process", luaopen_process},
@@ -255,6 +259,7 @@ static const luaL_Reg loadedlibs[] = {
   {"uuid", luaopen_uuid},
   {"rsa", luaopen_rsa},
   {"ecc", luaopen_ecc},
+  {"map", luaopen_map},
 
 #ifdef __linux__
   {"process", luaopen_process},

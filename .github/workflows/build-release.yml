@@ -9,7 +9,13 @@ on:
 permissions:
   contents: write
 
+env:
+  WASMTIME_VERSION: "v45.0.1"
+
 jobs:
+  # ============================================================
+  # Linux x64 构建
+  # ============================================================
   build-linux:
     name: Build Linux
     runs-on: ubuntu-latest
@@ -25,11 +31,31 @@ jobs:
           restore-keys: |
             ccache-linux-
 
+      - name: Cache wasmtime
+        id: cache-wasmtime-linux
+        uses: actions/cache@v4
+        with:
+          path: wasmtime
+          key: wasmtime-${{ env.WASMTIME_VERSION }}-linux
+
+      - name: Download wasmtime (Linux)
+        if: steps.cache-wasmtime-linux.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p wasmtime
+          curl -L -o wasmtime-linux.tar.xz \
+            https://github.com/bytecodealliance/wasmtime/releases/download/${{ env.WASMTIME_VERSION }}/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-linux-c-api.tar.xz
+          tar -xf wasmtime-linux.tar.xz -C wasmtime/
+          rm wasmtime-linux.tar.xz
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make ccache libssl-dev
+
       - name: Build Linux Release
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          sudo apt-get update && sudo apt-get install -y gcc make ccache
           export PATH="/usr/lib/ccache:$PATH"
           make linux-release
 
@@ -39,9 +65,12 @@ jobs:
           name: linux-release
           path: "*.tar.gz"
 
-      - name: Cleanup compiled content
+      - name: Cleanup
         run: make clean
 
+  # ============================================================
+  # Windows MinGW64 构建
+  # ============================================================
   build-windows:
     name: Build Windows
     runs-on: windows-latest
@@ -64,6 +93,23 @@ jobs:
           key: ccache-windows-${{ github.sha }}
           restore-keys: |
             ccache-windows-
+
+      - name: Cache wasmtime
+        id: cache-wasmtime-mingw
+        uses: actions/cache@v4
+        with:
+          path: wasmtime
+          key: wasmtime-${{ env.WASMTIME_VERSION }}-mingw
+
+      - name: Download wasmtime (MinGW)
+        if: steps.cache-wasmtime-mingw.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path wasmtime
+          curl -L -o wasmtime-mingw.tar.xz `
+            https://github.com/bytecodealliance/wasmtime/releases/download/${{ env.WASMTIME_VERSION }}/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-mingw-c-api.tar.xz
+          tar -xf wasmtime-mingw.tar.xz -C wasmtime/
+          Remove-Item wasmtime-mingw.tar.xz
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
@@ -92,10 +138,15 @@ jobs:
           name: windows-release
           path: "*.zip"
 
-      - name: Cleanup compiled content
+      - name: Cleanup
         shell: msys2 {0}
         run: make clean
 
+  # ============================================================
+  # macOS 构建
+  # 注意: macOS 上 Makefile 默认使用 mingw 的 WASMTIME_DIR，
+  # 此处通过 make 变量覆盖为正确的 macOS 预编译库路径。
+  # ============================================================
   build-macos:
     name: Build macOS
     runs-on: macos-latest
@@ -103,9 +154,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Cache wasmtime
+        id: cache-wasmtime-macos
+        uses: actions/cache@v4
+        with:
+          path: wasmtime
+          key: wasmtime-${{ env.WASMTIME_VERSION }}-macos
+
+      - name: Download wasmtime (macOS)
+        if: steps.cache-wasmtime-macos.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p wasmtime
+          curl -L -o wasmtime-macos.tar.xz \
+            https://github.com/bytecodealliance/wasmtime/releases/download/${{ env.WASMTIME_VERSION }}/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-macos-c-api.tar.xz
+          tar -xf wasmtime-macos.tar.xz -C wasmtime/
+          rm wasmtime-macos.tar.xz
+
       - name: Build macOS Release
         run: |
-          make macos-release
+          make macos-release \
+            WASMTIME_DIR="wasmtime/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-macos-c-api" \
+            WASMTIME_LIB="wasmtime/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-macos-c-api/lib/libwasmtime.a" \
+            WASMTIME_DLL="wasmtime/wasmtime-${{ env.WASMTIME_VERSION }}-x86_64-macos-c-api/lib/libwasmtime.dylib"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -113,9 +183,12 @@ jobs:
           name: macos-release
           path: "*.tar.gz"
 
-      - name: Cleanup compiled content
+      - name: Cleanup
         run: make clean
 
+  # ============================================================
+  # 创建 Release
+  # ============================================================
   release:
     name: Create Release
     needs: [build-linux, build-windows, build-macos]
