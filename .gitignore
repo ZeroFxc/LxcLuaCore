@@ -2,14 +2,16 @@
 *.o
 *.a
 *.dll
+*.luac
 *.so
+*.lua
 *.dylib
 *.exe
-lua
+lxc-lua
 luac
 lxclua
 lbcdump
-
+*.html
 # Editor and IDE
 .vscode/
 .idea/

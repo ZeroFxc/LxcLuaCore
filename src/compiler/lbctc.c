@@ -18,6 +18,12 @@
 #include "lbctc.h"
 #include "lopnames.h"
 #include "lobfuscate.h"
+#include "lmap.h"
+#include "lclass.h"
+#include "ltable.h"
+#include "lstring.h"
+#include "ldebug.h"
+#include "lpromise.h"
 
 /*
 ** tcc support functions (Library API)
@@ -98,6 +104,167 @@ LUA_API void lua_tcc_store_results(lua_State *L, int start_reg, int count) {
     for (int i = count - 1; i >= 0; i--) {
         lua_replace(L, start_reg + i);
     }
+}
+
+/*
+** Map 容器操作包装函数
+*/
+
+LUA_API void lua_tcc_newmap(lua_State *L) {
+    Map *m = luaM_newmap(L);
+    setmapvalue2s(L, L->top.p, m);
+    L->top.p++;
+}
+
+LUA_API void lua_tcc_mapget(lua_State *L) {
+    /* 栈: ... map key → 弹出，压入结果 */
+    const TValue *key = s2v(L->top.p - 1);
+    const TValue *map_val = s2v(L->top.p - 2);
+    if (!ttismap(map_val)) {
+        luaG_typeerror(L, map_val, "map");
+    }
+    const TValue *val = luaM_getval(mapvalue(map_val), key);
+    L->top.p -= 2;
+    if (val != NULL) {
+        setobj2s(L, L->top.p, val);
+    } else {
+        setnilvalue(s2v(L->top.p));
+    }
+    L->top.p++;
+}
+
+LUA_API void lua_tcc_mapset(lua_State *L) {
+    /* 栈: ... map key value → 弹出 */
+    const TValue *val = s2v(L->top.p - 1);
+    const TValue *key = s2v(L->top.p - 2);
+    const TValue *map_val = s2v(L->top.p - 3);
+    if (!ttismap(map_val)) {
+        luaG_typeerror(L, map_val, "map");
+    }
+    luaM_setval(L, mapvalue(map_val), key, val);
+    L->top.p -= 3;
+}
+
+/*
+** Trait 操作包装函数
+*/
+
+LUA_API void lua_tcc_settraitflag(lua_State *L, int idx) {
+    lua_pushvalue(L, idx);
+    luaC_settraitflag(L, -1);
+    lua_pop(L, 1);
+}
+
+LUA_API void lua_tcc_settraitrequire(lua_State *L, int idx, const char *name, int nparams) {
+    lua_pushvalue(L, idx);
+    TString *ts = luaS_new(L, name);
+    luaC_settraitrequire(L, -1, ts, nparams);
+    lua_pop(L, 1);
+}
+
+LUA_API void lua_tcc_usetrait(lua_State *L, int class_idx, int trait_idx) {
+    lua_pushvalue(L, class_idx);
+    lua_pushvalue(L, trait_idx);
+    luaC_usetrait(L, -2, -1);
+    lua_pop(L, 2);
+}
+
+/*
+** 表合并操作包装函数
+*/
+
+LUA_API void lua_tcc_merge(lua_State *L) {
+    /* 栈: ... t1 t2 → 弹出，压入合并结果 */
+    if (!lua_istable(L, -2) || !lua_istable(L, -1)) {
+        luaL_error(L, "attempt to merge non-table values");
+    }
+    lua_newtable(L);  /* 创建结果表 */
+    lua_insert(L, -3);  /* 移到 t1 下面 */
+    int result_idx = lua_gettop(L) - 2;
+    /* 复制 t1 */
+    lua_pushnil(L);
+    while (lua_next(L, result_idx + 1) != 0) {
+        lua_pushvalue(L, -2);  /* 复制 key */
+        lua_pushvalue(L, -2);  /* 复制 value */
+        lua_rawset(L, result_idx);
+        lua_pop(L, 1);  /* 弹出 value，保留 key */
+    }
+    /* 复制 t2（覆盖同名键） */
+    lua_pushnil(L);
+    while (lua_next(L, result_idx + 2) != 0) {
+        lua_pushvalue(L, -2);
+        lua_pushvalue(L, -2);
+        lua_rawset(L, result_idx);
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);  /* 弹出 t1 和 t2 */
+    /* 结果表留在栈顶 */
+}
+
+/*
+** 正则字面量操作包装函数
+*/
+
+LUA_API void lua_tcc_regex(lua_State *L, const char *data) {
+    /* data 格式: "pattern\0flags" */
+    size_t patlen = strlen(data);
+    const char *flags = data + patlen + 1;
+    lua_newtable(L);
+    lua_pushlstring(L, data, patlen);
+    lua_setfield(L, -2, "pattern");
+    lua_pushstring(L, flags);
+    lua_setfield(L, -2, "flags");
+    /* 结果表留在栈顶 */
+}
+
+/*
+** Async/Await 操作包装函数
+*/
+
+LUA_API void lua_tcc_await(lua_State *L, int val_idx, int dest) {
+    lua_pushvalue(L, val_idx);
+    /* 检查是否为 Promise userdata */
+    if (lua_type(L, -1) == LUA_TUSERDATA) {
+        if (lua_getmetatable(L, -1)) {
+            lua_getfield(L, -1, "__name");
+            if (lua_isstring(L, -1)) {
+                const char *name = lua_tostring(L, -1);
+                if (name && strcmp(name, "Promise") == 0) {
+                    lua_pop(L, 2);  /* 弹出 __name 和元表 */
+                    promise **pp = (promise **)lua_touserdata(L, -1);
+                    if (pp && *pp) {
+                        promise *p = *pp;
+                        /* 同步等待 Promise 完成 */
+                        if (promise_await_sync(p, L, -1) == 0) {
+                            /* 结果在栈顶，移到 dest */
+                            lua_replace(L, dest);
+                            return;
+                        }
+                    }
+                    /* Promise 失败或超时，压入 nil */
+                    lua_pop(L, 1);
+                    lua_pushnil(L);
+                    lua_replace(L, dest);
+                    return;
+                }
+            }
+            lua_pop(L, 2);  /* 弹出 __name 和元表 */
+        }
+    }
+    /* 普通值：直接复制到 dest */
+    lua_replace(L, dest);
+}
+
+/*
+** 自定义 Opcode 操作包装函数
+*/
+
+LUA_API int lua_tcc_custom(lua_State *L, int opcode) {
+    global_State *g = G(L);
+    if (opcode < OP_CUSTOM_COUNT && g->custom_op_handlers[opcode] != NULL) {
+        return g->custom_op_handlers[opcode](L);
+    }
+    return 0;
 }
 
 /*
@@ -1710,6 +1877,132 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             if (!use_pure_c) add_fmt(B, "    __asm__ volatile (\"nop\");\n");
             else add_fmt(B, "    /* NOP */\n");
             break;
+
+        /* === Map 容器操作 === */
+
+        case OP_NEWMAP: {
+            /* R[A] := [] (创建map容器) */
+            add_fmt(B, "    lua_tcc_newmap(L);\n");
+            add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        case OP_MAPGET: {
+            /* R[A] := R[B][R[C]] (map下标读取) */
+            int b = GETARG_B(i);
+            int c = GETARG_C(i);
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(c + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_tcc_mapget(L);\n");
+            add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        case OP_MAPSET: {
+            /* R[A][R[B]] := RK(C) (map下标赋值) */
+            int b = GETARG_B(i);
+            int c = GETARG_C(i);
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            if (TESTARG_k(i))
+                emit_loadk(B, p, c, str_encrypt, seed, obfuscate);
+            else
+                add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(c + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_tcc_mapset(L);\n");
+            break;
+        }
+
+        /* === Trait 操作 === */
+
+        case OP_SETTRAITFLAG: {
+            /* 设置R[A]为Trait */
+            add_fmt(B, "    lua_tcc_settraitflag(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        case OP_SETTRAITREQUIRE: {
+            /* R[A].__trait_requires[K[B]] := C (注册trait所需方法) */
+            int b = GETARG_B(i);
+            int c = GETARG_C(i);
+            TValue *k = &p->k[b];
+            if (ttisstring(k)) {
+                if (str_encrypt) {
+                    emit_encrypted_string_push(B, getstr(tsvalue(k)), tsslen(tsvalue(k)), seed);
+                    add_fmt(B, "    lua_tcc_settraitrequire(L, %s, lua_tostring(L, %s), %s);\n",
+                        obf_int(a + 1, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(c, &obf_seed, obfuscate));
+                    add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
+                } else {
+                    add_fmt(B, "    lua_tcc_settraitrequire(L, %s, ", obf_int(a + 1, &obf_seed, obfuscate));
+                    emit_quoted_string(B, getstr(tsvalue(k)), tsslen(tsvalue(k)));
+                    add_fmt(B, ", %s);\n", obf_int(c, &obf_seed, obfuscate));
+                }
+            }
+            break;
+        }
+
+        case OP_USETRAIT: {
+            /* R[A] use R[B] (将trait方法复制到类中) */
+            int b = GETARG_B(i);
+            add_fmt(B, "    lua_tcc_usetrait(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(b + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        /* === 表合并操作 === */
+
+        case OP_MERGE: {
+            /* R[A] := merge(R[B], R[C]) (表合并) */
+            int b = GETARG_B(i);
+            int c = GETARG_C(i);
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(c + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_tcc_merge(L);\n");
+            add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        /* === 正则字面量 === */
+
+        case OP_REGEX: {
+            /* R[A] := regex(K[Bx]) (正则字面量) */
+            int bx = GETARG_Bx(i);
+            TValue *k = &p->k[bx];
+            if (ttisstring(k)) {
+                const char *data = getstr(tsvalue(k));
+                if (str_encrypt) {
+                    emit_encrypted_string_push(B, data, strlen(data), seed);
+                    add_fmt(B, "    lua_tcc_regex(L, lua_tostring(L, %s));\n", obf_int(-1, &obf_seed, obfuscate));
+                    add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
+                } else {
+                    add_fmt(B, "    lua_tcc_regex(L, ");
+                    emit_quoted_string(B, data, strlen(data));
+                    add_fmt(B, ");\n");
+                }
+                add_fmt(B, "    lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            }
+            break;
+        }
+
+        /* === 不支持在编译C代码中使用的操作 === */
+
+        case OP_AWAIT: {
+            /* R[A] := await(R[B]) */
+            int b = GETARG_B(i);
+            add_fmt(B, "    lua_tcc_await(L, %s, %s);\n",
+                obf_int(b + 1, &obf_seed, obfuscate), obf_int(a + 1, &obf_seed, obfuscate));
+            break;
+        }
+
+        case OP_CUSTOM: {
+            /* 自定义opcode：调用运行时注册的处理器 */
+            lua_Unsigned user_op = GETARG_Ax(i);
+            add_fmt(B, "    {\n");
+            add_fmt(B, "        int nres = lua_tcc_custom(L, %llu);\n", user_op);
+            add_fmt(B, "        if (nres > 0) {\n");
+            add_fmt(B, "            lua_tcc_store_results(L, %s, nres);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "        }\n");
+            add_fmt(B, "    }\n");
+            break;
+        }
 
         default:
             add_fmt(B, "    /* Unimplemented opcode: %s */\n", opnames[op]);
