@@ -963,6 +963,66 @@ typedef struct SuperStruct {
 #define gco2superstruct(o)	check_exp((o)->tt == LUA_VSUPERSTRUCT, &((cast_u(o) - offsetof(SuperStruct, next))->superstruct))
 
 
+/* }======================================================= */
+
+
+/*
+** {=======================================================
+** Maps (纯哈希容器，无元表、无数组段)
+** ========================================================
+*/
+
+#define LUA_VMAP	makevariant(LUA_TMAP, 0)
+
+#define ttismap(o)		checktag((o), ctb(LUA_VMAP))
+
+#define mapvalue(o)	check_exp(ttismap(o), gco2map(val_(o).gc))
+
+#define setmapvalue(L,obj,x) \
+  { TValue *io = (obj); Map *x_ = (x); \
+    val_(io).gc = obj2gco(x_); settt_(io, ctb(LUA_VMAP)); \
+    checkliveness(L,io); }
+
+#define setmapvalue2s(L,o,m)	setmapvalue(L,s2v(o),m)
+
+
+/*
+** Map节点：键值对 + 链表指针（独立于table的Node结构）
+** 支持任意可哈希类型作为键（数字、字符串、布尔、table、map、userdata、函数等）
+*/
+typedef struct MapNode {
+  TValue key;      /**< 键（支持任意类型） */
+  TValue val;      /**< 值 */
+  struct MapNode *next;  /**< 链表解决哈希冲突 */
+} MapNode;
+
+
+/**
+ * @brief Map容器结构体。
+ *
+ * 与Table完全隔离的内存布局：
+ * - 无数组段（array），纯哈希存储
+ * - 无元表（metatable）
+ * - 无flags（无元方法缓存）
+ * - 无alimit、lsizenode等table特有字段
+ */
+typedef struct Map {
+  CommonHeader;
+  MapNode **buckets;  /**< 哈希桶数组 */
+  unsigned int size;   /**< 桶数量（2的幂） */
+  unsigned int count;  /**< 当前键值对总数 */
+  GCObject *gclist;    /**< GC链表 */
+} Map;
+
+
+#define gco2map(o)	check_exp((o)->tt == LUA_VMAP, (Map *)(o))
+
+/* map内部使用的哈希桶初始大小 */
+#define MAP_INITIAL_BUCKETS	8
+
+/* }======================================================= */
+
+
 /*
 ** {=======================================================
 ** Tables

@@ -25,6 +25,7 @@
 #include "lstate.h"
 #include "lstring.h"
 #include "ltable.h"
+#include "lmap.h"
 #include "ltm.h"
 #include "lundump.h"
 #include "lvm.h"
@@ -1335,6 +1336,10 @@ LUA_API int lua_getmetatable (lua_State *L, int objindex) {
     case LUA_TTABLE:
       mt = hvalue(obj)->metatable;
       break;
+    case LUA_TMAP:
+      /* map无元表，getmetatable返回nil */
+      mt = NULL;
+      break;
     case LUA_TUSERDATA:
       mt = uvalue(obj)->metatable;
       break;
@@ -1654,6 +1659,11 @@ LUA_API int lua_setmetatable (lua_State *L, int objindex) {
         luaC_checkfinalizer(L, gcvalue(obj), mt);
       }
       l_rwlock_unlock(&h->lock);
+      break;
+    }
+    case LUA_TMAP: {
+      /* map不存在元表，调用setmetatable直接抛出错误 */
+      luaG_typeerror(L, obj, "table or userdata");
       break;
     }
     case LUA_TUSERDATA: {
@@ -2099,6 +2109,15 @@ LUA_API int lua_next (lua_State *L, int idx) {
   t = index2value(L, idx);
   if (ttistable(t)) {
     more = luaH_next(L, hvalue(t), L->top.p - 1);
+  } else if (ttismap(t)) {
+    /* map类型的next遍历 */
+    TValue key, next_key, next_val;
+    setobj(L, &key, s2v(L->top.p - 1));
+    more = luaM_mapnext(mapvalue(t), &key, &next_key, &next_val);
+    if (more) {
+      setobj2s(L, L->top.p - 1, &next_key);
+      setobj2s(L, L->top.p, &next_val);
+    }
   } else if (ttissuperstruct(t)) {
     more = luaS_next(L, superstructvalue(t), L->top.p - 1);
   } else {

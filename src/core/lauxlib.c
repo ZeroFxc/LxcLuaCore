@@ -1322,7 +1322,9 @@ LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
 LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
                                lua_CFunction openf, int glb) {
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
-  lua_getfield(L, -1, modname);  /* LOADED[modname] */
+  /* 使用 rawget 避免默认table元表(__index=table)干扰模块加载检查 */
+  lua_pushstring(L, modname);
+  lua_rawget(L, -2);  /* LOADED[modname] (raw) */
   if (!lua_toboolean(L, -1)) {  /* package not already loaded? */
     lua_pop(L, 1);  /* remove field */
     lua_pushcfunction(L, openf);

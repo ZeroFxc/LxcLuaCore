@@ -133,6 +133,9 @@ static const char *const opnames[] = {
   "CHECKTYPE",
   "MERGE",
   "REGEX",
+  "NEWMAP",
+  "MAPGET",
+  "MAPSET",
   "EXTRAARG",
   NULL
 };

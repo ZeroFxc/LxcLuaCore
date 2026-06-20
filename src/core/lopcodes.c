@@ -142,6 +142,9 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_CHECKTYPE */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_MERGE */
  ,opmode(0, 0, 0, 0, 1, iABx)		/* OP_REGEX */
+ ,opmode(0, 0, 0, 0, 1, ivABC)		/* OP_NEWMAP */
+ ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_MAPGET */
+ ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_MAPSET */
  ,opmode(0, 0, 0, 0, 0, iAx)		/* OP_EXTRAARG */
  ,opmode(0, 0, 0, 0, 1, iAx)		/* OP_CUSTOM - 使用 Ax 携带用户 opcode */
 };

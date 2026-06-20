@@ -740,5 +740,31 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 
 ## License
 
-[MIT License](../LICENSE).
-Lua original code Copyright (c) PUC-Rio.
+LXCLUA-NCore is licensed under the [MIT License](../LICENSE).
+Lua original code Copyright (c) 1994-2024 PUC-Rio.
+
+## Third-Party Acknowledgments / 第三方开源项目声明
+
+LXCLUA-NCore is built upon the following outstanding open-source projects:
+
+| Project | Author | License | Usage | Source |
+| ------- | ------ | ------- | ----- | ------ |
+| **Lua** | PUC-Rio | MIT | Core language engine | [lua.org](https://www.lua.org/) |
+| **PCRE2** | Philip Hazel, Univ. of Cambridge | BSD-2-Clause | Regular expression engine | [github.com/PCRE2Project/pcre2](https://github.com/PCRE2Project/pcre2) |
+| **QuickJS** | Fabrice Bellard, Charlie Gordon | MIT | JavaScript engine | [bellard.org/quickjs](https://bellard.org/quickjs/) |
+| **sljit** | Zoltan Herczeg | BSD | JIT compiler backend | [github.com/zherczeg/sljit](https://github.com/zherczeg/sljit) |
+| **wasm3** | Steven Massey | MIT | WebAssembly runtime | [github.com/wasm3/wasm3](https://github.com/wasm3/wasm3) |
+| **wasmtime** | Bytecode Alliance | Apache 2.0 | WebAssembly runtime | [wasmtime.dev](https://wasmtime.dev/) |
+| **OpenSSL** | OpenSSL Authors | Apache 2.0 | Cryptography library | [openssl.org](https://www.openssl.org/) |
+
+LXCLUA-NCore 基于以下优秀开源项目构建：
+
+| 项目 | 作者 | 许可证 | 用途 | 地址 |
+| ---- | ---- | ------ | ---- | ---- |
+| **Lua** | PUC-Rio | MIT | 核心语言引擎 | [lua.org](https://www.lua.org/) |
+| **PCRE2** | Philip Hazel, 剑桥大学 | BSD-2-Clause | 正则表达式引擎 | [github.com/PCRE2Project/pcre2](https://github.com/PCRE2Project/pcre2) |
+| **QuickJS** | Fabrice Bellard, Charlie Gordon | MIT | JavaScript 引擎 | [bellard.org/quickjs](https://bellard.org/quickjs/) |
+| **sljit** | Zoltan Herczeg | BSD | JIT 编译器后端 | [github.com/zherczeg/sljit](https://github.com/zherczeg/sljit) |
+| **wasm3** | Steven Massey | MIT | WebAssembly 运行时 | [github.com/wasm3/wasm3](https://github.com/wasm3/wasm3) |
+| **wasmtime** | Bytecode Alliance | Apache 2.0 | WebAssembly 运行时 | [wasmtime.dev](https://wasmtime.dev/) |
+| **OpenSSL** | OpenSSL Authors | Apache 2.0 | 加密库 | [openssl.org](https://www.openssl.org/) |
