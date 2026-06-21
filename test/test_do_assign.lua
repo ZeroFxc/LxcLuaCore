@@ -1,1 +1,0 @@
-local x = do 42 end
