@@ -1591,6 +1591,8 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_CONST: ts = luaS_newliteral(ls->L, "const"); break;
       case TK_CONTINUE: ts = luaS_newliteral(ls->L, "continue"); break;
       case TK_DEFAULT: ts = luaS_newliteral(ls->L, "default"); break;
+      case TK_DEFER: ts = luaS_newliteral(ls->L, "defer"); break;
+      case TK_DELETE: ts = luaS_newliteral(ls->L, "delete"); break;
       case TK_DO: ts = luaS_newliteral(ls->L, "do"); break;
       case TK_ELSE: ts = luaS_newliteral(ls->L, "else"); break;
       case TK_ELSEIF: ts = luaS_newliteral(ls->L, "elseif"); break;
