@@ -12,6 +12,7 @@ luac
 lxclua
 lbcdump
 *.html
+/test/
 test/
 test/*
 # Editor and IDE
