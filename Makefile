@@ -235,7 +235,7 @@ test:
 clean:
 	$(RM) -r $(BUILDDIR)
 	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
-	$(RM) lxclua.exe luac.exe luaccheck.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
+	$(RM) lxclua.exe luac.exe luaccheck.exe lbcdump.exe lxclua.dll qjs.exe qjsc.exe
 	$(RM) lxclua-lsp.exe
 	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
 	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
@@ -319,7 +319,7 @@ mingw:
 	luac.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
-	$(CC) -shared -o lua55.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
+	$(CC) -shared -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
 
 lsp:
@@ -593,7 +593,7 @@ mingw-release: mingw
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: Windows x64 (MinGW)" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua.exe luac.exe lbcdump.exe lua55.dll $(RELEASE_DIR)/
+	@cp lxclua.exe luac.exe lbcdump.exe lxclua.dll $(RELEASE_DIR)/
 	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
 	@tar -caf $(RELEASE_NAME)-windows-x64-$(RELEASE_VERSION).zip -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
