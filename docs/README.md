@@ -28,7 +28,6 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 | `bit` / `bit32` | `require("bit")` | Bitwise operations |
 | `bool` | `require("bool")` | Boolean enhancements |
 | `userdata` | `require("userdata")` | Binary data serialization |
-| `smgr` | `require("smgr")` | Memory management utilities |
 | `process` | `require("process")` | Process management (Linux/Windows) |
 | `http` | `require("http")` | HTTP client/server and Socket |
 | `thread` | `require("thread")` | Multithreading with mutex, condition variables, and read-write locks |
@@ -55,7 +54,6 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 | `nativevm` | `require("nativevm")` | Native VM interface |
 | `nativeparser` | `require("nativeparser")` | Native parser interface |
 | `logtable` | `require("logtable")` | Log table support |
-| `libc` | `require("libc")` | C standard library interface (MinGW) |
 
 ---
 

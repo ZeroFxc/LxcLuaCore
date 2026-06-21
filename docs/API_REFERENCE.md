@@ -573,29 +573,6 @@ ptr.free(p)                   -- 释放内存
 
 ---
 
-### smgr - 内存管理
-
-**require**: `require("smgr")`
-**源文件**: `src/stdlib/lsmgrlib.c`
-
-| 函数 | 说明 |
-|------|------|
-| `smgr.getuserid()` | 获取用户ID |
-| `smgr.hasshareduserid()` | 检查共享用户ID |
-| `smgr.getdatadir()` | 获取数据目录 |
-| `smgr.readfile(path)` | 读取文件 |
-| `smgr.writefile(path, data)` | 写入文件 |
-| `smgr.deletefile(path)` | 删除文件 |
-| `smgr.listfiles(path)` | 列出文件 |
-| `smgr.fileexists(path)` | 检查文件是否存在 |
-| `smgr.getfilesize(path)` | 获取文件大小 |
-| `smgr.copyfile(src, dst)` | 复制文件 |
-| `smgr.renamefile(old, new)` | 重命名文件 |
-| `smgr.getpackagename()` | 获取包名 |
-| `smgr.mkdir(path)` | 创建目录 |
-| `smgr.find(path)` | 查找文件 |
-
----
 
 ### translator - 代码翻译
 
@@ -772,7 +749,6 @@ end)
 | `vmcustom` | 始终 | 自定义opcode |
 | `nativevm` | 始终 | 原生VM |
 | `nativeparser` | 始终 | 原生解析器 |
-| `smgr` | 始终 | 内存管理 |
 | `translator` | 始终 | 代码翻译 |
 | `logtable` | 始终 | 日志表 |
 | `crypto` | 始终 | 密码算法 |
