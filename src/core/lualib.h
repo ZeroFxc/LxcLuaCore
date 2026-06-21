@@ -246,18 +246,6 @@ LUAMOD_API int (luaopen_translator) (lua_State *L);
  */
 LUAMOD_API int (luaopen_lexer) (lua_State *L);
 
-/**
- * @brief Name of the service manager library.
- */
-#define LUA_SMGRNAME	"smgr"
-
-/**
- * @brief Opens the service manager library.
- *
- * @param L The Lua state.
- * @return 1 (the library table).
- */
-LUAMOD_API int (luaopen_smgr) (lua_State *L);
 
 /**
  * @brief Name of the package library.

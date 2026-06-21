@@ -28,7 +28,6 @@
 | `bit` / `bit32` | `require("bit")` | 位运算库 |
 | `bool` | `require("bool")` | 布尔增强 |
 | `userdata` | `require("userdata")` | 二进制数据序列化 |
-| `smgr` | `require("smgr")` | 内存管理工具 |
 | `process` | `require("process")` | 进程管理 (Linux/Windows) |
 | `http` | `require("http")` | HTTP 客户端/服务端和 Socket |
 | `thread` | `require("thread")` | 多线程支持，包含互斥锁、条件变量和读写锁 |
@@ -55,7 +54,6 @@
 | `nativevm` | `require("nativevm")` | 原生 VM 接口 |
 | `nativeparser` | `require("nativeparser")` | 原生解析器接口 |
 | `logtable` | `require("logtable")` | 日志表支持 |
-| `libc` | `require("libc")` | C 标准库调用接口 (MinGW) |
 
 ---
 

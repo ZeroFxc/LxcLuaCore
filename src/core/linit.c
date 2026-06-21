@@ -35,9 +35,6 @@
 #include "lauxlib.h"
 #include "ltranslator.h"
 
-/* 声明libc库的初始化函数 */
-int luaopen_libc(lua_State *L);
-
 /* 声明logtable库的初始化函数 */
 int luaopen_logtable(lua_State *L);
 
@@ -165,7 +162,7 @@ static const luaL_Reg stdlibs[] = {
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
 
-{LUA_SMGRNAME, luaopen_smgr},
+
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
 
@@ -179,10 +176,6 @@ static const luaL_Reg stdlibs[] = {
   {"process", luaopen_process},
 #endif
 
-  // 仅安卓额外加 libc
-#ifdef __ANDROID__
-  {"libc", luaopen_libc},
-#endif
 
   {NULL, NULL}
 };
@@ -251,7 +244,6 @@ static const luaL_Reg loadedlibs[] = {
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
 
-{LUA_SMGRNAME, luaopen_smgr},
   {"translator", luaopen_translator},
   {"logtable", luaopen_logtable},
 
@@ -265,10 +257,7 @@ static const luaL_Reg loadedlibs[] = {
   {"process", luaopen_process},
 #endif
 
-  // 仅安卓额外加载 libc
-#ifdef __ANDROID__
-  {"libc", luaopen_libc},
-#endif
+
 
   {NULL, NULL}
 };
