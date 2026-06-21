@@ -13,6 +13,7 @@ lxclua
 lbcdump
 *.html
 test/
+test/*
 # Editor and IDE
 .vscode/
 .idea/
