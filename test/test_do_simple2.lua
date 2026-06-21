@@ -1,1 +1,0 @@
-print(do 42 end)
