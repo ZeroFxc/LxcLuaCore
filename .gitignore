@@ -12,6 +12,7 @@ luac
 lxclua
 lbcdump
 *.html
+test/
 # Editor and IDE
 .vscode/
 .idea/
