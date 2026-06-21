@@ -39,6 +39,12 @@ MYOBJS=
 LDFLAGS= $(SYSLDFLAGS) $(MYLDFLAGS)
 LIBS= -lm $(SYSLIBS) $(MYLIBS) $(WASMTIME_LIB)
 
+# 按目标的 WASM 导出名称（wasm 构建时通过命令行覆盖）
+WASM_EXPORT_NAME_LUA =
+WASM_EXPORT_NAME_LUAC =
+WASM_EXPORT_NAME_LBCDUMP =
+WASM_EXPORT_NAME_LUACCHECK =
+
 # Special flags for compiler modules; -Os reduces code size.
 VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm:pcre2/src
 CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/lua2wasm -Ipcre2 $(WASMTIME_INC)
@@ -66,6 +72,8 @@ LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldbl
 # PCRE2 正则引擎库
 PCRE2_CFLAGS = -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 PCRE2_O= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_compile.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
+# PCRE2 不含 JIT 编译（用于 wasm 等不支持 JIT 的平台）
+PCRE2_O_NOJIT= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_stubs.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
 BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O) $(PCRE2_O)
@@ -119,10 +127,10 @@ $(LUA_A): $(BASE_O)
 	$(RANLIB) $@
 
 $(LUA_T): $(LUA_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUA) $(LUA_O) $(LUA_A) $(LIBS)
 
 $(LUAC_T): $(LUAC_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUAC) $(LUAC_O) $(LUA_A) $(LIBS)
 $(QJS_T): $(QJS_EXE_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(QJS_EXE_O) $(LUA_A) $(LIBS)
 
@@ -130,10 +138,10 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(QJSC_O) $(LUA_A) $(LIBS)
 
 $(LBCDUMP_T): $(LBCDUMP_O)
-	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
+	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LBCDUMP) $(LBCDUMP_O)
 
 $(LUACCHECK_T): $(LUACCHECK_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(LUACCHECK_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
 
 # ---- LSP Server (lxclua-lsp) ----
 # LSP 服务器不需要 wasmtime 运行时，仅链接基础数学库
@@ -355,14 +363,15 @@ SunOS solaris:
 # Emscripten 3.0.0+ 支持 C23 (底层 Clang 18+)
 # Emscripten SDK 路径配置（Windows需要.bat扩展名）
 EMSDK_PATH= E:/Soft/Proje/LXCLUA-NCore/emsdk/upstream/emscripten
-EMCC= $(EMSDK_PATH)/emcc.bat
+EMCC= PYTHONUTF8=1 $(EMSDK_PATH)/emcc.bat
 EMAR= $(EMSDK_PATH)/emar.bat
 EMRANLIB= $(EMSDK_PATH)/emranlib.bat
 wasm:
 	$(MAKE) clean
 	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT -DPCRE2_NO_JIT" \
+	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
+	"PCRE2_O=$(PCRE2_O_NOJIT)" \
 	"SYSLIBS=" \
 	"WASMTIME_INC=" \
 	"WASMTIME_LIB=" \
@@ -371,11 +380,16 @@ wasm:
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
 	"LBCDUMP_T=lbcdump.js" \
+	"LUACCHECK_T=luaccheck.js" \
+	"WASM_EXPORT_NAME_LUA=-sEXPORT_NAME=LuaModule" \
+	"WASM_EXPORT_NAME_LUAC=-sEXPORT_NAME=LuacModule" \
+	"WASM_EXPORT_NAME_LBCDUMP=-sEXPORT_NAME=LbcdumpModule" \
+	"WASM_EXPORT_NAME_LUACCHECK=-sEXPORT_NAME=LuaccheckModule" \
 	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
-	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lnativevm.o $(BUILDDIR)/lnativeparser.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o  $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o $(BUILDDIR)/lcrypto.o $(BUILDDIR)/luuid.o $(BUILDDIR)/lrsa.o $(BUILDDIR)/lecc.o" \
+	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/lmaplib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lnativevm.o $(BUILDDIR)/lnativeparser.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o  $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o $(BUILDDIR)/lcrypto.o $(BUILDDIR)/luuid.o $(BUILDDIR)/lrsa.o $(BUILDDIR)/lecc.o $(BUILDDIR)/ljit_stubs.o" \
 	"GUI_OBJS=" \
-	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
+	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
 
 wasmlsp:
 	PYTHONUTF8=1 $(MAKE) $(LSP_SRV_O) CC="$(EMCC) -std=c23" \
@@ -543,7 +557,7 @@ macos-release: macosx
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: macOS (Darwin)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@cp lxclua luac lbcdump $(RELEASE_DIR)/
-	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
+	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-macos-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
 	@echo "Created: $(RELEASE_NAME)-macos-$(RELEASE_VERSION).tar.gz"
@@ -571,8 +585,8 @@ wasm-release: wasm
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: WebAssembly" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua.js luac.js lbcdump.js $(RELEASE_DIR)/
-	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
+	@cp lxclua.js luac.js lbcdump.js luaccheck.js $(RELEASE_DIR)/
+	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-wasm-$(RELEASE_VERSION).zip -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
 	@echo "Created: $(RELEASE_NAME)-wasm-$(RELEASE_VERSION).zip"
@@ -586,7 +600,7 @@ release:
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@cp $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(RELEASE_DIR)/ 2>/dev/null || true
 	@cp $(LUA_A) $(RELEASE_DIR)/ 2>/dev/null || true
-	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
+	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
 	@echo "Created: $(RELEASE_NAME)-$(RELEASE_VERSION).tar.gz"
