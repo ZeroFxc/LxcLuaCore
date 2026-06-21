@@ -177,7 +177,7 @@ int luaO_isJumpInstruction (OpCode op) {
 /* 
 ** 每个基本块的最大指令数，超过此值将尝试拆分以增加控制流复杂度 
 */
-#define MAX_BLOCK_SIZE  10
+#define MAX_BLOCK_SIZE  4  /* 减小块大小以增加块数量和分发器复杂度 */
 
 /*
 ** 检查指令是否为成对指令的第一部分（不应该在此指令后拆分基本块）
@@ -211,6 +211,9 @@ static int isPairedInstruction (OpCode op) {
     case OP_LOADKX:   /* 后跟 EXTRAARG */
     case OP_NEWTABLE: /* 可能后跟 EXTRAARG */
     case OP_SETLIST:  /* 可能后跟 EXTRAARG */
+    /* CALL 指令：结果可能被后续指令使用，且 B=0 时依赖前一个调用的返回值 */
+    case OP_CALL:
+    case OP_TAILCALL:
       return 1;
       
     default:
@@ -747,7 +750,7 @@ static int emitInstruction (CFFContext *ctx, Instruction inst) {
 */
 
 /* 虚假块数量（基于真实块数量的倍数） */
-#define BOGUS_BLOCK_RATIO  4  /* 每个真实块生成4个虚假块 */
+#define BOGUS_BLOCK_RATIO  6  /* 每个真实块生成6个虚假块 */
 #define BOGUS_BLOCK_MIN_INSTS  4  /* 虚假块最少指令数 */
 #define BOGUS_BLOCK_MAX_INSTS  12  /* 虚假块最多指令数 */
 
@@ -764,6 +767,668 @@ static int emitFakeFunctionBlocks (CFFContext *ctx, int func_id, unsigned int *s
 
 static int emitJunkSequence(CFFContext *ctx);
 static Instruction generateBogusInstruction(CFFContext *ctx, unsigned int *seed);
+
+/* 动态引擎前向声明 */
+static int emitDynamicAlwaysTruePredicate(CFFContext *ctx, unsigned int *seed);
+static int emitDynamicAlwaysFalsePredicate(CFFContext *ctx, unsigned int *seed);
+static Instruction generateDynamicBogusInstruction(CFFContext *ctx, unsigned int *seed);
+static int safeRandomReg(CFFContext *ctx, unsigned int *seed, const char *file, int line);
+
+/*
+** =======================================================
+** 迷你字节码验证器 (MBV)
+** =======================================================
+** 用于验证动态生成的混淆代码（不透明谓词、虚假块等）的正确性。
+** 模拟执行字节码子集，验证谓词恒真/恒假属性。
+** 不合格的代码会被丢弃并重新生成，确保代码质量和健壮性。
+*/
+
+#define MBV_MAX_REGS    16    /* 虚拟寄存器数量 */
+#define MBV_MAX_INSTS   64    /* 单次验证最大指令数 */
+
+typedef struct {
+  /* 值类型：0=整数, 1=浮点, 2=未初始化 */
+  int type;
+  int64_t i;
+  double f;
+} MBVValue;
+
+typedef struct {
+  MBVValue regs[MBV_MAX_REGS];  /* 虚拟寄存器文件 */
+  int pc;                        /* 当前程序计数器 */
+  int num_insts;                 /* 指令总数 */
+  Instruction *insts;            /* 指令数组 */
+  int last_cond;                 /* 最后一次比较结果：-1=无, 0=假, 1=真 */
+  int last_cond_k;               /* 最后一次比较的k标志 */
+  int error;                     /* 错误码：0=成功, 1=非法指令, 2=除零, 3=未初始化 */
+} MBVState;
+
+/* 初始化验证器 */
+static void mbv_init(MBVState *s, Instruction *insts, int num_insts) {
+  memset(s->regs, 0, sizeof(s->regs));
+  for (int i = 0; i < MBV_MAX_REGS; i++) s->regs[i].type = 2;
+  s->pc = 0;
+  s->num_insts = num_insts;
+  s->insts = insts;
+  s->last_cond = -1;
+  s->last_cond_k = 0;
+  s->error = 0;
+}
+
+/* 从指令获取 sC 有符号值 */
+static int mbv_getsC(Instruction inst) {
+  return GETARG_sC(inst);
+}
+
+/* 从指令获取 sBx 有符号值 */
+static int mbv_getsBx(Instruction inst) {
+  return GETARG_sBx(inst);
+}
+
+/* 执行一条指令，返回1表示继续，0表示完成，-1表示错误 */
+static int mbv_step(MBVState *s) {
+  if (s->pc >= s->num_insts) return 0;
+  Instruction inst = s->insts[s->pc];
+  OpCode op = GET_OPCODE(inst);
+  int a = GETARG_A(inst);
+  int b = GETARG_B(inst);
+  int c = GETARG_C(inst);
+  int k = GETARG_k(inst);
+  
+  #define R(reg) (&s->regs[reg])
+  #define IV(reg) (R(reg)->i)
+  #define FV(reg) (R(reg)->f)
+  #define SET_I(reg, v) do { R(reg)->type = 0; R(reg)->i = (int64_t)(v); } while(0)
+  #define SET_F(reg, v) do { R(reg)->type = 1; R(reg)->f = (double)(v); } while(0)
+  #define CHK(reg) if (R(reg)->type == 2) { s->error = 3; return -1; }
+  #define CHK2(r1,r2) do { CHK(r1); CHK(r2); } while(0)
+  
+  switch (op) {
+    case OP_LOADI: SET_I(a, mbv_getsBx(inst)); break;
+    case OP_LOADF: SET_F(a, mbv_getsBx(inst)); break;
+    case OP_MOVE:  CHK(b); R(a)->type = R(b)->type; R(a)->i = R(b)->i; R(a)->f = R(b)->f; break;
+    
+    case OP_ADDI: CHK(b); SET_I(a, IV(b) + mbv_getsC(inst)); break;
+    case OP_ADDK: CHK(b); SET_I(a, IV(b) + mbv_getsC(inst)); break;
+    case OP_SUBK: CHK(b); SET_I(a, IV(b) - mbv_getsC(inst)); break;
+    case OP_MULK: CHK(b); SET_I(a, IV(b) * mbv_getsC(inst)); break;
+    case OP_DIVK: CHK(b); { int d = mbv_getsC(inst); if (d == 0) { s->error = 2; return -1; } SET_I(a, IV(b) / d); } break;
+    case OP_MODK: CHK(b); { int d = mbv_getsC(inst); if (d == 0) { s->error = 2; return -1; } SET_I(a, IV(b) % d); } break;
+    case OP_BANDK: CHK(b); SET_I(a, IV(b) & mbv_getsC(inst)); break;
+    case OP_BORK:  CHK(b); SET_I(a, IV(b) | mbv_getsC(inst)); break;
+    case OP_BXORK: CHK(b); SET_I(a, IV(b) ^ mbv_getsC(inst)); break;
+    case OP_SHLI:  CHK(b); SET_I(a, IV(b) << mbv_getsC(inst)); break;
+    case OP_SHRI:  CHK(b); SET_I(a, ((int64_t)IV(b)) >> mbv_getsC(inst)); break;
+    
+    case OP_ADD: CHK2(b,c); SET_I(a, IV(b) + IV(c)); break;
+    case OP_SUB: CHK2(b,c); SET_I(a, IV(b) - IV(c)); break;
+    case OP_MUL: CHK2(b,c); SET_I(a, IV(b) * IV(c)); break;
+    case OP_DIV: CHK2(b,c); { if (IV(c) == 0) { s->error = 2; return -1; } SET_I(a, IV(b) / IV(c)); } break;
+    case OP_MOD: CHK2(b,c); { if (IV(c) == 0) { s->error = 2; return -1; } SET_I(a, IV(b) % IV(c)); } break;
+    case OP_BAND: CHK2(b,c); SET_I(a, IV(b) & IV(c)); break;
+    case OP_BOR:  CHK2(b,c); SET_I(a, IV(b) | IV(c)); break;
+    case OP_BXOR: CHK2(b,c); SET_I(a, IV(b) ^ IV(c)); break;
+    case OP_SHL:  CHK2(b,c); SET_I(a, IV(b) << IV(c)); break;
+    case OP_SHR:  CHK2(b,c); SET_I(a, ((int64_t)IV(b)) >> IV(c)); break;
+    
+    case OP_UNM:  CHK(b); SET_I(a, -IV(b)); break;
+    case OP_BNOT: CHK(b); SET_I(a, ~IV(b)); break;
+    
+    case OP_EQ: case OP_EQK: case OP_EQI: {
+      CHK2(a,b);
+      int eq = (op == OP_EQI) ? (IV(a) == mbv_getsC(inst)) : (IV(a) == IV(b));
+      s->last_cond = (eq == !k) ? 1 : 0;  /* k=0: EQ为真 → 条件为真; k=1: EQ为真 → 条件为假 */
+      s->last_cond_k = k;
+      break;
+    }
+    case OP_LT: case OP_LTI: case OP_LE: case OP_LEI: case OP_GTI: case OP_GEI: {
+      CHK2(a,b);
+      int cmp;
+      if (op == OP_LTI) cmp = IV(a) < mbv_getsC(inst);
+      else if (op == OP_LEI) cmp = IV(a) <= mbv_getsC(inst);
+      else if (op == OP_GTI) cmp = IV(a) > mbv_getsC(inst);
+      else if (op == OP_GEI) cmp = IV(a) >= mbv_getsC(inst);
+      else if (op == OP_LE) cmp = IV(a) <= IV(b);
+      else cmp = IV(a) < IV(b);
+      s->last_cond = (cmp == !k) ? 1 : 0;
+      s->last_cond_k = k;
+      break;
+    }
+    case OP_JMP: {
+      int offset = GETARG_sJ(inst);
+      s->pc += offset;
+      return 1;  /* 跳过pc++ */
+    }
+    case OP_NOP: break;
+    default: s->error = 1; return -1;
+  }
+  
+  s->pc++;
+  return (s->pc < s->num_insts) ? 1 : 0;
+  #undef R
+  #undef IV
+  #undef FV
+  #undef SET_I
+  #undef SET_F
+  #undef CHK
+  #undef CHK2
+}
+
+/*
+** 运行MBV并返回验证结果
+** @param insts 指令数组
+** @param num_insts 指令数量
+** @param expect_true 期望恒真(1)还是恒假(0)
+** @param num_values 测试值数量
+** @return 0=验证失败, 1=验证通过
+*/
+static int mbv_validate(Instruction *insts, int num_insts, int expect_true, int num_values) {
+  /* 用多个随机值测试谓词 */
+  static const int test_values[] = {0, 1, -1, 42, -100, 999, -500, 0x7FFF, -0x8000, 3, 17, -42};
+  int n = (num_values > 12) ? 12 : num_values;
+  
+  for (int t = 0; t < n; t++) {
+    MBVState s;
+    mbv_init(&s, insts, num_insts);
+    /* 预设R0为测试值 */
+    s.regs[0].type = 0;
+    s.regs[0].i = test_values[t];
+    
+    while (1) {
+      int r = mbv_step(&s);
+      if (r < 0) return 0;  /* 执行错误 */
+      if (r == 0) break;    /* 完成 */
+    }
+    
+    /* 检查最后的比较结果 */
+    if (s.last_cond < 0) return 0;  /* 没有比较 */
+    if (s.last_cond != expect_true) return 0;  /* 谓词不成立 */
+  }
+  
+  return 1;
+}
+
+
+/*
+** =======================================================
+** 动态恒等变换模板系统
+** =======================================================
+** 每个模板生成一个恒等变换的字节码序列，即 E(x) == x 恒成立。
+** 模板可组合使用，生成复杂的混淆表达式。
+** 所有生成代码都经过MBV验证，不合格则重新生成。
+*/
+
+#define MAX_IDENTITY_TEMPLATES  32
+#define MAX_TRANSFORM_STEPS     8
+#define MAX_RETRY_COUNT         20
+
+/* 恒等变换原子操作类型 */
+typedef enum {
+  TRANSFORM_ADDI_ZERO,       /* x + 0 */
+  TRANSFORM_MULK_ONE,        /* x * 1 */
+  TRANSFORM_BORK_ZERO,       /* x | 0 */
+  TRANSFORM_BXORK_ZERO,      /* x ^ 0 */
+  TRANSFORM_BAND_SELF,       /* x & x */
+  TRANSFORM_BOR_SELF,        /* x | x */
+  TRANSFORM_SHLI_SHRI,       /* (x << 1) >> 1 */
+  TRANSFORM_ADD_SUB,         /* (x + y) - y */
+  TRANSFORM_SUB_ADD,         /* (x - y) + y */
+  TRANSFORM_BXOR_BXOR,       /* (x ^ y) ^ y */
+  TRANSFORM_BOR_BAND,        /* (x | y) & x */
+  TRANSFORM_BAND_BOR,        /* (x & y) | x */
+  TRANSFORM_MBA_ADD,         /* (x ^ y) + 2*(x & y) == x + y */
+  TRANSFORM_MBA_XOR,         /* (x | y) - (x & y) == x ^ y */
+  TRANSFORM_MBA_AND,         /* (x | y) - ((x ^ y) & y) == x & y */
+  TRANSFORM_NOT_NOT,         /* ~~x */
+  TRANSFORM_SHLI_THEN_SHRI,  /* (x << k) >> k */
+  TRANSFORM_MULK_DIVK,       /* (x * k) / k (k != 0) */
+  TRANSFORM_ADDK_SUBK,       /* (x + k) - k */
+  TRANSFORM_BXORK_BXORK2,    /* x ^ k ^ k */
+  TRANSFORM_BANDK_BORK,      /* (x & k) | (x & ~k) == x */
+  TRANSFORM_BORK_BANDK,      /* (x | k) & (x | ~k) == x */
+  TRANSFORM_COUNT
+} IdentityTransformType;
+
+/*
+** 生成单个恒等变换的字节码
+** @param ctx 上下文
+** @param result_reg 结果寄存器
+** @param input_reg 输入寄存器
+** @param type 变换类型
+** @param seed 随机种子
+** @param temp_buf 临时指令缓冲区(用于返回多指令)
+** @param p_num_insts 输出：生成的指令数
+** @return 0=成功, -1=失败
+*/
+static int generateIdentityTransform(CFFContext *ctx, int result_reg, int input_reg,
+                                      IdentityTransformType type, unsigned int *seed,
+                                      Instruction *temp_buf, int *p_num_insts) {
+  int n = 0;
+  NEXT_RAND(*seed);
+  int aux_val = (*seed % 100) + 1;  /* 辅助随机值(1-100) */
+  int aux_reg = ctx->opaque_reg2;   /* 辅助寄存器 */
+  
+  switch (type) {
+    case TRANSFORM_ADDI_ZERO:
+      temp_buf[n++] = CREATE_ABCk(OP_ADDI, result_reg, input_reg, int2sC(0), 0);
+      break;
+    case TRANSFORM_MULK_ONE:
+      temp_buf[n++] = CREATE_ABCk(OP_MULK, result_reg, input_reg, int2sC(1), 0);
+      break;
+    case TRANSFORM_BORK_ZERO:
+      temp_buf[n++] = CREATE_ABCk(OP_BORK, result_reg, input_reg, int2sC(0), 0);
+      break;
+    case TRANSFORM_BXORK_ZERO:
+      temp_buf[n++] = CREATE_ABCk(OP_BXORK, result_reg, input_reg, int2sC(0), 0);
+      break;
+    case TRANSFORM_BAND_SELF:
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, result_reg, input_reg, input_reg, 0);
+      break;
+    case TRANSFORM_BOR_SELF:
+      temp_buf[n++] = CREATE_ABCk(OP_BOR, result_reg, input_reg, input_reg, 0);
+      break;
+    case TRANSFORM_SHLI_SHRI:
+      temp_buf[n++] = CREATE_ABCk(OP_SHLI, result_reg, input_reg, int2sC(1), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_SHRI, result_reg, result_reg, int2sC(1), 0);
+      break;
+    case TRANSFORM_ADD_SUB:
+      /* 先将辅助值加载到aux_reg */
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_ADD, result_reg, input_reg, aux_reg, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_SUB, result_reg, result_reg, aux_reg, 0);
+      break;
+    case TRANSFORM_SUB_ADD:
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_SUB, result_reg, input_reg, aux_reg, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_ADD, result_reg, result_reg, aux_reg, 0);
+      break;
+    case TRANSFORM_BXOR_BXOR:
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BXOR, result_reg, input_reg, aux_reg, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BXOR, result_reg, result_reg, aux_reg, 0);
+      break;
+    case TRANSFORM_BOR_BAND:
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BOR, result_reg, input_reg, aux_reg, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, result_reg, result_reg, input_reg, 0);
+      break;
+    case TRANSFORM_BAND_BOR:
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, result_reg, input_reg, aux_reg, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BOR, result_reg, result_reg, input_reg, 0);
+      break;
+    case TRANSFORM_MBA_ADD:
+      /* (x ^ y) + 2*(x & y) == x + y */
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BXOR, result_reg, input_reg, aux_reg, 0);  /* t1 = x ^ y */
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, ctx->opaque_reg1, input_reg, aux_reg, 0);  /* t2 = x & y */
+      temp_buf[n++] = CREATE_ABCk(OP_SHLI, ctx->opaque_reg1, ctx->opaque_reg1, int2sC(1), 0);  /* t2 = 2*(x&y) */
+      temp_buf[n++] = CREATE_ABCk(OP_ADD, result_reg, result_reg, ctx->opaque_reg1, 0);  /* result = (x^y) + 2*(x&y) */
+      break;
+    case TRANSFORM_MBA_XOR:
+      /* (x | y) - (x & y) == x ^ y */
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BOR, result_reg, input_reg, aux_reg, 0);  /* t1 = x | y */
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, ctx->opaque_reg1, input_reg, aux_reg, 0);  /* t2 = x & y */
+      temp_buf[n++] = CREATE_ABCk(OP_SUB, result_reg, result_reg, ctx->opaque_reg1, 0);  /* result = (x|y) - (x&y) */
+      break;
+    case TRANSFORM_MBA_AND:
+      /* (x | y) - ((x ^ y) & y) == x & y */
+      temp_buf[n++] = CREATE_ABx(OP_LOADI, aux_reg, aux_val + OFFSET_sBx);
+      temp_buf[n++] = CREATE_ABCk(OP_BOR, result_reg, input_reg, aux_reg, 0);  /* t1 = x | y */
+      temp_buf[n++] = CREATE_ABCk(OP_BXOR, ctx->opaque_reg1, input_reg, aux_reg, 0);  /* t2 = x ^ y */
+      temp_buf[n++] = CREATE_ABCk(OP_BAND, ctx->opaque_reg1, ctx->opaque_reg1, aux_reg, 0);  /* t2 = (x^y) & y */
+      temp_buf[n++] = CREATE_ABCk(OP_SUB, result_reg, result_reg, ctx->opaque_reg1, 0);  /* result = (x|y) - ((x^y)&y) */
+      break;
+    case TRANSFORM_NOT_NOT:
+      temp_buf[n++] = CREATE_ABCk(OP_BNOT, result_reg, input_reg, 0, 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BNOT, result_reg, result_reg, 0, 0);
+      break;
+    case TRANSFORM_SHLI_THEN_SHRI: {
+      int k = (*seed % 3) + 1;  /* 1-3 */
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_SHLI, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_SHRI, result_reg, result_reg, int2sC(k), 0);
+      break;
+    }
+    case TRANSFORM_MULK_DIVK: {
+      int k = (*seed % 4) + 2;  /* 2-5, 避免0和1 */
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_MULK, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_DIVK, result_reg, result_reg, int2sC(k), 0);
+      break;
+    }
+    case TRANSFORM_ADDK_SUBK: {
+      int k = (*seed % 50) + 1;
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_ADDK, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_SUBK, result_reg, result_reg, int2sC(k), 0);
+      break;
+    }
+    case TRANSFORM_BXORK_BXORK2: {
+      int k = (*seed % 255) + 1;
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_BXORK, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BXORK, result_reg, result_reg, int2sC(k), 0);
+      break;
+    }
+    case TRANSFORM_BANDK_BORK: {
+      int k = (*seed % 255) + 1;
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_BANDK, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BORK, result_reg, result_reg, int2sC(~k), 0);
+      break;
+    }
+    case TRANSFORM_BORK_BANDK: {
+      int k = (*seed % 255) + 1;
+      NEXT_RAND(*seed);
+      temp_buf[n++] = CREATE_ABCk(OP_BORK, result_reg, input_reg, int2sC(k), 0);
+      temp_buf[n++] = CREATE_ABCk(OP_BANDK, result_reg, result_reg, int2sC(~k), 0);
+      break;
+    }
+    default:
+      /* 默认：x + 0 */
+      temp_buf[n++] = CREATE_ABCk(OP_ADDI, result_reg, input_reg, int2sC(0), 0);
+      break;
+  }
+  *p_num_insts = n;
+  return 0;
+}
+
+
+/*
+** =======================================================
+** 动态不透明谓词引擎
+** =======================================================
+** 核心思想：动态生成 + MBV验证 + 重试机制
+** 
+** 1. 随机选择恒等变换模板
+** 2. 组合多个变换生成复杂表达式
+** 3. 添加比较指令（恒真或恒假）
+** 4. 用MBV验证谓词正确性
+** 5. 不合格则重新生成（最多重试MAX_RETRY_COUNT次）
+*/
+
+#define MAX_PREDICATE_INSTS  32
+
+/*
+** 动态生成恒真不透明谓词
+** 策略：生成恒等变换E(x)，然后验证 E(x) == x（恒真）
+** 或其他恒真命题如 x*x >= 0、(x | 1) != 0 等
+*/
+static int emitDynamicAlwaysTruePredicate(CFFContext *ctx, unsigned int *seed) {
+  int reg1 = ctx->opaque_reg1;
+  int reg2 = ctx->opaque_reg2;
+  Instruction buf[MAX_PREDICATE_INSTS];
+  int num_insts;
+  int retry = 0;
+  
+  while (retry < MAX_RETRY_COUNT) {
+    num_insts = 0;
+    NEXT_RAND(*seed);
+    int strategy = *seed % 6;
+    NEXT_RAND(*seed);
+    int random_val = (*seed % 1000) - 500;
+    
+    switch (strategy) {
+      case 0: case 1: {
+        /* 策略0/1：生成恒等变换链，然后 EQ(x, E(x)) */
+        /* 1. 加载随机值 */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        
+        /* 2. 应用1-3个随机恒等变换 */
+        NEXT_RAND(*seed);
+        int num_transforms = 1 + (*seed % 3);
+        int current_src = reg1;
+        int current_dst = reg2;
+        
+        for (int t = 0; t < num_transforms; t++) {
+          NEXT_RAND(*seed);
+          IdentityTransformType tt = (IdentityTransformType)(*seed % TRANSFORM_COUNT);
+          int src = (t == 0) ? reg1 : ((t % 2) ? reg2 : reg1);
+          int dst = (t % 2) ? reg2 : reg1;
+          Instruction temp_buf[8];
+          int temp_n;
+          if (generateIdentityTransform(ctx, dst, src, tt, seed, temp_buf, &temp_n) < 0) continue;
+          for (int j = 0; j < temp_n && num_insts < MAX_PREDICATE_INSTS - 3; j++) {
+            buf[num_insts++] = temp_buf[j];
+          }
+        }
+        
+        /* 3. EQ: 最后一个结果 vs 原始值 */
+        int final_reg = (num_transforms % 2) ? reg2 : reg1;  /* 最后一个变换的结果 */
+        buf[num_insts++] = CREATE_ABCk(OP_EQ, (final_reg == reg1) ? reg2 : reg1, reg1, 0, 1);
+        break;
+      }
+      
+      case 2: {
+        /* 策略2：x*x >= 0（恒真） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_GEI, reg2, int2sC(0), 0, 1);
+        break;
+      }
+      
+      case 3: {
+        /* 策略3：(x | 1) != 0（恒真） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg2, 1 + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 0);
+        break;
+      }
+      
+      case 4: {
+        /* 策略4：(x & 0) == 0（恒真） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_BAND, reg2, reg1, reg2, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
+        break;
+      }
+      
+      case 5: {
+        /* 策略5：(x ^ x) == 0（恒真） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_BXOR, reg2, reg1, reg1, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
+        break;
+      }
+    }
+    
+    /* MBV验证 */
+    if (mbv_validate(buf, num_insts, 1, 8)) {
+      /* 验证通过，输出指令 */
+      for (int i = 0; i < num_insts; i++) {
+        if (emitInstruction(ctx, buf[i]) < 0) return -1;
+      }
+      CFF_LOG("  动态恒真谓词: 策略%d, 指令数%d, 重试%d次", (*seed % 6), num_insts, retry);
+      return 0;
+    }
+    
+    retry++;
+    NEXT_RAND(*seed);  /* 换种子重试 */
+  }
+  
+  /* 重试耗尽，使用极简后备 */
+  CFF_LOG("  动态谓词重试耗尽，使用后备方案");
+  Instruction fallback[] = {
+    CREATE_ABx(OP_LOADI, reg1, 42 + OFFSET_sBx),
+    CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0),
+    CREATE_ABCk(OP_GEI, reg2, int2sC(0), 0, 1),
+  };
+  for (int i = 0; i < 3; i++) {
+    if (emitInstruction(ctx, fallback[i]) < 0) return -1;
+  }
+  return 0;
+}
+
+
+/*
+** 动态生成恒假不透明谓词
+** 策略：生成恒等变换E(x)，然后验证 E(x) != x（恒假）
+** 或其他恒假命题如 x*x < 0、x != x 等
+*/
+static int emitDynamicAlwaysFalsePredicate(CFFContext *ctx, unsigned int *seed) {
+  int reg1 = ctx->opaque_reg1;
+  int reg2 = ctx->opaque_reg2;
+  Instruction buf[MAX_PREDICATE_INSTS];
+  int num_insts;
+  int retry = 0;
+  
+  while (retry < MAX_RETRY_COUNT) {
+    num_insts = 0;
+    NEXT_RAND(*seed);
+    int strategy = *seed % 5;
+    NEXT_RAND(*seed);
+    int random_val = (*seed % 1000) - 500;
+    
+    switch (strategy) {
+      case 0: {
+        /* 策略0：生成恒等变换，然后 E(x) != x（恒假） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        
+        NEXT_RAND(*seed);
+        int num_transforms = 1 + (*seed % 3);
+        for (int t = 0; t < num_transforms; t++) {
+          NEXT_RAND(*seed);
+          IdentityTransformType tt = (IdentityTransformType)(*seed % TRANSFORM_COUNT);
+          int src = (t == 0) ? reg1 : ((t % 2) ? reg2 : reg1);
+          int dst = (t % 2) ? reg2 : reg1;
+          Instruction temp_buf[8];
+          int temp_n;
+          if (generateIdentityTransform(ctx, dst, src, tt, seed, temp_buf, &temp_n) < 0) continue;
+          for (int j = 0; j < temp_n && num_insts < MAX_PREDICATE_INSTS - 3; j++) {
+            buf[num_insts++] = temp_buf[j];
+          }
+        }
+        
+        /* 不等：E(x) != x（恒假） */
+        int final_reg = (num_transforms % 2) ? reg2 : reg1;
+        buf[num_insts++] = CREATE_ABCk(OP_EQ, (final_reg == reg1) ? reg2 : reg1, reg1, 0, 1);
+        break;
+      }
+      
+      case 1: {
+        /* 策略1：x*x < 0（恒假） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_LTI, reg2, int2sC(0), 0, 0);
+        break;
+      }
+      
+      case 2: {
+        /* 策略2：x != x（恒假） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_EQ, reg1, reg1, 0, 1);
+        break;
+      }
+      
+      case 3: {
+        /* 策略3：(x & 0) != 0（恒假） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_BAND, reg2, reg1, reg2, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
+        break;
+      }
+      
+      case 4: {
+        /* 策略4：(x ^ x) != 0（恒假） */
+        buf[num_insts++] = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
+        buf[num_insts++] = CREATE_ABCk(OP_BXOR, reg2, reg1, reg1, 0);
+        buf[num_insts++] = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
+        break;
+      }
+    }
+    
+    /* MBV验证 */
+    if (mbv_validate(buf, num_insts, 0, 8)) {
+      for (int i = 0; i < num_insts; i++) {
+        if (emitInstruction(ctx, buf[i]) < 0) return -1;
+      }
+      CFF_LOG("  动态恒假谓词: 策略%d, 指令数%d, 重试%d次", strategy, num_insts, retry);
+      return 0;
+    }
+    
+    retry++;
+    NEXT_RAND(*seed);
+  }
+  
+  /* 后备方案 */
+  CFF_LOG("  动态谓词重试耗尽，使用后备方案");
+  Instruction fallback[] = {
+    CREATE_ABx(OP_LOADI, reg1, 42 + OFFSET_sBx),
+    CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0),
+    CREATE_ABCk(OP_LTI, reg2, int2sC(0), 0, 0),
+  };
+  for (int i = 0; i < 3; i++) {
+    if (emitInstruction(ctx, fallback[i]) < 0) return -1;
+  }
+  return 0;
+}
+
+
+/*
+** =======================================================
+** 动态虚假指令生成器
+** =======================================================
+** 替换原来的 generateBogusInstruction，生成更真实的垃圾指令。
+** 包含MBA混淆、随机数依赖、多指令序列等。
+*/
+
+/*
+** 生成动态虚假指令序列（每次生成2-5条指令的序列）
+** 替换单条虚假指令的模式，生成更真实的代码片段
+*/
+static Instruction generateDynamicBogusInstruction(CFFContext *ctx, unsigned int *seed) {
+  NEXT_RAND(*seed);
+  int inst_type = *seed % 14;
+  int reg = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+  int value;
+  NEXT_RAND(*seed);
+  value = (*seed % 1000) - 500;
+  
+  switch (inst_type) {
+    case 0: return CREATE_ABx(OP_LOADI, reg, value + OFFSET_sBx);
+    case 1: return CREATE_ABCk(OP_ADDI, reg, reg, int2sC(value % 100), 0);
+    case 2: return CREATE_ABCk(OP_MULK, reg, reg, int2sC((value % 7) + 2), 0);
+    case 3: return CREATE_ABCk(OP_BORK, reg, reg, int2sC(value & 0xFF), 0);
+    case 4: return CREATE_ABCk(OP_BXORK, reg, reg, int2sC(value & 0xFF), 0);
+    case 5: return CREATE_ABCk(OP_BANDK, reg, reg, int2sC(value & 0xFF), 0);
+    case 6: return CREATE_ABCk(OP_SHLI, reg, reg, int2sC((value & 3) + 1), 0);
+    case 7: return CREATE_ABCk(OP_SHRI, reg, reg, int2sC((value & 3) + 1), 0);
+    case 8: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_ADD, reg, r1, r2, 0);
+    }
+    case 9: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_BXOR, reg, r1, r2, 0);
+    }
+    case 10: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_BOR, reg, r1, r2, 0);
+    }
+    case 11: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_BAND, reg, r1, r2, 0);
+    }
+    case 12: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_SUB, reg, r1, r2, 0);
+    }
+    case 13: {
+      return CREATE_ABCk(OP_NOT, reg, reg, 0, 0);
+    }
+    default: return CREATE_ABx(OP_LOADI, reg, (*seed % 2000) + OFFSET_sBx);
+  }
+}
 
 /* 二分查找分发器相关结构 */
 typedef struct StateBlock {
@@ -875,7 +1540,7 @@ static int emitBinarySearch (CFFContext *ctx, StateBlock *sb, int low, int high,
 }
 
 /* 虚假块数量（基于真实块数量的倍数） */
-#define BOGUS_BLOCK_RATIO  4  /* 每个真实块生成4个虚假块 */
+#define BOGUS_BLOCK_RATIO  6  /* 每个真实块生成6个虚假块 */
 #define BOGUS_BLOCK_MIN_INSTS  4  /* 虚假块最少指令数 */
 #define BOGUS_BLOCK_MAX_INSTS  12  /* 虚假块最多指令数 */
 
@@ -911,40 +1576,111 @@ static int safeRandomReg (CFFContext *ctx, unsigned int *seed, const char *file,
 }
 
 /* 生成一条随机的虚假指令 - 严格排除状态寄存器及附近寄存器 */
+/* 委托给动态虚假指令生成器 */
 static Instruction generateBogusInstruction (CFFContext *ctx, unsigned int *seed) {
-  int inst_type;
-  NEXT_RAND(*seed);
-  inst_type = *seed % 6;
+  return generateDynamicBogusInstruction(ctx, seed);
+}
+
+/*
+** 指令替换：将简单指令替换为等价的复杂指令序列
+** 返回替换后的指令数（1表示未替换，>1表示已替换为多条指令）
+** 如果替换失败（超出容量），返回-1
+*/
+static int emitSubstitutedInstruction(CFFContext *ctx, Instruction inst, unsigned int *seed) {
+  OpCode op = GET_OPCODE(inst);
+  int a = GETARG_A(inst);
+  int b = GETARG_B(inst);
+  int c = GETARG_C(inst);
+  int bx = GETARG_Bx(inst);
+  int sbx = GETARG_sBx(inst);
   
-  /* 只生成安全的、不会破坏关键寄存器的指令 */
-  int reg = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-  int value;
   NEXT_RAND(*seed);
-  value = (*seed % 1000) - 500;
+  /* 30%概率进行替换 */
+  if ((*seed % 100) >= 30) {
+    return emitInstruction(ctx, inst);  /* 不替换 */
+  }
   
-  switch (inst_type) {
-    case 0: return CREATE_ABx(OP_LOADI, reg, value + OFFSET_sBx);
-    case 1: return CREATE_ABCk(OP_ADDI, reg, reg, int2sC(value % 100), 0);
-    case 2: {
-        int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        return CREATE_ABCk(OP_ADD, reg, r1, r2, 0);
+  switch (op) {
+    case OP_LOADI: {
+      if (sbx == 0) {
+        /* LOADI R, 0 → MUL R, R, R (任何寄存器自乘的结果是0...不，自乘不是0)
+           → SUB R, R, R (自身减自身得0) */
+        NEXT_RAND(*seed);
+        if (*seed % 2 == 0) {
+          /* SUB R, R, R */ 
+          if (emitInstruction(ctx, CREATE_ABCk(OP_SUB, a, a, a, 0)) < 0) return -1;
+        } else {
+          /* BANDK R, R, 0 (R & 0 = 0) */
+          if (emitInstruction(ctx, CREATE_ABCk(OP_BANDK, a, a, int2sC(0), 0)) < 0) return -1;
+        }
+        return 1;
+      } else if (sbx == 1) {
+        /* LOADI R, 1 → BOR R, R, R; ADDI R, R, 1 (R|R = R, then R+1... 不对)
+           简化: LOADI R, 1 → 保留原样但用不同方式 */
+        /* 对于小值，不替换，保留原样以避免过度复杂 */
+        return emitInstruction(ctx, inst);
+      }
+      /* 其他值：不替换 */
+      return emitInstruction(ctx, inst);
     }
-    case 3: {
-        int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        return CREATE_ABCk(OP_NOT, reg, r1, 0, 0);
+    
+    case OP_MOVE: {
+      /* MOVE 不能替换为 ADDI，因为 ADDI 对函数/闭包类型会做指针运算(setptrvalue)，
+         破坏类型信息，导致后续 CALL 时出现 "attempt to call a number value" 错误。
+         同样不能替换为 BOR/ADD，因为它们要求整数操作数。 */
+      return emitInstruction(ctx, inst);
     }
-    case 4: {
-        int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        return CREATE_ABCk(OP_BAND, reg, r1, r2, 0);
+    
+    case OP_NOT: {
+      /* NOT A, B → EQI A, B, 0, k=0 (A = (B == 0) ? 1 : 0) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        /* EQI A, B, 0, k=0 → A = (B == 0) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_EQI, a, b, int2sC(0), 0)) < 0) return -1;
+        return 1;
+      }
+      return emitInstruction(ctx, inst);
     }
-    case 5: {
-        int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        int r2 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
-        return CREATE_ABCk(OP_BXOR, reg, r1, r2, 0);
+    
+    case OP_ADDI: {
+      if (c == 0) {
+        /* ADDI A, B, 0 → MOVE A, B (替换为MOVE等价形式) */
+        NEXT_RAND(*seed);
+        if (*seed % 2 == 0) {
+          if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, a, b, a, 0)) < 0) return -1;
+          return 1;
+        }
+      }
+      return emitInstruction(ctx, inst);
     }
-    default: return CREATE_ABx(OP_LOADI, reg, (*seed % 2000) + OFFSET_sBx);
+    
+    case OP_UNM: {
+      /* UNM A, B → SUB A, 0, B 或 MULK A, B, -1 */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        /* LOADI tmp, 0; SUB A, tmp, B */
+        int tmp = ctx->opaque_reg1;
+        if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, 0 + OFFSET_sBx)) < 0) return -1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SUB, a, tmp, b, 0)) < 0) return -1;
+        return 2;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    
+    case OP_BNOT: {
+      /* BNOT A, B → BXOR A, B, -1 */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int tmp = ctx->opaque_reg1;
+        if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, -1 + OFFSET_sBx)) < 0) return -1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BXOR, a, b, tmp, 0)) < 0) return -1;
+        return 2;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    
+    default:
+      return emitInstruction(ctx, inst);
   }
 }
 
@@ -1015,6 +1751,20 @@ static int emitBogusBlock (CFFContext *ctx, int bogus_state, unsigned int *seed)
   NEXT_RAND(*seed);
   int num_insts = BOGUS_BLOCK_MIN_INSTS + (*seed % (BOGUS_BLOCK_MAX_INSTS - BOGUS_BLOCK_MIN_INSTS + 1));
   CFF_LOG("  生成虚假块: state=%d, 指令数=%d", bogus_state, num_insts);
+  
+  /* 随机插入不透明谓词或条件跳转，使虚假块看起来更真实 */
+  NEXT_RAND(*seed);
+  int use_opaque = (*seed % 3 == 0) && (ctx->obfuscate_flags & OBFUSCATE_OPAQUE_PREDICATES);
+  if (use_opaque) {
+    if (luaO_emitOpaquePredicate(ctx, OP_ALWAYS_TRUE, seed) < 0) return -1;
+    /* 跳过死代码 */
+    int dead_size = 1 + (*seed % 3);
+    if (emitInstruction(ctx, CREATE_sJ(OP_JMP, dead_size + OFFSET_sJ, 0)) < 0) return -1;
+    for (int d = 0; d < dead_size; d++) {
+      if (emitInstruction(ctx, generateBogusInstruction(ctx, seed)) < 0) return -1;
+    }
+  }
+  
   for (int i = 0; i < num_insts; i++) {
     Instruction bogus_inst = generateBogusInstruction(ctx, seed);
     if (emitInstruction(ctx, bogus_inst) < 0) return -1;
@@ -1083,13 +1833,21 @@ static int luaO_emitBlocksAndStubs (CFFContext *ctx, int *all_block_jmp_pcs, int
     if (has_cond_test) copy_end = cond_test_pc;
     else if (luaO_isJumpInstruction(last_op)) copy_end = last_pc;
     
-    /* 复制指令 */
+    /* 复制指令（使用指令替换增强混淆） */
     for (int pc = block->start_pc; pc < copy_end; pc++) {
       if (ctx->skip_pc0 && pc == 0) {
         CFF_LOG("  跳过 PC 0 (已作为函数序言发射)");
         continue;
       }
-      if (emitInstruction(ctx, f->code[pc]) < 0) return -1;
+      if (emitSubstitutedInstruction(ctx, f->code[pc], &ctx->seed) < 0) return -1;
+      
+      /* 在块内随机插入垃圾指令（每2条指令后15%概率） */
+      if ((ctx->obfuscate_flags & OBFUSCATE_RANDOM_NOP) && (pc - block->start_pc) > 0 && ((pc - block->start_pc) % 2 == 0)) {
+        NEXT_RAND(ctx->seed);
+        if ((ctx->seed % 100) < 15) {
+          if (emitInstruction(ctx, luaO_createNOP(ctx->seed)) < 0) return -1;
+        }
+      }
     }
     
     /* 处理块出口 */
@@ -1424,8 +2182,8 @@ int luaO_generateDispatcher (CFFContext *ctx) {
   unsigned int opaque_seed = ctx->seed ^ 0xDEADBEEF;
   
   for (int i = 0; i < ctx->num_blocks; i++) {
-    /* 在每3个状态比较之间插入不透明谓词 */
-    if ((ctx->obfuscate_flags & OBFUSCATE_OPAQUE_PREDICATES) && opaque_counter >= 3) {
+    /* 在每2个状态比较之间插入不透明谓词 */
+    if ((ctx->obfuscate_flags & OBFUSCATE_OPAQUE_PREDICATES) && opaque_counter >= 2) {
       opaque_counter = 0;
       CFF_LOG("  插入恒真不透明谓词 @ PC=%d", ctx->new_code_size);
       
@@ -1437,7 +2195,7 @@ int luaO_generateDispatcher (CFFContext *ctx) {
       
       /* 恒真谓词后：条件为假时跳转到死代码（永不执行） */
       /* 生成一个跳过死代码的JMP，条件为真时跳过 */
-      int dead_code_size = 3;  /* 死代码指令数 */
+      int dead_code_size = 2 + (opaque_seed % 5);  /* 死代码指令数，随机变化 */
       Instruction skip_dead = CREATE_sJ(OP_JMP, dead_code_size + OFFSET_sJ, 0);
       if (emitInstruction(ctx, skip_dead) < 0) {
         luaM_free_(ctx->L, all_block_jmp_pcs, sizeof(int) * total_blocks);
@@ -2254,9 +3012,17 @@ int luaO_generateNestedDispatcher (CFFContext *ctx) {
       copy_end = block->end_pc - 1;
     }
     
-    /* 复制指令 */
+    /* 复制指令（使用指令替换增强混淆） */
     for (int pc = block->start_pc; pc < copy_end; pc++) {
-      if (emitInstruction(ctx, f->code[pc]) < 0) goto cleanup_all;
+      if (emitSubstitutedInstruction(ctx, f->code[pc], &ctx->seed) < 0) goto cleanup_all;
+      
+      /* 在块内随机插入垃圾指令 */
+      if ((ctx->obfuscate_flags & OBFUSCATE_RANDOM_NOP) && (pc - block->start_pc) > 0 && ((pc - block->start_pc) % 2 == 0)) {
+        NEXT_RAND(ctx->seed);
+        if ((ctx->seed % 100) < 15) {
+          if (emitInstruction(ctx, luaO_createNOP(ctx->seed)) < 0) goto cleanup_all;
+        }
+      }
     }
     
     /* 处理基本块出口 */
@@ -2540,7 +3306,7 @@ Instruction luaO_createNOP (unsigned int seed) {
 /*
 ** 不透明谓词变体数量
 */
-#define NUM_OPAQUE_VARIANTS  10
+#define NUM_OPAQUE_VARIANTS  15
 
 
 /*
@@ -2569,287 +3335,20 @@ Instruction luaO_createNOP (unsigned int seed) {
 **   ; 继续正常执行...
 */
 static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
-  int reg1 = ctx->opaque_reg1;
-  int reg2 = ctx->opaque_reg2;
-  
-  NEXT_RAND(*seed);
-  int variant = *seed % NUM_OPAQUE_VARIANTS;
-  
-  NEXT_RAND(*seed);
-  int random_val = (*seed % 1000) - 500;  /* -500 ~ 499 */
-  
-  CFF_LOG("  生成恒真谓词: 变体%d, 随机值=%d", variant, random_val);
-  
-  switch (variant) {
-    case 0: {
-      /* x*x >= 0 (平方数非负) */
-      /* LOADI reg1, random_val */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* MUL reg2, reg1, reg1 */
-      Instruction mul = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, mul) < 0) return -1;
-      
-      /* 注意：不使用 MMBIN，因为它会干扰 VM 执行流程 */
-      
-      /* GEI reg2, 0, k=0 (reg2 >= 0 ? skip next) */
-      Instruction cmp = CREATE_ABCk(OP_GEI, reg2, int2sC(0), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 1: {
-      /* x + 0 == x (恒等式，加0不变) */
-      /* LOADI reg1, random_val */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* ADDI reg2, reg1, 0 (reg2 = reg1 + 0 = reg1) */
-      Instruction addi = CREATE_ABCk(OP_ADDI, reg2, reg1, int2sC(0), 0);
-      if (emitInstruction(ctx, addi) < 0) return -1;
-      
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒真) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 2: {
-      /* 2*x - x == x (恒等式) */
-      /* LOADI reg1, random_val */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* SHLI reg2, reg1, 1 (reg2 = reg1 * 2) */
-      Instruction shl = CREATE_ABCk(OP_SHLI, reg2, reg1, int2sC(1), 0);
-      if (emitInstruction(ctx, shl) < 0) return -1;
-      
-      /* SUB reg2, reg2, reg1 (reg2 = 2*x - x = x) */
-      Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg2, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
-      
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒真) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 3: {
-      /* x - x == 0 (恒等式) */
-      /* LOADI reg1, random_val */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* SUB reg2, reg1, reg1 (reg2 = x - x = 0) */
-      Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
-      
-      /* EQI reg2, 0, k=0 (reg2 == 0 ? 恒真) */
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 4: {
-      /* (x | 1) != 0 (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* BORI reg2, reg1, 1 */
-      Instruction bor = CREATE_ABCk(OP_BORK, reg2, reg1, int2sC(1), 0);
-      /* Wait, OP_BORK is BORK A B C where K[C] is integer. 
-      ** We should use LOADI for 1 and then BOR.
-      */
-      Instruction load1 = CREATE_ABx(OP_LOADI, reg2, 1 + OFFSET_sBx);
-      if (emitInstruction(ctx, load1) < 0) return -1;
-      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor_inst) < 0) return -1;
-      
-      /* EQI reg2, 0, k=0 (reg2 == 0 is false, so we want k=0 to fall through) */
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 0);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 5: {
-      /* (x ^ x) == 0 (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      Instruction bxor = CREATE_ABCk(OP_BXOR, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, bxor) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    case 6: {
-      /* (x & 0) == 0 (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      Instruction load0 = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
-      if (emitInstruction(ctx, load0) < 0) return -1;
-      Instruction band = CREATE_ABCk(OP_BAND, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, band) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    case 7: {
-      /* (x | 0) == x (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      Instruction load0 = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
-      if (emitInstruction(ctx, load0) < 0) return -1;
-      Instruction bor = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    case 8: {
-      /* (x & x) == x (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      Instruction band = CREATE_ABCk(OP_BAND, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, band) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    default: {
-      /* (x | -1) == -1 (恒真) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      Instruction loadm1 = CREATE_ABx(OP_LOADI, reg2, -1 + OFFSET_sBx);
-      if (emitInstruction(ctx, loadm1) < 0) return -1;
-      Instruction bor = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(-1), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-  }
-  
-  return 0;
+  return emitDynamicAlwaysTruePredicate(ctx, seed);
 }
 
 
-/*
-** 生成恒假不透明谓词
-** @param ctx 上下文
-** @param seed 随机种子指针
-** @return 成功返回0，失败返回-1
-**
-** 恒假谓词示例：
-** 1. x*x < 0           (平方数不可能为负)
-** 2. x != x            (自身不等于自身，假)
-** 3. x - x != 0        (x减x必为0)
-*/
-static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
-  int reg1 = ctx->opaque_reg1;
-  int reg2 = ctx->opaque_reg2;
-  
-  NEXT_RAND(*seed);
-  int variant = *seed % 5;
-  
-  NEXT_RAND(*seed);
-  int random_val = (*seed % 1000) - 500;
-  
-  CFF_LOG("  生成恒假谓词: 变体%d, 随机值=%d", variant, random_val);
-  
-  switch (variant) {
-    case 0: {
-      /* x*x < 0 (平方数不可能为负) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      Instruction mul = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, mul) < 0) return -1;
-      
-      /* 注意：不使用 MMBIN，因为它会干扰 VM 执行流程 */
-      
-      /* LTI reg2, 0, k=0 (reg2 < 0 ? 恒假) */
-      Instruction cmp = CREATE_ABCk(OP_LTI, reg2, int2sC(0), 0, 0);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 1: {
-      /* x - x != 0 (恒假) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
-      
-      /* EQI reg2, 0, k=1 (reg2 != 0 ? 恒假，因为k=1表示不等) */
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 2: {
-      /* x + 1 == x (恒假，除非溢出) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      Instruction addi = CREATE_ABCk(OP_ADDI, reg2, reg1, int2sC(1), 0);
-      if (emitInstruction(ctx, addi) < 0) return -1;
-      
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒假) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 0);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    case 3: {
-      /* x != x (恒假) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* EQ reg1, reg1, k=1 (reg1 != reg1 ?) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg1, reg1, 0, 1);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-    
-    default: {
-      /* (x | 1) == 0 (恒假) */
-      Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
-      if (emitInstruction(ctx, load) < 0) return -1;
-      
-      Instruction load1 = CREATE_ABx(OP_LOADI, reg2, 1 + OFFSET_sBx);
-      if (emitInstruction(ctx, load1) < 0) return -1;
-      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor_inst) < 0) return -1;
-      
-      /* EQI reg2, 0, k=0 (reg2 == 0 ? 恒假) */
-      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 0);
-      if (emitInstruction(ctx, cmp) < 0) return -1;
-      break;
-    }
-  }
-  
-  return 0;
-}
-
-
-/*
-** 生成不透明谓词代码
-** @param ctx 扁平化上下文
-** @param type 谓词类型（恒真或恒假）
-** @param seed 随机种子指针
-** @return 成功返回生成的指令数，失败返回-1
-*/
 int luaO_emitOpaquePredicate (CFFContext *ctx, OpaquePredicateType type,
                                unsigned int *seed) {
   int start_size = ctx->new_code_size;
   int result;
   
+  /* 使用动态引擎 */
   if (type == OP_ALWAYS_TRUE) {
-    result = emitAlwaysTruePredicate(ctx, seed);
+    result = emitDynamicAlwaysTruePredicate(ctx, seed);
   } else {
-    result = emitAlwaysFalsePredicate(ctx, seed);
+    result = emitDynamicAlwaysFalsePredicate(ctx, seed);
   }
   
   if (result < 0) return -1;
@@ -3358,6 +3857,18 @@ static VMInstruction decryptVMInstruction (VMInstruction inst, uint64_t key, int
 
 
 /*
+** 公开的VM指令解密接口（供luaccheck等工具使用）
+** @param inst 加密的VM指令
+** @param key 解密密钥
+** @param pc 指令位置
+** @return 解密后的指令
+*/
+VMInstruction luaO_decryptVMInst (VMInstruction inst, uint64_t key, int pc) {
+  return decryptVMInstruction(inst, key, pc);
+}
+
+
+/*
 ** Try to convert a 'for' limit to an integer, preserving the semantics
 ** of the loop.
 */
@@ -3847,6 +4358,24 @@ int luaO_executeVM (lua_State *L, Proto *f) {
   int pc = (int)(ci->u.l.savedpc - f->code);
   lua_Number nb, nc;
 
+  /* 调试：打印VM执行入口 */
+  #ifdef VMOB_LOG
+  fprintf(stderr, "[VM_EXEC] 入口: proto=%p, sizecode=%d, vm_size=%d, pc=%d\n",
+          (void*)f, f->sizecode, vm->size, pc);
+  fprintf(stderr, "[VM_EXEC] difierline_mode=0x%x, data=0x%016llx, encrypt_key=0x%016llx\n",
+          f->difierline_mode, (unsigned long long)f->difierline_data, (unsigned long long)vm->encrypt_key);
+  #endif
+  /* 打印调用栈深度 */
+  {
+    CallInfo *ci2 = L->ci;
+    int depth = 0;
+    while (ci2) { depth++; ci2 = ci2->previous; }
+    #ifdef VMOB_LOG
+    fprintf(stderr, "[VM_EXEC] 调用栈深度=%d, ci=%p, ci->func=%p, ci->nresults=%d\n",
+            depth, (void*)L->ci, (void*)L->ci->func.p, L->ci->nresults);
+    #endif
+  }
+
   /* Integrity check */
   if (pc == 0) {
     uint32_t expected_checksum = (uint32_t)(f->difierline_data >> 32);
@@ -3855,8 +4384,15 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       uint64_t inst = vm->code[i];
       current_checksum ^= (uint32_t)(inst & 0xFFFFFFFF);
       current_checksum ^= (uint32_t)(inst >> 32);
-    }
+    } 
+    #ifdef VMOB_LOG
+    fprintf(stderr, "[VM_EXEC] 校验和: expected=0x%08x, current=0x%08x\n",
+            expected_checksum, current_checksum);
+    #endif
     if (current_checksum != expected_checksum) {
+      #ifdef VMOB_LOG
+      fprintf(stderr, "[VM_EXEC] 校验和失败！回退到原生VM\n");
+      #endif
       return 1; /* Integrity failure */
     }
   }
@@ -3867,6 +4403,13 @@ int luaO_executeVM (lua_State *L, Proto *f) {
     int vm_op = VM_GET_OP(decrypted), a = VM_GET_A(decrypted), b = VM_GET_B(decrypted), c = VM_GET_C(decrypted), flags = VM_GET_FLAGS(decrypted);
     int64_t bx = VM_GET_Bx(decrypted);
     int lua_op = vm->reverse_map[vm_op];
+
+    /* 调试：打印每条指令 */
+    #ifdef VMOB_LOG
+    fprintf(stderr, "[VM_EXEC] pc=%d: encrypted=0x%016llx, decrypted=0x%016llx, vm_op=%d, lua_op=%d, a=%d, b=%d, c=%d, bx=%lld, flags=%d\n",
+            pc, (unsigned long long)vm->code[pc], (unsigned long long)decrypted,
+            vm_op, lua_op, a, b, c, (long long)bx, flags);
+    #endif
 
     if (lua_op < 0 || lua_op >= NUM_OPCODES) {
        if (vm_op == VM_OP_HALT) return 0;
@@ -3934,7 +4477,13 @@ int luaO_executeVM (lua_State *L, Proto *f) {
         int64_t step1 = step2 - ((vm->encrypt_key >> 32) & 0xFFFFFFFF);
         int64_t real_bx = step1 ^ ((vm->encrypt_key ^ pc) & 0xFFFFFFFF);
         real_bx &= 0xFFFFFFFF;
-        setivalue(s2v(base + a), (lua_Integer)(real_bx - OFFSET_sBx));
+        lua_Integer result = (lua_Integer)(real_bx - OFFSET_sBx);
+        #ifdef VMOB_LOG
+        fprintf(stderr, "[VM_EXEC] LOADI: bx=%lld, step2=%lld, step1=%lld, real_bx=%lld, result=%lld, base+a=%p\n",
+                (long long)bx, (long long)step2, (long long)step1,
+                (long long)real_bx, (long long)result, (void*)(base + a));
+        #endif
+        setivalue(s2v(base + a), result);
         break;
       }
       case OP_LOADK: {
@@ -4113,6 +4662,7 @@ int luaO_executeVM (lua_State *L, Proto *f) {
           } else {
             luaO_executeVM(L, callee_proto);
           }
+          ci = L->ci;  /* 更新ci：递归调用后ci可能被释放 */
         } else {
           ci->u.l.savedpc = (const Instruction *)(f->code + vm->size);
           CallInfo *newci = luaD_precall(L, ra, nresults);
@@ -4186,6 +4736,18 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       case OP_RETURN: {
         StkId ra = base + a; int n_ = b - 1;
         if (n_ < 0) n_ = cast_int(L->top.p - ra);
+        #ifdef VMOB_LOG
+        fprintf(stderr, "[VM_EXEC] RETURN: a=%d, b=%d, n_=%d, ra=%p, base=%p, L->top=%p\n",
+                a, b, n_, (void*)ra, (void*)base, (void*)L->top.p);
+        #endif
+        if (n_ > 0 && ra < L->top.p) {
+          TValue *retval = s2v(ra);
+          #ifdef VMOB_LOG
+          fprintf(stderr, "[VM_EXEC] RETURN: 返回值类型=%d (ttisint=%d, value=%lld)\n",
+                  ttype(retval), ttisinteger(retval),
+                  ttisinteger(retval) ? (long long)ivalue(retval) : 0LL);
+          #endif
+        }
         L->top.p = ra + n_;
         ci->u.l.savedpc = (const Instruction *)(f->code + pc + 1);
         luaD_poscall(L, ci, n_);

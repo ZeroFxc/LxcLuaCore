@@ -369,6 +369,121 @@ static void search_table_fields(LspDocument *doc, const char *table_name,
 }
 
 /*
+ * @brief 搜索类/结构体定义中的成员字段和方法
+ * 扫描 class/struct ClassName ... end 块中的字段和方法定义
+ * @param doc 文档指针
+ * @param class_name 类名
+ * @param prefix 过滤前缀
+ * @param items 输出补全项数组
+ * @param n_items 输出-已添加数量
+ * @param is_method 是否搜索方法（:访问）还是字段（.访问）
+ */
+static void search_class_members(LspDocument *doc, const char *class_name,
+                                 const char *prefix, LspCompletionItem **items, int *n_items, int is_method) {
+    if (!class_name || !doc->tokens || doc->ntokens == 0) return;
+    
+    int cn_len = (int)strlen(class_name);
+    
+    /* 查找 class/struct ClassName 声明 */
+    for (int i = 0; i < doc->ntokens - 1; i++) {
+        if ((doc->tokens[i].type == TOK_CLASS || doc->tokens[i].type == TOK_STRUCT || doc->tokens[i].type == TOK_INTERFACE || doc->tokens[i].type == TOK_TRAIT) &&
+            doc->tokens[i+1].type == TOK_NAME &&
+            strcmp(doc->tokens[i+1].text, class_name) == 0) {
+            
+            /* 找到对应的 end，确定类体范围 */
+            int depth = 1;
+            int body_start = i + 2;
+            int body_end = doc->ntokens;
+            for (int j = i + 2; j < doc->ntokens; j++) {
+                if (doc->tokens[j].type == TOK_CLASS || doc->tokens[j].type == TOK_STRUCT ||
+                    doc->tokens[j].type == TOK_INTERFACE || doc->tokens[j].type == TOK_TRAIT ||
+                    doc->tokens[j].type == TOK_FUNCTION || doc->tokens[j].type == TOK_IF ||
+                    doc->tokens[j].type == TOK_FOR || doc->tokens[j].type == TOK_WHILE ||
+                    doc->tokens[j].type == TOK_DO || doc->tokens[j].type == TOK_SWITCH ||
+                    doc->tokens[j].type == TOK_ENUM || doc->tokens[j].type == TOK_NAMESPACE ||
+                    doc->tokens[j].type == TOK_MATCH) {
+                    depth++;
+                } else if (doc->tokens[j].type == TOK_END) {
+                    depth--;
+                    if (depth == 0) {
+                        body_end = j;
+                        break;
+                    }
+                }
+            }
+            
+            /* 在类体中扫描成员 */
+            for (int j = body_start; j < body_end && *n_items < MAX_COMPLETION_ITEMS; j++) {
+                LspToken *tok = &doc->tokens[j];
+                
+                if (is_method) {
+                    /* 搜索方法: methodName = function(...) 或 function methodName(...) */
+                    if (tok->type == TOK_FUNCTION && j > 0 && doc->tokens[j-1].type == TOK_NAME) {
+                        const char *mname = doc->tokens[j-1].text;
+                        if (!prefix || !*prefix || strncmp(mname, prefix, strlen(prefix)) == 0) {
+                            /* 去重 */
+                            int dup = 0;
+                            for (int k = 0; k < *n_items; k++) {
+                                if ((*items)[k].label && strcmp((*items)[k].label, mname) == 0) { dup = 1; break; }
+                            }
+                            if (!dup) {
+                                (*n_items)++;
+                                *items = lsp_realloc(*items, (*n_items) * sizeof(LspCompletionItem));
+                                LspCompletionItem *item = &(*items)[*n_items - 1];
+                                item->label = lsp_strdup(mname);
+                                item->kind = COMPLETION_METHOD;
+                                item->detail = lsp_fmt("method of %s", class_name);
+                                item->documentation = NULL;
+                                item->insert_text = lsp_strdup(mname);
+                                item->insert_text_format = INSERT_TEXT_PLAIN;
+                                item->sort_text_priority = 150;
+                            }
+                        }
+                    }
+                } else {
+                    /* 搜索字段: fieldName = value 或 fieldName: type */
+                    if (tok->type == TOK_NAME && j + 1 < body_end && j > 0) {
+                        /* 跳过关键字 */
+                        if (doc->tokens[j-1].type == TOK_FUNCTION || doc->tokens[j-1].type == TOK_LOCAL ||
+                            doc->tokens[j-1].type == TOK_EXPORT || doc->tokens[j-1].type == TOK_GLOBAL) continue;
+                        
+                        int next = j + 1;
+                        /* 字段定义: name = value 或 name: type */
+                        if (doc->tokens[next].type == (LspTokenType)'=' || 
+                            doc->tokens[next].type == (LspTokenType)':') {
+                            if (!prefix || !*prefix || strncmp(tok->text, prefix, strlen(prefix)) == 0) {
+                                int dup = 0;
+                                for (int k = 0; k < *n_items; k++) {
+                                    if ((*items)[k].label && strcmp((*items)[k].label, tok->text) == 0) { dup = 1; break; }
+                                }
+                                if (!dup) {
+                                    const char *type_hint = NULL;
+                                    if (doc->tokens[next].type == (LspTokenType)':' && 
+                                        next + 1 < body_end && doc->tokens[next+1].type == TOK_NAME) {
+                                        type_hint = doc->tokens[next+1].text;
+                                    }
+                                    (*n_items)++;
+                                    *items = lsp_realloc(*items, (*n_items) * sizeof(LspCompletionItem));
+                                    LspCompletionItem *item = &(*items)[*n_items - 1];
+                                    item->label = lsp_strdup(tok->text);
+                                    item->kind = COMPLETION_FIELD;
+                                    item->detail = type_hint ? lsp_fmt("field: %s", type_hint) : lsp_fmt("field of %s", class_name);
+                                    item->documentation = NULL;
+                                    item->insert_text = lsp_strdup(tok->text);
+                                    item->insert_text_format = INSERT_TEXT_PLAIN;
+                                    item->sort_text_priority = 140;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break; /* 只处理第一个匹配的类定义 */
+        }
+    }
+}
+
+/*
  * @brief 为标准库模块提供字段补全（如 string.xxx, table.xxx, os.xxx 等）
  * @param mod_name 模块名
  * @param prefix 过滤前缀
@@ -447,10 +562,13 @@ int lsp_completion(LspDocument *doc, int line, int col, LspCompletionItem **item
     /* 根据上下文添加不同的补全项 */
     if (strcmp(context, "table_field") == 0 || strcmp(context, "method_call") == 0) {
         int has_prefix = (prefix && *prefix);
+        int is_method = (strcmp(context, "method_call") == 0);
         
         /* 1. 如果知道表名，扫描文档找该表的字段定义 */
         if (table_name && doc->text && doc->text_len > 0) {
             search_table_fields(doc, table_name, prefix, items, &n_items);
+            /* 同时搜索类/结构体成员 */
+            search_class_members(doc, table_name, prefix, items, &n_items, is_method);
         }
         
         /* 2. 标准库函数（始终提供） */
@@ -467,7 +585,7 @@ int lsp_completion(LspDocument *doc, int line, int col, LspCompletionItem **item
         LspKeywordEntry *keywords;
         int nkw = lsp_kwdb_get_keywords(&keywords);
         /* 提供类型关键字 */
-        const char *type_names[] = {"bool","char","double","float","int","long","void","struct","enum","class",NULL};
+        const char *type_names[] = {"bool","char","double","float","int","long","void","struct","enum","class","namespace",NULL};
         for (int i = 0; i < nkw && keywords[i].name; i++) {
             for (int t = 0; type_names[t]; t++) {
                 if (strcmp(keywords[i].name, type_names[t]) == 0) {

@@ -953,6 +953,7 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                                 else if (k == SYMBOL_ENUM) token_type = 3;
                                 else if (k == SYMBOL_NAMESPACE) token_type = 0;
                                 else if (k == SYMBOL_CLASS) token_type = 2;
+                                else if (k == SYMBOL_INTERFACE) token_type = 4;
                                 else if (k == SYMBOL_CONSTANT) token_type = 8;
                                 else if (k == SYMBOL_FIELD) token_type = 9;
                                 break;
@@ -968,9 +969,10 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                     default:
                         if (tok->type == TOK_TYPE_INT || tok->type == TOK_TYPE_FLOAT || tok->type == TOK_BOOL ||
                             tok->type == TOK_CHAR || tok->type == TOK_DOUBLE || tok->type == TOK_LONG ||
-                            tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM)
+                            tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM ||
+                            tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_TRAIT)
                             token_type = 1;
-                        else if (tok->type >= TOK_AND && tok->type <= TOK_MATCH)
+                        else if (tok->type >= TOK_AND && tok->type <= TOK_USE)
                             token_type = 15;
                         else if (tok->type >= TOK_IDIV && tok->type <= TOK_DOLLDOLL)
                             token_type = 21;
@@ -1873,6 +1875,7 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                                 else if (k == SYMBOL_ENUM) token_type = 3;
                                 else if (k == SYMBOL_NAMESPACE) token_type = 0;
                                 else if (k == SYMBOL_CLASS) token_type = 2;
+                                else if (k == SYMBOL_INTERFACE) token_type = 4;
                                 else if (k == SYMBOL_CONSTANT) token_type = 8;
                                 else if (k == SYMBOL_FIELD) token_type = 9;
                                 break;
@@ -1888,9 +1891,10 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                     default:
                         if (tok->type == TOK_TYPE_INT || tok->type == TOK_TYPE_FLOAT || tok->type == TOK_BOOL ||
                             tok->type == TOK_CHAR || tok->type == TOK_DOUBLE || tok->type == TOK_LONG ||
-                            tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM)
+                            tok->type == TOK_VOID || tok->type == TOK_STRUCT || tok->type == TOK_ENUM ||
+                            tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_TRAIT)
                             token_type = 1;
-                        else if (tok->type >= TOK_AND && tok->type <= TOK_MATCH)
+                        else if (tok->type >= TOK_AND && tok->type <= TOK_USE)
                             token_type = 15;
                         else if (tok->type >= TOK_IDIV && tok->type <= TOK_DOLLDOLL)
                             token_type = 21;

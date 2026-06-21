@@ -410,9 +410,18 @@ void lsp_doc_parse(LspDocument *doc, int for_diagnostics) {
                 } else if (tokens[i+1].type == TOK_STRUCT && i + 2 < ntokens && tokens[i+2].type == TOK_NAME) {
                     LspToken *name = &tokens[i+2];
                     lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_STRUCT, NULL);
+                } else if (tokens[i+1].type == TOK_CLASS && i + 2 < ntokens && tokens[i+2].type == TOK_NAME) {
+                    LspToken *name = &tokens[i+2];
+                    lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_CLASS, NULL);
                 } else if (tokens[i+1].type == TOK_ENUM && i + 2 < ntokens && tokens[i+2].type == TOK_NAME) {
                     LspToken *name = &tokens[i+2];
                     lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_ENUM, NULL);
+                } else if (tokens[i+1].type == TOK_INTERFACE && i + 2 < ntokens && tokens[i+2].type == TOK_NAME) {
+                    LspToken *name = &tokens[i+2];
+                    lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_INTERFACE, NULL);
+                } else if (tokens[i+1].type == TOK_TRAIT && i + 2 < ntokens && tokens[i+2].type == TOK_NAME) {
+                    LspToken *name = &tokens[i+2];
+                    lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_INTERFACE, NULL);
                 } else if (tokens[i+1].type == TOK_NAME) {
                     LspToken *name = &tokens[i+1];
                     lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_VARIABLE, NULL);
@@ -466,6 +475,16 @@ void lsp_doc_parse(LspDocument *doc, int for_diagnostics) {
             }
         }
         /* 检测class声明 */
+        else if (tok->type == TOK_CLASS && i + 1 < ntokens && tokens[i+1].type == TOK_NAME) {
+            LspToken *name = &tokens[i+1];
+            lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_CLASS, NULL);
+        }
+        /* 检测interface声明 */
+        else if (tok->type == TOK_INTERFACE && i + 1 < ntokens && tokens[i+1].type == TOK_NAME) {
+            LspToken *name = &tokens[i+1];
+            lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_INTERFACE, NULL);
+        }
+        /* 检测struct声明 */
         else if (tok->type == TOK_STRUCT && i + 1 < ntokens && tokens[i+1].type == TOK_NAME) {
             LspToken *name = &tokens[i+1];
             lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_STRUCT, NULL);
@@ -479,6 +498,11 @@ void lsp_doc_parse(LspDocument *doc, int for_diagnostics) {
         else if (tok->type == TOK_NAMESPACE && i + 1 < ntokens && tokens[i+1].type == TOK_NAME) {
             LspToken *name = &tokens[i+1];
             lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_NAMESPACE, NULL);
+        }
+        /* 检测trait声明 */
+        else if (tok->type == TOK_TRAIT && i + 1 < ntokens && tokens[i+1].type == TOK_NAME) {
+            LspToken *name = &tokens[i+1];
+            lsp_doc_add_var(doc, name->text, name->line, name->col, SYMBOL_INTERFACE, NULL);
         }
         /* 检测requires声明（导入） */
         else if (tok->type == TOK_REQUIRES && i + 1 < ntokens && tokens[i+1].type == TOK_STRING) {
@@ -524,7 +548,7 @@ void lsp_doc_parse(LspDocument *doc, int for_diagnostics) {
             if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR || 
                 tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                 tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                 block_depth++;
             } else if (tok->type == TOK_END) {
                 block_depth--;

@@ -48,7 +48,7 @@ int lsp_diagnostic(LspDocument *doc, LspDiagnostic **diags) {
             if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                 tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                 tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                 depth++;
                 last_block = tok->type;
             } else if (tok->type == TOK_END) {
@@ -67,7 +67,7 @@ int lsp_diagnostic(LspDocument *doc, LspDiagnostic **diags) {
                 if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                     tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                     tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE) {
+                    tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                     ADD_DIAG(SEVERITY_ERROR, tok->line, tok->col, tok->line, tok->col + (int)strlen(tok->text),
                              "缺少匹配的 'end'");
                     break;
@@ -339,7 +339,7 @@ char *lsp_format(LspDocument *doc, int tab_size, int insert_spaces) {
             if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                 tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                 tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
+                tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                 cur_indent++;
                 last_block_type = tok->type;
             }
@@ -653,7 +653,7 @@ int lsp_document_highlight(LspDocument *doc, int line, int col, int **out_kinds,
 static int is_container(int kind) {
     return kind == SYMBOL_FUNCTION || kind == SYMBOL_STRUCT || 
            kind == SYMBOL_ENUM || kind == SYMBOL_NAMESPACE || 
-           kind == SYMBOL_CLASS || kind == SYMBOL_MODULE;
+           kind == SYMBOL_CLASS || kind == SYMBOL_INTERFACE || kind == SYMBOL_MODULE;
 }
 
 /*
@@ -687,7 +687,7 @@ int lsp_document_symbol(LspDocument *doc, LspSymbol ***out_symbols) {
                 if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                     tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                     tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
+                    tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                     depth++;
                 }
                 else if (tok->type == TOK_END) {
@@ -824,7 +824,7 @@ int lsp_folding_range(LspDocument *doc, int **out_start_lines, int **out_end_lin
         if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
             tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
             tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-            tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
+            tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
             if (depth < max_depth) {
                 stack_lines[depth] = tok->line;
                 stack_types[depth] = tok->type;
@@ -955,7 +955,9 @@ int lsp_prepare_rename(LspDocument *doc, int line, int col, int *out_line, int *
         "switch","case","default","try","catch","finally","throw","requires",
         "using","concept","superstruct","is","instanceof","take","with","when",
         "match","lambda","command","keyword","operator","void","bool","char","double",
-        "float","int","long",NULL};
+        "float","int","long","superstruct","asm","guard","delete",
+        "interface","extends","implements","new","super","private","protected",
+        "public","static","abstract","final","sealed","array","get","set","trait","use",NULL};
     for (int i = 0; reserved[i]; i++) {
         if (strcmp(word, reserved[i]) == 0) { is_keyword = 1; break; }
     }
@@ -1010,7 +1012,10 @@ int lsp_type_definition(LspDocument *doc, int line, int col, int *def_line, int 
                         strcmp(doc->tokens[j].text, doc->vars[i].type_hint) == 0) {
                         /* Check if this token is in a struct/enum declaration */
                         if (j >= 1 && (doc->tokens[j-1].type == TOK_STRUCT || 
-                                       doc->tokens[j-1].type == TOK_ENUM)) {
+                                       doc->tokens[j-1].type == TOK_CLASS ||
+                                       doc->tokens[j-1].type == TOK_ENUM ||
+                                       doc->tokens[j-1].type == TOK_INTERFACE ||
+                                       doc->tokens[j-1].type == TOK_TRAIT)) {
                             *def_line = doc->tokens[j].line;
                             *def_col = doc->tokens[j].col;
                             *def_uri = lsp_strdup(doc->uri);
@@ -1028,6 +1033,7 @@ int lsp_type_definition(LspDocument *doc, int line, int col, int *def_line, int 
         for (int j = 0; j < doc->ntokens; j++) {
             if (doc->tokens[j].type == TOK_NAME && strcmp(doc->tokens[j].text, word) == 0) {
                 if (j >= 1 && (doc->tokens[j-1].type == TOK_STRUCT || 
+                               doc->tokens[j-1].type == TOK_CLASS ||
                                doc->tokens[j-1].type == TOK_ENUM ||
                                doc->tokens[j-1].type == TOK_EXPORT)) {
                     *def_line = doc->tokens[j].line;
@@ -1240,7 +1246,7 @@ int lsp_selection_range(LspDocument *doc, int npositions, int *lines, int *cols,
                 if (tok->type == TOK_FUNCTION || tok->type == TOK_IF || tok->type == TOK_FOR ||
                     tok->type == TOK_WHILE || tok->type == TOK_REPEAT || tok->type == TOK_DO ||
                     tok->type == TOK_TRY || tok->type == TOK_SWITCH || tok->type == TOK_STRUCT ||
-                    tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH) {
+                    tok->type == TOK_CLASS || tok->type == TOK_INTERFACE || tok->type == TOK_ENUM || tok->type == TOK_NAMESPACE || tok->type == TOK_MATCH || tok->type == TOK_TRAIT) {
                     if (sptr < 128) stack[sptr++] = tok->line;
                 } else if (tok->type == TOK_END) {
                     if (sptr > 0) {
@@ -1445,7 +1451,7 @@ int lsp_code_lens(LspDocument *doc, int **out_lines, int **out_cols, char ***out
     for (int i = 0; i < doc->nvars; i++) {
         if (doc->vars[i].kind == SYMBOL_FUNCTION || doc->vars[i].kind == SYMBOL_METHOD ||
             doc->vars[i].kind == SYMBOL_CLASS || doc->vars[i].kind == SYMBOL_STRUCT ||
-            doc->vars[i].kind == SYMBOL_ENUM) {
+            doc->vars[i].kind == SYMBOL_INTERFACE || doc->vars[i].kind == SYMBOL_ENUM) {
             
             /* 统计该符号在代码中出现的次数 */
             int refs = 0;
@@ -1927,7 +1933,8 @@ int lsp_prepare_type_hierarchy(LspDocument *doc, int line, int col, char **out_n
     /* 检查是否是struct/enum/class类型名 */
     for (int i = 0; i < doc->nvars; i++) {
         if (strcmp(doc->vars[i].name, word) == 0 &&
-            (doc->vars[i].kind == SYMBOL_STRUCT || doc->vars[i].kind == SYMBOL_ENUM)) {
+            (doc->vars[i].kind == SYMBOL_STRUCT || doc->vars[i].kind == SYMBOL_ENUM ||
+             doc->vars[i].kind == SYMBOL_CLASS || doc->vars[i].kind == SYMBOL_INTERFACE)) {
             *out_name = lsp_strdup(word);
             *out_line = doc->vars[i].def_line;
             *out_col = doc->vars[i].def_col;
@@ -1965,7 +1972,7 @@ int lsp_type_hierarchy_supertypes(LspDocument *doc, int line, int col, char ***o
     int n = 0;
     if (doc->tokens && doc->ntokens > 0) {
         for (int i = 0; i < doc->ntokens - 3; i++) {
-            if ((doc->tokens[i].type == TOK_SUPERSTRUCT || doc->tokens[i].type == TOK_STRUCT) &&
+            if ((doc->tokens[i].type == TOK_SUPERSTRUCT || doc->tokens[i].type == TOK_STRUCT || doc->tokens[i].type == TOK_CLASS || doc->tokens[i].type == TOK_INTERFACE || doc->tokens[i].type == TOK_TRAIT) &&
                 doc->tokens[i+1].type == TOK_NAME &&
                 strcmp(doc->tokens[i+1].text, type_name) == 0 &&
                 doc->tokens[i+2].type == (LspTokenType)':' &&
@@ -1984,7 +1991,7 @@ int lsp_type_hierarchy_supertypes(LspDocument *doc, int line, int col, char ***o
     
     if (doc->tokens && doc->ntokens > 0) {
         for (int i = 0; i < doc->ntokens - 3; i++) {
-            if ((doc->tokens[i].type == TOK_SUPERSTRUCT || doc->tokens[i].type == TOK_STRUCT) &&
+            if ((doc->tokens[i].type == TOK_SUPERSTRUCT || doc->tokens[i].type == TOK_STRUCT || doc->tokens[i].type == TOK_CLASS || doc->tokens[i].type == TOK_INTERFACE || doc->tokens[i].type == TOK_TRAIT) &&
                 doc->tokens[i+1].type == TOK_NAME &&
                 strcmp(doc->tokens[i+1].text, type_name) == 0 &&
                 doc->tokens[i+2].type == (LspTokenType)':' &&
@@ -2025,12 +2032,15 @@ int lsp_type_hierarchy_subtypes(LspDocument *doc, int line, int col, char ***out
     char *type_name = lsp_get_word_at(doc->text, offset, &word_start, &word_end);
     if (!type_name || !*type_name) { lsp_free(type_name); return 0; }
     
-    /* 查找所有以该类型为父类型的superstruct/class */
+    /* 查找所有以该类型为父类型的superstruct/class/struct */
     int n = 0;
     if (doc->tokens && doc->ntokens > 0) {
         for (int i = 0; i < doc->ntokens - 3; i++) {
             if ((doc->tokens[i].type == TOK_SUPERSTRUCT || 
-                 doc->tokens[i].type == TOK_STRUCT) &&
+                 doc->tokens[i].type == TOK_STRUCT ||
+                 doc->tokens[i].type == TOK_CLASS ||
+                 doc->tokens[i].type == TOK_INTERFACE ||
+                 doc->tokens[i].type == TOK_TRAIT) &&
                 doc->tokens[i+1].type == TOK_NAME &&
                 doc->tokens[i+2].type == (LspTokenType)':' &&
                 doc->tokens[i+3].type == TOK_NAME &&
@@ -2050,7 +2060,10 @@ int lsp_type_hierarchy_subtypes(LspDocument *doc, int line, int col, char ***out
     if (doc->tokens && doc->ntokens > 0) {
         for (int i = 0; i < doc->ntokens - 3; i++) {
             if ((doc->tokens[i].type == TOK_SUPERSTRUCT || 
-                 doc->tokens[i].type == TOK_STRUCT) &&
+                 doc->tokens[i].type == TOK_STRUCT ||
+                 doc->tokens[i].type == TOK_CLASS ||
+                 doc->tokens[i].type == TOK_INTERFACE ||
+                 doc->tokens[i].type == TOK_TRAIT) &&
                 doc->tokens[i+1].type == TOK_NAME &&
                 doc->tokens[i+2].type == (LspTokenType)':' &&
                 doc->tokens[i+3].type == TOK_NAME &&

@@ -2415,6 +2415,8 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   trap = L->hookmask;
  returning:  /* trap already set */
   cl = ci_func(ci);
+
+
   #ifdef JIT_VERBOSE_LOG
   fprintf(stderr, "[JIT-DBG] after ci_func, cl=%p, cl->p=%p, jit_trace=%p\n", cl, cl->p, cl->p->jit_trace);
   fflush(stderr);
@@ -2486,9 +2488,24 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   }
 #endif
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {
+    #ifdef VMOB_LOG
+    fprintf(stderr, "[LVM] 进入VM_PROTECT: proto=%p, mode=0x%x\n", (void*)cl->p, cl->p->difierline_mode);
+    fprintf(stderr, "[LVM] L->top=%p, ci->top=%p, ci->func=%p\n",
+      
+            (void*)L->top.p, (void*)ci->top.p, (void*)ci->func.p);
+            #endif 
     int vm_result = luaO_executeVM(L, cl->p);
+    #ifdef VMOB_LOG
+    fprintf(stderr, "[LVM] luaO_executeVM 返回: %d, L->top=%p, L->ci=%p\n",
+   
+            vm_result, (void*)L->top.p, (void*)L->ci);
+       #endif 
     if (vm_result == 0) {
-      return;
+      #ifdef VMOB_LOG
+      fprintf(stderr, "[LVM] VM_PROTECT返回成功, ci=%p, ci->previous=%p, ci->callstatus=%d, CIST_FRESH=%d\n",
+              (void*)ci, (void*)ci->previous, ci->callstatus, CIST_FRESH);
+      #endif
+      goto ret;  /* 通过正常返回路径回到调用者，避免丢弃调用者执行 */
     }
   }
   
@@ -3429,6 +3446,10 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           }
         }
        ret:  /* return from a Lua function */
+       #ifdef VMOB_LOG
+        fprintf(stderr, "[LVM] ret: ci=%p, ci->callstatus=%d, CIST_FRESH=%d, ci->previous=%p, L->ci=%p\n",
+                (void*)ci, ci->callstatus, CIST_FRESH, (void*)ci->previous, (void*)L->ci);
+                 #endif
         if (ci->callstatus & CIST_FRESH)
           return;  /* end this frame */
         else {
