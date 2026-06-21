@@ -821,7 +821,7 @@ make wasm-c
 | `luac` / `luac.exe` | Lua 字节码编译器 |
 | `lbcdump` / `lbcdump.exe` | 字节码分析工具 |
 | `lxclua-lsp.exe` | LXCLUA LSP 语言服务 |
-| `liblua.a` / `lua55.dll` | Lua 静态库 / 动态库 |
+| `liblxclua.a` / `lxclua.dll` | Lua 静态库 / 动态库 |
 | `lxclua.js` / `lxclua.wasm` | WebAssembly 构建产物 |
 | `lxclua-lsp.js` / `lxclua-lsp.wasm` | LSP WebAssembly 构建产物 |
 

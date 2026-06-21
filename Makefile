@@ -48,11 +48,11 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
-LUA_A=	liblua.a
+LUA_A=	liblxclua.a
 CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_call.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
-# lua2wasm: Lua-to-WASM 编译器模块（编译进 liblua.a）
+# lua2wasm: Lua-to-WASM 编译器模块（编译进 liblxclua.a）
 # 核心编译管线：词法分析→语法分析→代码生成→WAT输出
 LUA2WASM_CORE_O= $(addprefix $(BUILDDIR)/,ast.o lexer_l2w.o parser_l2w.o wat_builder.o codegen_l2w.o builtins_l2w.o xalloc_l2w.o)
 # WAT→WASM 汇编器
@@ -216,7 +216,7 @@ $(BUILDDIR)/xalloc_l2w.o: src/lua2wasm/xalloc.c src/lua2wasm/xalloc.h | $(BUILDD
 $(BUILDDIR)/wat2wasm_core.o: src/lua2wasm/wat2wasm.c src/lua2wasm/wat2wasm.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
-# lua2wasm Lua 模块入口（编译进 liblua.a）
+# lua2wasm Lua 模块入口（编译进 liblxclua.a）
 $(BUILDDIR)/lua2wasmlib.o: src/lua2wasm/lua2wasmlib.c src/lua2wasm/lexer.h src/lua2wasm/parser.h src/lua2wasm/codegen.h src/lua2wasm/wat2wasm.h src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h src/core/lua.h src/core/lauxlib.h src/core/lualib.h | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
@@ -309,17 +309,17 @@ Darwin macos macosx:
 	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_MACOSX -DLUA_USE_READLINE" SYSLIBS="-lreadline"
 
 mingw:
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -Wl,--stack,16777216" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
-	$(CC) -shared -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
+	$(CC) -shared -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblxclua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
 
 lsp:
@@ -331,11 +331,11 @@ lsp-linux:
 	strip --strip-unneeded lxclua-lsp || true
 
 mingw-static:
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUA_T=lxclua.exe" \
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblua.a" "LUAC_T=luac.exe" \
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
@@ -358,12 +358,11 @@ EMSDK_PATH= E:/Soft/Proje/LXCLUA-NCore/emsdk/upstream/emscripten
 EMCC= $(EMSDK_PATH)/emcc.bat
 EMAR= $(EMSDK_PATH)/emar.bat
 EMRANLIB= $(EMSDK_PATH)/emranlib.bat
-
 wasm:
 	$(MAKE) clean
 	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
+	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT -DPCRE2_NO_JIT" \
 	"SYSLIBS=" \
 	"WASMTIME_INC=" \
 	"WASMTIME_LIB=" \
@@ -378,24 +377,6 @@ wasm:
 	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
 
-# WASM 最小化版本（无文件系统，更小体积）
-wasm-minimal:
-	$(MAKE) clean
-	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
-	"CFLAGS=-Os -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
-	"SYSLIBS=" \
-	"AR=$(EMAR) rcu" \
-	"RANLIB=$(EMRANLIB)" \
-	"LUA_T=lxclua.js" \
-	"LUAC_T=luac.js" \
-	"LBCDUMP_T=lbcdump.js" \
-	"CORE_O=$(CORE_O_NOJIT)" \
-	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
-	"LDFLAGS=-sWASM=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap -sMODULARIZE=1 -sEXPORT_NAME=LuaModule -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINVOKE_RUN=0"
-
-# WASM LSP Server (lxclua-lsp.js)
-# 用法: make wasmlsp
 wasmlsp:
 	PYTHONUTF8=1 $(MAKE) $(LSP_SRV_O) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions" \
@@ -421,68 +402,6 @@ WASM_CFLAGS= -O3 -DNDEBUG
 WASM_LDFLAGS= -sWASM=1 -sSTANDALONE_WASM=1 -sALLOW_MEMORY_GROWTH=1 --no-entry
 WASM_EXPORTS= 
 
-wasm-c:
-ifndef SRC
-	$(error "用法: make wasm-c SRC=xxx.c [OUT=xxx.wasm] [EXPORTS=\"_func1,_func2\"]")
-endif
-	@echo "编译 $(SRC) -> $(if $(OUT),$(OUT),$(basename $(SRC)).wasm)"
-	$(EMCC) $(WASM_CFLAGS) $(SRC) -o $(if $(OUT),$(OUT),$(basename $(SRC)).wasm) \
-		$(WASM_LDFLAGS) \
-		-sEXPORTED_FUNCTIONS=_malloc,_free$(if $(WASM_EXPORTS),$(comma)$(WASM_EXPORTS))
-	@echo "完成! 输出文件: $(if $(OUT),$(OUT),$(basename $(SRC)).wasm)"
-
-wasm-c-all:
-ifndef SRC
-	$(error "用法: make wasm-c-all SRC=xxx.c [OUT=xxx.wasm]")
-endif
-	@echo "编译 $(SRC) -> $(if $(OUT),$(OUT),$(basename $(SRC)).wasm) (导出所有函数)"
-	$(EMCC) $(WASM_CFLAGS) $(SRC) -o $(if $(OUT),$(OUT),$(basename $(SRC)).wasm) \
-		$(WASM_LDFLAGS) -sEXPORT_ALL=1
-	@echo "完成! 输出文件: $(if $(OUT),$(OUT),$(basename $(SRC)).wasm)"
-	@echo ""
-	@echo "Lua 使用示例:"
-	@echo "  local wasm3 = require('wasm3')"
-	@echo "  local env = wasm3.newEnvironment()"
-	@echo "  local runtime = env:newRuntime()"
-	@echo "  local f = io.open('$(if $(OUT),$(OUT),$(basename $(SRC)).wasm)', 'rb')"
-	@echo "  local wasm = f:read('*a'); f:close()"
-	@echo "  local module = env:parseModule(wasm)"
-	@echo "  runtime:loadModule(module)"
-	@echo "  local func = runtime:findFunction('your_function')"
-	@echo "  local result = func:call(args...)"
-
-# 快捷方式：编译带 WASI 支持的 WASM（需要 main 函数）
-# 用法: make wasm-c-wasi SRC=xxx.c
-wasm-c-wasi: WASM_LDFLAGS= -sWASM=1 -sSTANDALONE_WASM=1 -sALLOW_MEMORY_GROWTH=1
-wasm-c-wasi: wasm-c
-
-# 将 lxclua 编译为 WASM 模块（供 wasm3 加载，导出 Lua API）
-# 用法: make lxclua-wasm
-lxclua-wasm: lxclua_wasm.o
-	@echo "编译 lxclua -> lxclua.wasm (导出 Lua API)"
-	$(EMCC) -std=c23 -O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0 \
-		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT \
-		-o lxclua.wasm \
-		$(CORE_O_NOJIT) $(LIB_O) $(LIB_O_WASM) lxclua_wasm.o \
-		-sWASM=1 -sSTANDALONE_WASM=1 -sALLOW_MEMORY_GROWTH=1 \
-		-sEXPORTED_FUNCTIONS='$(LUA_WASM_EXPORTS)' \
-		--no-entry
-	@echo "完成! 输出文件: lxclua.wasm"
-	@echo ""
-	@echo "Lua 使用示例:"
-	@echo "  local wasm3 = require('wasm3')"
-	@echo "  local env = wasm3.newEnvironment()"
-	@echo "  local runtime = env:newRuntime()"
-	@echo "  local f = io.open('lxclua.wasm', 'rb')"
-	@echo "  local wasm = f:read('*a'); f:close()"
-	@echo "  local module = env:parseModule(wasm)"
-	@echo "  runtime:loadModule(module)"
-
-# 编译 WASM 包装器
-lxclua_wasm.o: lxclua_wasm.c lua.h lauxlib.h lualib.h
-	$(EMCC) -std=c23 -O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0 \
-		-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT \
-		-c lxclua_wasm.c -o lxclua_wasm.o
 
 # Lua WASM 导出的 API 函数列表
 LUA_WASM_EXPORTS=\
@@ -577,7 +496,7 @@ LUA_WASM_EXPORTS=\
 	 "_free"]
 
 # Targets that do not create files (not all makes understand .PHONY).
-.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasm-minimal wasmlsp wasm-c wasm-c-all wasm-c-wasi lxclua-wasm release mingw-release linux-release macos-release wasm-release termux-release lsp lsp-linux
+.PHONY: all $(PLATS) help test clean default o a depend echo wasm wasmlsp release mingw-release linux-release macos-release wasm-release termux-release lsp lsp-linux
 
 # 发行版打包配置
 RELEASE_NAME= lxclua
@@ -608,11 +527,12 @@ linux-release: linux
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: Linux x64" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua luac lbcdump $(RELEASE_DIR)/
-	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
+	@cp lxclua luaccheck luac lbcdump liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
+	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-linux-x64-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
 	@echo "Created: $(RELEASE_NAME)-linux-x64-$(RELEASE_VERSION).tar.gz"
+
 
 # macOS 发行版
 macos-release: macosx
@@ -629,6 +549,7 @@ macos-release: macosx
 	@echo "Created: $(RELEASE_NAME)-macos-$(RELEASE_VERSION).tar.gz"
 
 # Termux/Android 发行版
+
 termux-release: termux
 	@echo "Creating Termux release..."
 	@mkdir -p $(RELEASE_DIR)
@@ -636,8 +557,8 @@ termux-release: termux
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: Android (Termux)" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua luac lbcdump $(RELEASE_DIR)/
-	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/
+	@cp lxclua luac lbcdump luaccheck liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
+	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-termux-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
 	@echo "Created: $(RELEASE_NAME)-termux-$(RELEASE_VERSION).tar.gz"
