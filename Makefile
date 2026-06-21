@@ -80,17 +80,20 @@ LUAC_O=	$(BUILDDIR)/luac.o
 LBCDUMP_T=	lbcdump
 LBCDUMP_O=	$(BUILDDIR)/lbcdump.o
 
+LUACCHECK_T=	luaccheck
+LUACCHECK_O=	$(BUILDDIR)/luaccheck.o
+
 # LSP (Language Server Protocol)
 LSP_SRV_T=	lxclua-lsp
 LSP_SRV_O=	$(addprefix $(BUILDDIR)/,lspsrv_main.o lspsrv_json.o lspsrv_proto.o lspsrv_doc.o lspsrv_lexer.o lspsrv_kwdb.o lspsrv_complete.o lspsrv_hover.o lspsrv_features.o lspsrv_util.o)
 
-ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O)
+ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O) $(LUACCHECK_O)
 QJS_T= qjs
 QJSC_T= qjsc
 QJSC_O= quickjs/qjsc.o
 QJS_EXE_O= quickjs/qjs.o
 
-ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T)
+ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(LUACCHECK_T)
 
 ALL_A= $(LUA_A)
 
@@ -128,6 +131,9 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 
 $(LBCDUMP_T): $(LBCDUMP_O)
 	$(CC) -o $@ $(LDFLAGS) $(LBCDUMP_O)
+
+$(LUACCHECK_T): $(LUACCHECK_O) $(LUA_A)
+	$(CC) -o $@ $(LDFLAGS) $(LUACCHECK_O) $(LUA_A) $(LIBS)
 
 # ---- LSP Server (lxclua-lsp) ----
 # LSP 服务器不需要 wasmtime 运行时，仅链接基础数学库
@@ -229,11 +235,12 @@ test:
 clean:
 	$(RM) -r $(BUILDDIR)
 	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
-	$(RM) lxclua.exe luac.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
+	$(RM) lxclua.exe luac.exe luaccheck.exe lbcdump.exe lua55.dll qjs.exe qjsc.exe
 	$(RM) lxclua-lsp.exe
 	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
 	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
+	$(RM) *.lua *.luac *.out *.outa *.log
 
 
 depend:
@@ -311,6 +318,7 @@ mingw:
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
 	$(CC) -shared -o lua55.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
 
@@ -332,6 +340,7 @@ mingw-static:
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
 
 
 posix:
@@ -754,6 +763,9 @@ lua.o: lua.c lprefix.h lua.h luaconf.h lauxlib.h lualib.h llimits.h
 luac.o: luac.c lprefix.h lua.h luaconf.h lauxlib.h lapi.h llimits.h \
  lstate.h lobject.h ltm.h lzio.h lmem.h ldebug.h lopcodes.h lopnames.h \
  lundump.h
+luaccheck.o: luaccheck.c lprefix.h lua.h luaconf.h lauxlib.h lapi.h llimits.h \
+ lstate.h lobject.h ltm.h lzio.h lmem.h ldebug.h lopcodes.h lopnames.h \
+ lundump.h lobfuscate.h
 lundump.o: lundump.c lprefix.h lua.h luaconf.h ldebug.h lstate.h \
  lobject.h llimits.h ltm.h lzio.h lmem.h ldo.h lfunc.h lstring.h lgc.h \
  ltable.h lundump.h

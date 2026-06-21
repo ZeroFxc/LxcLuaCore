@@ -505,6 +505,15 @@ LUAI_FUNC int luaO_executeVM (lua_State *L, Proto *f);
  */
 LUAI_FUNC int luaO_vmProtect (lua_State *L, Proto *f, unsigned int seed);
 
+/**
+ * @brief Decrypts a single VM instruction.
+ * @param inst 加密的VM指令
+ * @param key 解密密钥
+ * @param pc 指令位置
+ * @return 解密后的指令
+ */
+LUAI_FUNC VMInstruction luaO_decryptVMInst (VMInstruction inst, uint64_t key, int pc);
+
 /**@}*/
 
 
