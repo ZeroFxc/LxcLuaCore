@@ -135,8 +135,8 @@ make wasmlsp
 | `luac` / `luac.exe` | Lua bytecode compiler |
 | `lbcdump` / `lbcdump.exe` | Bytecode analysis tool |
 | `lxclua-lsp` / `lxclua-lsp.exe` | LSP language server |
-| `liblua.a` | Static library |
-| `lua55.dll` | Windows dynamic library |
+| `liblxclua.a` | Static library |
+| `lxclua.dll` | Windows dynamic library |
 | `lxclua.js` + `lxclua.wasm` | WebAssembly build (Emscripten) |
 
 ### Step 4: Verify
@@ -318,8 +318,8 @@ make wasmlsp
 | `luac` / `luac.exe` | Lua 字节码编译器 |
 | `lbcdump` / `lbcdump.exe` | 字节码分析工具 |
 | `lxclua-lsp` / `lxclua-lsp.exe` | LSP 语言服务器 |
-| `liblua.a` | 静态库 |
-| `lua55.dll` | Windows 动态库 |
+| `liblxclua.a` | 静态库 |
+| `lxclua.dll` | Windows 动态库 |
 | `lxclua.js` + `lxclua.wasm` | WebAssembly 构建产物（Emscripten） |
 
 ### 第四步：验证

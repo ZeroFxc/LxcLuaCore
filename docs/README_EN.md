@@ -108,7 +108,7 @@ make clean
 | `luac` / `luac.exe` | Lua bytecode compiler |
 | `lbcdump` / `lbcdump.exe` | Bytecode analysis tool |
 | `lxclua-lsp.exe` | LXCLUA LSP language server |
-| `liblua.a` / `lua55.dll` | Lua static library / dynamic library |
+| `liblxclua.a` / `lxclua.dll` | Lua static library / dynamic library |
 | `lxclua.js` / `lxclua.wasm` | WebAssembly build outputs |
 
 ## Usage Examples

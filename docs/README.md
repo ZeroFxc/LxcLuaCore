@@ -694,8 +694,8 @@ make wasm-c
 | `luac` / `luac.exe` | Lua bytecode compiler |
 | `lbcdump` / `lbcdump.exe` | Bytecode analysis tool |
 | `lxclua-lsp.exe` | LXCLUA LSP language server |
-| `liblua.a` / `lua55.dll` | Lua static library / dynamic library |
-| `lxclua.js` / `lxclua.wasm` | WebAssembly build outputs |
+| `liblxclua.a` / `lxclua.dll` | Lua static library / dynamic library |
+| `lxclua   .js` / `lxclua.wasm` | WebAssembly build outputs |
 | `lxclua-lsp.js` / `lxclua-lsp.wasm` | LSP WebAssembly build outputs |
 
 ### Verification
