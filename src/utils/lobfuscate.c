@@ -1383,7 +1383,7 @@ static int emitDynamicAlwaysFalsePredicate(CFFContext *ctx, unsigned int *seed) 
 */
 static Instruction generateDynamicBogusInstruction(CFFContext *ctx, unsigned int *seed) {
   NEXT_RAND(*seed);
-  int inst_type = *seed % 14;
+  int inst_type = *seed % 21;
   int reg = safeRandomReg(ctx, seed, __FILE__, __LINE__);
   int value;
   NEXT_RAND(*seed);
@@ -1425,6 +1425,26 @@ static Instruction generateDynamicBogusInstruction(CFFContext *ctx, unsigned int
     }
     case 13: {
       return CREATE_ABCk(OP_NOT, reg, reg, 0, 0);
+    }
+    /* 新增: K-form 算术指令 */
+    case 14: return CREATE_ABCk(OP_ADDK, reg, reg, int2sC(value % 100), 0);
+    case 15: return CREATE_ABCk(OP_SUBK, reg, reg, int2sC(value % 50), 0);
+    /* 新增: 寄存器移位指令 */
+    case 16: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_SHL, reg, reg, r1, 0);
+    }
+    case 17: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_SHR, reg, reg, r1, 0);
+    }
+    /* 新增: 一元运算指令 */
+    case 18: return CREATE_ABCk(OP_UNM, reg, reg, 0, 0);
+    case 19: return CREATE_ABCk(OP_BNOT, reg, reg, 0, 0);
+    /* 新增: 寄存器移动 */
+    case 20: {
+      int r1 = safeRandomReg(ctx, seed, __FILE__, __LINE__);
+      return CREATE_ABCk(OP_MOVE, reg, r1, 0, 0);
     }
     default: return CREATE_ABx(OP_LOADI, reg, (*seed % 2000) + OFFSET_sBx);
   }
@@ -1675,6 +1695,277 @@ static int emitSubstitutedInstruction(CFFContext *ctx, Instruction inst, unsigne
         if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, -1 + OFFSET_sBx)) < 0) return -1;
         if (emitInstruction(ctx, CREATE_ABCk(OP_BXOR, a, b, tmp, 0)) < 0) return -1;
         return 2;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    
+    /* =============================================
+     * K-form 指令展开：LOADI + 寄存器形式
+     * 将 OP_XXXK A, B, K 展开为 LOADI tmp, K; XXX A, B, tmp
+     * ============================================= */
+    case OP_ADDK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_SUBK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_SUB, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_MULK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_MUL, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_DIVK: {
+      int kval = sC2int(c);
+      if (kval == 0) return emitInstruction(ctx, inst);  /* 除零不安全 */
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_DIV, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_IDIVK: {
+      int kval = sC2int(c);
+      if (kval == 0) return emitInstruction(ctx, inst);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_IDIV, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_MODK: {
+      int kval = sC2int(c);
+      if (kval == 0) return emitInstruction(ctx, inst);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_MOD, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_POWK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_POW, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_BANDK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_BORK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_BXORK: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_BXOR, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_SHLI: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_SHL, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    case OP_SHRI: {
+      int kval = sC2int(c);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, kval + OFFSET_sBx)) < 0) return -1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_SHR, a, b, tmp, 0)) < 0) return -1;
+      return 2;
+    }
+    
+    /* =============================================
+     * 寄存器形式算术指令的 MBA 恒等替换
+     * ============================================= */
+    case OP_ADD: {
+      /* ADD A, B, C → MBA: (B^C) + 2*(B&C) 或 (B|C) + (B&C) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        /* (B^C) + 2*(B&C) */
+        int tmp = ctx->opaque_reg1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BXOR, a, b, c, 0)) < 0) return -1;      /* a = B ^ C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, tmp, b, c, 0)) < 0) return -1;    /* tmp = B & C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SHLI, tmp, tmp, int2sC(1), 0)) < 0) return -1; /* tmp = 2*(B&C) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, a, a, tmp, 0)) < 0) return -1;     /* a = (B^C) + 2*(B&C) */
+        return 4;
+      } else {
+        /* (B|C) + (B&C) */
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, r1, b, c, 0)) < 0) return -1;     /* r1 = B | C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, r2, b, c, 0)) < 0) return -1;    /* r2 = B & C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, a, r1, r2, 0)) < 0) return -1;    /* a = (B|C) + (B&C) */
+        return 3;
+      }
+    }
+    case OP_SUB: {
+      /* SUB A, B, C → UNM tmp, C; ADD A, B, tmp */
+      NEXT_RAND(*seed);
+      int tmp = ctx->opaque_reg1;
+      if (emitInstruction(ctx, CREATE_ABCk(OP_UNM, tmp, c, 0, 0)) < 0) return -1;      /* tmp = -C */
+      if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, a, b, tmp, 0)) < 0) return -1;      /* a = B + (-C) */
+      return 2;
+    }
+    case OP_MUL: {
+      /* MUL A, B, C → 对于小常数，用移位+加法分解 */
+      /* 这里只做简单的寄存器重排扰乱，不改变语义 */
+      NEXT_RAND(*seed);
+      if (*seed % 3 == 0) {
+        /* 用 LOADI 0; MUL A, B, C 的等价形式但打乱顺序 */
+        int tmp = ctx->opaque_reg1;
+        if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, 0 + OFFSET_sBx)) < 0) return -1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_ADD, tmp, b, tmp, 0)) < 0) return -1;  /* tmp = B + 0 = B */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_MUL, a, tmp, c, 0)) < 0) return -1;
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    
+    /* =============================================
+     * 寄存器形式位运算指令的 MBA 恒等替换
+     * ============================================= */
+    case OP_BAND: {
+      /* BAND A, B, C → MBA: (B|C) - ((B^C) & C) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, a, b, c, 0)) < 0) return -1;       /* a = B | C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BXOR, r1, b, c, 0)) < 0) return -1;   /* r1 = B ^ C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, r2, r1, c, 0)) < 0) return -1;  /* r2 = (B^C) & C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SUB, a, a, r2, 0)) < 0) return -1;    /* a = (B|C) - ((B^C)&C) */
+        return 4;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_BOR: {
+      /* BOR A, B, C → BXOR B, C; BOR A, B, C (插入冗余BXOR) 或 MBA: (B&~C) | C */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BNOT, r1, c, 0, 0)) < 0) return -1;   /* r1 = ~C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, r2, b, r1, 0)) < 0) return -1;  /* r2 = B & ~C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, a, r2, c, 0)) < 0) return -1;    /* a = (B&~C) | C */
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_BXOR: {
+      /* BXOR A, B, C → MBA: (B|C) - (B&C) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, r1, b, c, 0)) < 0) return -1;    /* r1 = B | C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, r2, b, c, 0)) < 0) return -1;   /* r2 = B & C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SUB, a, r1, r2, 0)) < 0) return -1;   /* a = (B|C) - (B&C) */
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_SHL: {
+      /* SHL A, B, C → LOADI tmp, 1; SHL tmp, tmp, C; MUL A, B, tmp (x << n = x * 2^n) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int r1 = ctx->opaque_reg1;
+        if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, r1, 1 + OFFSET_sBx)) < 0) return -1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SHL, r1, r1, c, 0)) < 0) return -1;   /* r1 = 1 << C = 2^C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_MUL, a, b, r1, 0)) < 0) return -1;    /* a = B * 2^C */
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_SHR: {
+      /* SHR A, B, C → LOADI tmp, 1; SHL tmp, tmp, C; IDIV A, B, tmp (x >> n = x / 2^n) */
+      NEXT_RAND(*seed);
+      if (*seed % 2 == 0) {
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, r1, 1 + OFFSET_sBx)) < 0) return -1;
+        if (emitInstruction(ctx, CREATE_ABCk(OP_SHL, r2, r1, c, 0)) < 0) return -1;   /* r2 = 1 << C = 2^C */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_IDIV, a, b, r2, 0)) < 0) return -1;   /* a = B / 2^C */
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    
+    /* =============================================
+     * 比较指令的等价替换
+     * ============================================= */
+    case OP_EQ: {
+      /* EQ A, B, C, k → 用 LT 组合: not((B < C) or (C < B)) */
+      NEXT_RAND(*seed);
+      int kflag = GETARG_k(inst);
+      if (*seed % 3 == 0) {
+        int r1 = ctx->opaque_reg1;
+        int r2 = ctx->opaque_reg2;
+        /* r1 = (B < C) ? 1 : 0 */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_LT, r1, b, c, 0)) < 0) return -1;
+        /* r2 = (C < B) ? 1 : 0 */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_LT, r2, c, b, 0)) < 0) return -1;
+        /* r1 = r1 | r2 → (B<C) or (C<B) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, r1, r1, r2, 0)) < 0) return -1;
+        /* A = (r1 == 0) → B == C, 需要考虑 k 标志 */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_EQI, a, r1, int2sC(0), kflag)) < 0) return -1;
+        return 4;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_LT: {
+      /* LT A, B, C, k → 用 LE 组合: (B <= C) and (B != C) */
+      NEXT_RAND(*seed);
+      int kflag = GETARG_k(inst);
+      if (*seed % 3 == 0) {
+        int r1 = ctx->opaque_reg1;
+        /* r1 = (B <= C) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_LE, r1, b, c, 0)) < 0) return -1;
+        /* A = (B != C) → EQ with k=1 */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_EQ, a, b, c, 1)) < 0) return -1;  /* k=1: A=(B!=C) */
+        /* A = (B <= C) and (B != C) → A = A & r1, 考虑 kflag */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BAND, a, a, r1, 0)) < 0) return -1;
+        if (kflag) {
+          if (emitInstruction(ctx, CREATE_ABCk(OP_NOT, a, a, 0, 0)) < 0) return -1;
+          return 4;
+        }
+        return 3;
+      }
+      return emitInstruction(ctx, inst);
+    }
+    case OP_LE: {
+      /* LE A, B, C, k → 用 LT 组合: (B < C) or (B == C) */
+      NEXT_RAND(*seed);
+      int kflag = GETARG_k(inst);
+      if (*seed % 3 == 0) {
+        int r1 = ctx->opaque_reg1;
+        /* r1 = (B < C) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_LT, r1, b, c, 0)) < 0) return -1;
+        /* A = (B == C) */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_EQ, a, b, c, 0)) < 0) return -1;
+        /* A = (B < C) or (B == C)，考虑 kflag */
+        if (emitInstruction(ctx, CREATE_ABCk(OP_BOR, a, a, r1, 0)) < 0) return -1;
+        if (kflag) {
+          if (emitInstruction(ctx, CREATE_ABCk(OP_NOT, a, a, 0, 0)) < 0) return -1;
+          return 4;
+        }
+        return 3;
       }
       return emitInstruction(ctx, inst);
     }

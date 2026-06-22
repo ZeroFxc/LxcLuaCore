@@ -42,7 +42,6 @@ LIBS= -lm $(SYSLIBS) $(MYLIBS) $(WASMTIME_LIB)
 # 按目标的 WASM 导出名称（wasm 构建时通过命令行覆盖）
 WASM_EXPORT_NAME_LUA =
 WASM_EXPORT_NAME_LUAC =
-WASM_EXPORT_NAME_LBCDUMP =
 WASM_EXPORT_NAME_LUACCHECK =
 
 # Special flags for compiler modules; -Os reduces code size.
@@ -85,9 +84,6 @@ LUA_O=	$(BUILDDIR)/lua.o
 LUAC_T=	luac
 LUAC_O=	$(BUILDDIR)/luac.o
 
-LBCDUMP_T=	lbcdump
-LBCDUMP_O=	$(BUILDDIR)/lbcdump.o
-
 LUACCHECK_T=	luaccheck
 LUACCHECK_O=	$(BUILDDIR)/luaccheck.o
 
@@ -95,13 +91,13 @@ LUACCHECK_O=	$(BUILDDIR)/luaccheck.o
 LSP_SRV_T=	lxclua-lsp
 LSP_SRV_O=	$(addprefix $(BUILDDIR)/,lspsrv_main.o lspsrv_json.o lspsrv_proto.o lspsrv_doc.o lspsrv_lexer.o lspsrv_kwdb.o lspsrv_complete.o lspsrv_hover.o lspsrv_features.o lspsrv_util.o)
 
-ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LBCDUMP_O) $(LUACCHECK_O)
+ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O) $(LUACCHECK_O)
 QJS_T= qjs
 QJSC_T= qjsc
 QJSC_O= quickjs/qjsc.o
 QJS_EXE_O= quickjs/qjs.o
 
-ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(LUACCHECK_T)
+ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T) $(LUACCHECK_T)
 
 ALL_A= $(LUA_A)
 
@@ -136,9 +132,6 @@ $(QJS_T): $(QJS_EXE_O) $(LUA_A)
 
 $(QJSC_T): $(QJSC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(QJSC_O) $(LUA_A) $(LIBS)
-
-$(LBCDUMP_T): $(LBCDUMP_O)
-	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LBCDUMP) $(LBCDUMP_O)
 
 $(LUACCHECK_T): $(LUACCHECK_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
@@ -243,7 +236,7 @@ test:
 clean:
 	$(RM) -r $(BUILDDIR)
 	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
-	$(RM) lxclua.exe luac.exe luaccheck.exe lbcdump.exe lxclua.dll qjs.exe qjsc.exe
+	$(RM) lxclua.exe luac.exe luaccheck.exe lxclua.dll qjs.exe qjsc.exe
 	$(RM) lxclua-lsp.exe
 	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
 	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
@@ -325,8 +318,7 @@ mingw:
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -mconsole" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
 	$(CC) -shared -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblxclua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
 
@@ -347,8 +339,7 @@ mingw-static:
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LBCDUMP_T=lbcdump.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lsecur32 -lcrypt32" lbcdump.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -mconsole" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
 
 
 posix:
@@ -379,11 +370,9 @@ wasm:
 	"RANLIB=$(EMRANLIB)" \
 	"LUA_T=lxclua.js" \
 	"LUAC_T=luac.js" \
-	"LBCDUMP_T=lbcdump.js" \
 	"LUACCHECK_T=luaccheck.js" \
 	"WASM_EXPORT_NAME_LUA=-sEXPORT_NAME=LuaModule" \
 	"WASM_EXPORT_NAME_LUAC=-sEXPORT_NAME=LuacModule" \
-	"WASM_EXPORT_NAME_LBCDUMP=-sEXPORT_NAME=LbcdumpModule" \
 	"WASM_EXPORT_NAME_LUACCHECK=-sEXPORT_NAME=LuaccheckModule" \
 	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
@@ -541,7 +530,7 @@ linux-release: linux
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: Linux x64" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua luaccheck luac lbcdump liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
+	@cp lxclua luaccheck luac liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
 	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-linux-x64-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
@@ -556,7 +545,7 @@ macos-release: macosx
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: macOS (Darwin)" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua luac lbcdump $(RELEASE_DIR)/
+	@cp lxclua luac $(RELEASE_DIR)/
 	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-macos-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
@@ -571,7 +560,7 @@ termux-release: termux
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: Android (Termux)" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua luac lbcdump luaccheck liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
+	@cp lxclua luac luaccheck liblxclua.a $(RELEASE_DIR)/ 2>/dev/null || true
 	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-termux-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
@@ -585,7 +574,7 @@ wasm-release: wasm
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Platform: WebAssembly" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp lxclua.js luac.js lbcdump.js luaccheck.js $(RELEASE_DIR)/
+	@cp lxclua.js luac.js luaccheck.js $(RELEASE_DIR)/
 	@cp LICENSE $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-wasm-$(RELEASE_VERSION).zip -C $(RELEASE_DIR) .
 	@rm -rf $(RELEASE_DIR)
@@ -598,7 +587,7 @@ release:
 	@echo "LXCLua Release" > $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Build Time: $$(date '+%Y-%m-%d %H:%M:%S')" >> $(RELEASE_DIR)/BUILD_INFO.txt
 	@echo "Signed by: $(SIGNER)" >> $(RELEASE_DIR)/BUILD_INFO.txt
-	@cp $(LUA_T) $(LUAC_T) $(LBCDUMP_T) $(RELEASE_DIR)/ 2>/dev/null || true
+	@cp $(LUA_T) $(LUAC_T) $(RELEASE_DIR)/ 2>/dev/null || true
 	@cp $(LUA_A) $(RELEASE_DIR)/ 2>/dev/null || true
 	@cp LICENSE README.md README_EN.md $(RELEASE_DIR)/ 2>/dev/null || true
 	@tar -caf $(RELEASE_NAME)-$(RELEASE_VERSION).tar.gz -C $(RELEASE_DIR) .
