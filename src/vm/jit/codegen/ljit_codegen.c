@@ -392,10 +392,7 @@ void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb) {
     luaV_objlen(L, ra, rb);
 }
 
-void SLJIT_FUNC ljit_icall_call(lua_State *L, StkId func, int nargs, int nresults) {
-    L->top.p = func + 1 + nargs;
-    luaD_call(L, func, nresults);
-}
+/* ljit_icall_call 已移至 ljit_cg_call.c，包含自递归快速路径优化 */
 
 void SLJIT_FUNC ljit_icall_ret(lua_State *L, StkId ra, int nresults) {
     CallInfo *ci = L->ci;
