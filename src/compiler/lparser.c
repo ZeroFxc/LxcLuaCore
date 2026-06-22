@@ -6974,6 +6974,9 @@ static void switchstat (LexState *ls, int line) {
 
   enterblock(fs, &bl, 1); /* isloop=1 to support break */
 
+  /* 立即创建 break 标签，避免 goto break 跳入后续 case 的局部变量作用域 */
+  createlabel(ls, luaS_newliteral(ls->L, "break"), 0, 0);
+
   expr(ls, &ctrl); /* parse control expression */
 
   /* Save control value to a local variable to ensure register safety */
