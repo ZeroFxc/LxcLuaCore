@@ -79,6 +79,7 @@ typedef struct {
   int string_map[256];  /* 字符串映射表（用于动态加密解密） */
   int obfuscate_flags;  /* 混淆标志位 */
   unsigned int obfuscate_seed;  /* 混淆随机种子 */
+  uint64_t str_encrypt_key;  /* 字符串加密密钥（来自VM保护），0表示不加密 */
   const char *log_path;  /* 调试日志输出路径 */
   Buffer *cur_buf;
   CSPRNG_State rng;  /* 密码学安全伪随机数生成器状态（替代srand/rand） */
@@ -314,6 +315,10 @@ static void dumpString (DumpState *D, const TString *s) {
         /* 先使用映射表加密，再使用时间戳进行XOR加密 */
         unsigned char mapped_char = D->string_map[(unsigned char)str[i]];
         encrypted_str[i] = mapped_char ^ ((char *)&D->timestamp)[i % sizeof(D->timestamp)];
+        /* 如果启用了字符串加密，叠加encrypt_key XOR */
+        if (D->str_encrypt_key != 0) {
+          encrypted_str[i] ^= (char)((D->str_encrypt_key >> ((i % 8) * 8)) & 0xFF);
+        }
       }
       
       dumpVector(D, encrypted_str, size);
@@ -337,6 +342,10 @@ static void dumpString (DumpState *D, const TString *s) {
         /* 先使用映射表加密，再使用时间戳进行XOR加密 */
         unsigned char mapped_char = D->string_map[(unsigned char)str[i]];
         encrypted_data[i] = mapped_char ^ ((char *)&D->timestamp)[i % sizeof(D->timestamp)];
+        /* 如果启用了字符串加密，叠加encrypt_key XOR */
+        if (D->str_encrypt_key != 0) {
+          encrypted_data[i] ^= (char)((D->str_encrypt_key >> ((i % 8) * 8)) & 0xFF);
+        }
       }
       
       /* 直接写入加密数据 */
@@ -649,6 +658,7 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
     dumpInt(D, work_proto->lastlinedefined);
 
     TString *psource = i == 0 ? NULL : ((Proto*)list[0].p)->source;
+    D->str_encrypt_key = 0;  /* source字符串不加密 */
     if (D->strip || work_proto->source == psource)
       dumpString(D, NULL);
     else
@@ -674,6 +684,15 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
       dumpInt(D, 0);
     }
 
+    /* 设置字符串加密密钥：仅当同时启用STR_ENCRYPT和VM_PROTECT时使用VM的encrypt_key */
+    if ((work_proto->difierline_mode & OBFUSCATE_STR_ENCRYPT) &&
+        (work_proto->difierline_mode & OBFUSCATE_VM_PROTECT) &&
+        work_proto->vm_code_table != NULL) {
+      D->str_encrypt_key = work_proto->vm_code_table->encrypt_key;
+    } else {
+      D->str_encrypt_key = 0;
+    }
+
     /* Dump Code */
     D->cur_buf = &buf_code;
     dumpCode(D, work_proto);
@@ -697,6 +716,7 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
 
     /* Dump Debug */
     D->cur_buf = &buf_debug;
+    D->str_encrypt_key = 0;  /* 调试信息中的字符串不加密 */
     dumpDebug(D, work_proto);
 
     /* Restore Meta buf */

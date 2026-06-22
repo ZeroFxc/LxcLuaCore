@@ -137,17 +137,30 @@ static void usage(const char* message)
   "  -o name  output to file 'name' (default is \"%s\")\n"
   "  -p       parse only\n"
   "  -s       strip debug information\n"
-  "  -f       enable control flow flattening\n"
-  "  -b       enable binary search dispatcher (implies -f)\n"
-  "  -O mask  enable obfuscation flags by bitmask\n"
-  "  -t tags  enable obfuscation by named tags (comma-separated,\n"
-  "           chainable: flatten,block_shuffle,bogus_blocks,\n"
-  "           state_encode,nested_dispatcher,opaque_predicates,\n"
-  "           func_interleave,vm_protect,binary_dispatcher,\n"
-  "           random_nop,string_encryption)\n"
   "  -v       show version information\n"
   "  --       stop handling options\n"
   "  -        stop handling options and process stdin\n"
+  "\n"
+  "Obfuscation options (individual, chainable):\n"
+  "  -f       control flow flattening (CFF)\n"
+  "  -B       block shuffle\n"
+  "  -g       bogus blocks\n"
+  "  -P       opaque predicates\n"
+  "  -r       random NOP insertion\n"
+  "  -e       state encode\n"
+  "  -b       binary dispatcher (implies -f)\n"
+  "  -i       function interleaving\n"
+  "  -n       nested dispatcher\n"
+  "  -m       VM protection\n"
+  "  -E       string encryption\n"
+  "\n"
+  "Obfuscation presets:\n"
+  "  -O1      light: CFF + block_shuffle\n"
+  "  -O2      medium: O1 + bogus_blocks + opaque_predicates + random_nop\n"
+  "  -O3      heavy: O2 + state_encode + binary_dispatcher + func_interleave\n"
+  "  -Oa      all: O3 + nested_dispatcher + vm_protect + string_encryption\n"
+  "  -O mask  bitmask (hex/decimal)\n"
+  "  -t tags  comma-separated tag names\n"
   ,progname,Output);
  exit(EXIT_FAILURE);
 }
@@ -186,8 +199,48 @@ static int doargs(int argc, char* argv[])
    stripping=1;
   else if (IS("-f"))			/* CFF */
    obfuscate_flags |= OBFUSCATE_CFF;
-  else if (IS("-b"))			/* Binary search dispatcher */
+  else if (IS("-B"))			/* block shuffle */
+   obfuscate_flags |= OBFUSCATE_BLOCK_SHUFFLE;
+  else if (IS("-g"))			/* bogus blocks */
+   obfuscate_flags |= OBFUSCATE_BOGUS_BLOCKS;
+  else if (IS("-P"))			/* opaque predicates */
+   obfuscate_flags |= OBFUSCATE_OPAQUE_PREDICATES;
+  else if (IS("-r"))			/* random NOP */
+   obfuscate_flags |= OBFUSCATE_RANDOM_NOP;
+  else if (IS("-e"))			/* state encode */
+   obfuscate_flags |= OBFUSCATE_STATE_ENCODE;
+  else if (IS("-b"))			/* binary dispatcher (implies CFF) */
    obfuscate_flags |= OBFUSCATE_CFF | OBFUSCATE_BINARY_DISPATCHER;
+  else if (IS("-i"))			/* function interleaving */
+   obfuscate_flags |= OBFUSCATE_FUNC_INTERLEAVE;
+  else if (IS("-n"))			/* nested dispatcher */
+   obfuscate_flags |= OBFUSCATE_NESTED_DISPATCHER;
+  else if (IS("-m"))			/* VM protection */
+   obfuscate_flags |= OBFUSCATE_VM_PROTECT;
+  else if (IS("-E"))			/* string encryption */
+   obfuscate_flags |= OBFUSCATE_STR_ENCRYPT;
+  else if (IS("-O1")) {          /* light obfuscation */
+    obfuscate_flags |= OBFUSCATE_CFF | OBFUSCATE_BLOCK_SHUFFLE;
+  }
+  else if (IS("-O2")) {          /* medium obfuscation */
+    obfuscate_flags |= OBFUSCATE_CFF | OBFUSCATE_BLOCK_SHUFFLE
+                     | OBFUSCATE_BOGUS_BLOCKS | OBFUSCATE_OPAQUE_PREDICATES
+                     | OBFUSCATE_RANDOM_NOP;
+  }
+  else if (IS("-O3")) {          /* heavy obfuscation */
+    obfuscate_flags |= OBFUSCATE_CFF | OBFUSCATE_BLOCK_SHUFFLE
+                     | OBFUSCATE_BOGUS_BLOCKS | OBFUSCATE_OPAQUE_PREDICATES
+                     | OBFUSCATE_RANDOM_NOP | OBFUSCATE_STATE_ENCODE
+                     | OBFUSCATE_BINARY_DISPATCHER | OBFUSCATE_FUNC_INTERLEAVE;
+  }
+  else if (IS("-Oa")) {          /* all obfuscation */
+    obfuscate_flags |= OBFUSCATE_CFF | OBFUSCATE_BLOCK_SHUFFLE
+                     | OBFUSCATE_BOGUS_BLOCKS | OBFUSCATE_OPAQUE_PREDICATES
+                     | OBFUSCATE_RANDOM_NOP | OBFUSCATE_STATE_ENCODE
+                     | OBFUSCATE_BINARY_DISPATCHER | OBFUSCATE_FUNC_INTERLEAVE
+                     | OBFUSCATE_NESTED_DISPATCHER | OBFUSCATE_VM_PROTECT
+                     | OBFUSCATE_STR_ENCRYPT;
+  }
   else if (IS("-O"))			/* obfuscation mask */
   {
    const char *mask = argv[++i];

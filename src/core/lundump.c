@@ -59,6 +59,7 @@ typedef struct {
   int opcode_map[NUM_OPCODES];  /* OPcode映射表 */
   int third_opcode_map[NUM_OPCODES];  /* 第三个OPcode映射表 */
   int string_map[256];  /* 字符串映射表（用于动态加密解密） */
+  uint64_t str_encrypt_key;  /* 字符串加密密钥（来自VM保护），0表示无需解密 */
 
   /* Standard Lua compatibility fields */
   Table *h;  /* list for string reuse */
@@ -220,6 +221,10 @@ static TString *loadStringN (LoadState *S, Proto *p) {
     for (size_t i = 0; i < size; i++) {
       /* 先使用时间戳进行XOR解密，再使用反向映射表解密 */
       unsigned char decrypted_char = buff[i] ^ ((char *)&S->timestamp)[i % sizeof(S->timestamp)];
+      /* 如果启用了字符串加密，叠加encrypt_key XOR解密 */
+      if (S->str_encrypt_key != 0) {
+        decrypted_char ^= (char)((S->str_encrypt_key >> ((i % 8) * 8)) & 0xFF);
+      }
       buff[i] = reverse_string_map[decrypted_char];
     }
     
@@ -284,6 +289,10 @@ static TString *loadStringN (LoadState *S, Proto *p) {
       for (size_t i = 0; i < size; i++) {
         /* 先使用时间戳进行XOR解密，再使用反向映射表解密 */
         unsigned char decrypted_char = str[i] ^ ((char *)&S->timestamp)[i % sizeof(S->timestamp)];
+        /* 如果启用了字符串加密，叠加encrypt_key XOR解密 */
+        if (S->str_encrypt_key != 0) {
+          decrypted_char ^= (char)((S->str_encrypt_key >> ((i % 8) * 8)) & 0xFF);
+        }
         str[i] = reverse_string_map[decrypted_char];
       }
       
@@ -311,6 +320,10 @@ static TString *loadStringN (LoadState *S, Proto *p) {
       for (size_t i = 0; i < size; i++) {
         /* 先使用时间戳进行XOR解密，再使用反向映射表解密 */
         unsigned char decrypted_char = str[i] ^ ((char *)&S->timestamp)[i % sizeof(S->timestamp)];
+        /* 如果启用了字符串加密，叠加encrypt_key XOR解密 */
+        if (S->str_encrypt_key != 0) {
+          decrypted_char ^= (char)((S->str_encrypt_key >> ((i % 8) * 8)) & 0xFF);
+        }
         str[i] = reverse_string_map[decrypted_char];
       }
       
@@ -760,6 +773,7 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
     f->lastlinedefined = loadInt(S);
 
     TString *psource = i == 0 ? NULL : protos[0]->source;
+    S->str_encrypt_key = 0;  /* source字符串不解密 */
     f->source = loadStringN(S, f);
     if (f->source == NULL) f->source = psource;
 
@@ -781,6 +795,15 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
       luaO_registerVMCode(S->L, f, vm_code, vm_size, encrypt_key, reverse_map, seed);
       luaM_freearray(S->L, vm_code, vm_size);
       luaM_freearray(S->L, reverse_map, map_size);
+    }
+
+    /* 设置字符串解密密钥：仅当同时启用STR_ENCRYPT和VM_PROTECT时使用VM的encrypt_key */
+    if ((f->difierline_mode & OBFUSCATE_STR_ENCRYPT) &&
+        (f->difierline_mode & OBFUSCATE_VM_PROTECT) &&
+        f->vm_code_table != NULL) {
+      S->str_encrypt_key = f->vm_code_table->encrypt_key;
+    } else {
+      S->str_encrypt_key = 0;
     }
 
     size_t save_meta = S->mem_offset;
@@ -810,6 +833,7 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
 
     /* Load Debug */
     S->mem_offset = base_debug + off_debug;
+    S->str_encrypt_key = 0;  /* 调试信息中的字符串不解密 */
     loadDebug(S, f);
 
     S->mem_offset = save_meta;
