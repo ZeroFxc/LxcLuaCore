@@ -42,6 +42,76 @@ static const char* output=Output;	/* actual output file name */
 static const char* progname=PROGNAME;	/* actual program name */
 static TString **tmname;
 
+/*
+** 混淆标签名到 OBFUSCATE_* 标志位的映射表
+** 用于 -t 选项的标签名解析
+*/
+static const struct {
+  const char *name;
+  int flag;
+} obfuscate_tags[] = {
+  {"flatten",             OBFUSCATE_CFF},
+  {"block_shuffle",       OBFUSCATE_BLOCK_SHUFFLE},
+  {"bogus_blocks",        OBFUSCATE_BOGUS_BLOCKS},
+  {"state_encode",        OBFUSCATE_STATE_ENCODE},
+  {"nested_dispatcher",   OBFUSCATE_NESTED_DISPATCHER},
+  {"opaque_predicates",   OBFUSCATE_OPAQUE_PREDICATES},
+  {"func_interleave",     OBFUSCATE_FUNC_INTERLEAVE},
+  {"vm_protect",          OBFUSCATE_VM_PROTECT},
+  {"binary_dispatcher",   OBFUSCATE_BINARY_DISPATCHER},
+  {"random_nop",          OBFUSCATE_RANDOM_NOP},
+  {"string_encryption",   OBFUSCATE_STR_ENCRYPT},
+  {NULL, 0}
+};
+
+/*
+** 根据标签名查找对应的混淆标志位
+** @param tag 标签名字符串
+** @return 对应的 OBFUSCATE_* 标志位，未找到返回 0
+*/
+static int parse_obfuscate_tag(const char *tag) {
+  int i;
+  for (i = 0; obfuscate_tags[i].name != NULL; i++) {
+    if (strcmp(tag, obfuscate_tags[i].name) == 0)
+      return obfuscate_tags[i].flag;
+  }
+  return 0;
+}
+
+/*
+** 解析逗号分隔的标签列表，将标签标志位链式叠加到 obfuscate_flags
+** 支持多次调用，每次调用会累加（链式叠加）
+** @param tags 逗号分隔的标签字符串（如 "flatten,block_shuffle"）
+** @return 0 成功，-1 遇到未知标签
+*/
+static int apply_obfuscate_tags(const char *tags) {
+  char *buf = strdup(tags);
+  char *token = strtok(buf, ",");
+  int ok = 0;
+  while (token != NULL) {
+    /* 跳过前导空白 */
+    while (*token == ' ' || *token == '\t') token++;
+    int flag = parse_obfuscate_tag(token);
+    if (flag == 0) {
+      fprintf(stderr, "%s: unknown obfuscation tag '%s'\n", progname, token);
+      fprintf(stderr, "Available tags:");
+      {
+        int i;
+        for (i = 0; obfuscate_tags[i].name != NULL; i++)
+          fprintf(stderr, " %s", obfuscate_tags[i].name);
+      }
+      fprintf(stderr, "\n");
+      free(buf);
+      return -1;
+    }
+    obfuscate_flags |= flag;  /* 链式叠加到全局标志位 */
+    ok = 1;
+    token = strtok(NULL, ",");
+  }
+  free(buf);
+  return ok ? 0 : -1;
+}
+
 static void fatal(const char* message)
 {
  fprintf(stderr,"%s: %s\n",progname,message);
@@ -70,6 +140,11 @@ static void usage(const char* message)
   "  -f       enable control flow flattening\n"
   "  -b       enable binary search dispatcher (implies -f)\n"
   "  -O mask  enable obfuscation flags by bitmask\n"
+  "  -t tags  enable obfuscation by named tags (comma-separated,\n"
+  "           chainable: flatten,block_shuffle,bogus_blocks,\n"
+  "           state_encode,nested_dispatcher,opaque_predicates,\n"
+  "           func_interleave,vm_protect,binary_dispatcher,\n"
+  "           random_nop,string_encryption)\n"
   "  -v       show version information\n"
   "  --       stop handling options\n"
   "  -        stop handling options and process stdin\n"
@@ -118,6 +193,12 @@ static int doargs(int argc, char* argv[])
    const char *mask = argv[++i];
    if (mask == NULL || *mask == 0) usage("'-O' needs argument");
    obfuscate_flags |= strtol(mask, NULL, 0);
+  }
+  else if (IS("-t"))			/* obfuscation tags (chainable) */
+  {
+   const char *tags = argv[++i];
+   if (tags == NULL || *tags == 0) usage("'-t' needs argument");
+   if (apply_obfuscate_tags(tags) != 0) exit(EXIT_FAILURE);
   }
   else if (IS("-v"))			/* show version */
    ++version;

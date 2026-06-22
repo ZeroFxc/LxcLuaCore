@@ -895,17 +895,45 @@ static void read_string (LexState *ls, int del, SemInfo *seminfo, int *has_inter
           ** - ${name} 表示简单变量
           ** - ${[expr]} 表示复杂表达式
           ** 解析器通过检查 { 后是否紧跟 [ 来区分
+          **
+          ** 预扫描: 先检查 ${ 是否在字符串结束前有匹配的 }
+          ** 如果没有（如正则 "${%1"），则把 ${ 当作普通字符
           */
-          *has_interpolation = 1;
-          save(ls, '$');  /* 保存$符号 */
-          save_and_next(ls);  /* 保存{并跳过 */
-          /* 收集直到匹配的 } */
-          int depth = 1;
-          while (depth > 0 && ls->current != EOZ) {
-            if (ls->current == '{') depth++;
-            else if (ls->current == '}') depth--;
-            if (depth > 0) save_and_next(ls);
-            else { save_and_next(ls); }  /* 保存最后的 } */
+          {
+            /* 预扫描检查闭合性 */
+            int pre_depth = 1;
+            int closed = 0;
+            const char *p = ls->z->p;
+            size_t n = ls->z->n;
+            size_t j = 0;
+            while (j < n && pre_depth > 0) {
+              char c = p[j];
+              if (c == del || c == '\n' || c == '\r') break;
+              if (c == '{') pre_depth++;
+              else if (c == '}') pre_depth--;
+              j++;
+            }
+            closed = (pre_depth == 0);
+            
+            if (closed) {
+              /* 有匹配的 }，正常插值处理 */
+              *has_interpolation = 1;
+              save(ls, '$');  /* 保存$符号 */
+              save_and_next(ls);  /* 保存{并跳过 */
+              /* 收集直到匹配的 } */
+              int depth = 1;
+              while (depth > 0 && ls->current != EOZ) {
+                if (ls->current == '{') depth++;
+                else if (ls->current == '}') depth--;
+                if (depth > 0) save_and_next(ls);
+                else { save_and_next(ls); }  /* 保存最后的 } */
+              }
+            }
+            else {
+              /* 未闭合的 ${，当作普通字符处理 */
+              save(ls, '$');  /* 保存$符号 */
+              /* 不消耗 {，让外层循环自然处理后续字符 */
+            }
           }
         }
         else {
@@ -920,23 +948,44 @@ static void read_string (LexState *ls, int del, SemInfo *seminfo, int *has_inter
              save(ls, '{');
              next(ls);
           } else {
-             *has_interpolation = 1;
-             save(ls, '$');
-             save(ls, '{');
-             save(ls, '[');
-             int depth = 1;
-             while (depth > 0 && ls->current != EOZ) {
-               if (ls->current == '{') depth++;
-               else if (ls->current == '}') depth--;
+              /* 预扫描检查 { 是否在字符串结束前有匹配的 } */
+              int pre_depth = 1;
+              int closed = 0;
+              const char *p = ls->z->p;
+              size_t n = ls->z->n;
+              size_t j = 0;
+              while (j < n && pre_depth > 0) {
+                char c = p[j];
+                if (c == del || c == '\n' || c == '\r') break;
+                if (c == '{') pre_depth++;
+                else if (c == '}') pre_depth--;
+                j++;
+              }
+              closed = (pre_depth == 0);
+              
+              if (closed) {
+                *has_interpolation = 1;
+                save(ls, '$');
+                save(ls, '{');
+                save(ls, '[');
+                int depth = 1;
+                while (depth > 0 && ls->current != EOZ) {
+                  if (ls->current == '{') depth++;
+                  else if (ls->current == '}') depth--;
 
-               if (depth > 0) {
-                   save_and_next(ls);
-               } else {
-                   save(ls, ']');
-                   save(ls, '}');
-                   next(ls);
-               }
-             }
+                  if (depth > 0) {
+                      save_and_next(ls);
+                  } else {
+                      save(ls, ']');
+                      save(ls, '}');
+                      next(ls);
+                  }
+                }
+              }
+              else {
+                /* 未闭合的 {，当作普通字符处理 */
+                save(ls, '{');
+              }
           }
         } else {
           save_and_next(ls);
