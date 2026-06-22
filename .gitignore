@@ -11,6 +11,7 @@ lxc-lua
 luac
 lxclua
 lbcdump
+src\bin\luaccheck.c
 *.html
 /test/
 test/
