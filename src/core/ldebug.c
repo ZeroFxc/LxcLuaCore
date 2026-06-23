@@ -12,6 +12,7 @@
 
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "lua.h"
@@ -887,6 +888,7 @@ l_noret luaG_errormsg (lua_State *L) {
   if (L->errfunc != 0) {  /* is there an error handling function? */
     StkId errfunc = restorestack(L, L->errfunc);
     lua_assert(ttisfunction(s2v(errfunc)));
+    L->errfunc = 0;  /* 清除错误函数索引，防止错误处理函数内部出错时递归调用 */
     setobjs2s(L, L->top.p, L->top.p - 1);  /* move argument */
     setobjs2s(L, L->top.p - 1, errfunc);  /* push function */
     L->top.p++;  /* assume EXTRA_STACK */

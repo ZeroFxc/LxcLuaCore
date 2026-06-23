@@ -117,7 +117,6 @@ static void LUAI_TRY (lua_State *L, lua_longjmp *c, Pfunc f, void *ud) {
 
 
 
-
 /**
  * @brief Sets an error object on the stack.
  *

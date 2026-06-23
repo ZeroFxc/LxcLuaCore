@@ -10,7 +10,7 @@ PLAT= guess
 BUILDDIR = build/obj
 
 CC= gcc -std=gnu11 -pipe
-CFLAGS= -O3 -funroll-loops -fomit-frame-pointer -ffunction-sections -fdata-sections -fstrict-aliasing -g0 -DNDEBUG -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration -D_GNU_SOURCE
+CFLAGS= -O2 -funroll-loops -fomit-frame-pointer -ffunction-sections -fdata-sections -fstrict-aliasing -g0 -DNDEBUG -fno-exceptions -Wimplicit-function-declaration -D_GNU_SOURCE
 
 AR= ar rcu
 RANLIB= ranlib
