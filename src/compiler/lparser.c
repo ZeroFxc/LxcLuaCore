@@ -866,7 +866,7 @@ static void check_readonly (LexState *ls, expdesc *e) {
   }
   if (varname) {
     const char *msg = luaO_pushfstring(ls->L,
-       "[!] 错误: 无法给常量变量'%s'赋值", getstr(varname));
+       "attempt to assign to const variable '%s'", getstr(varname));
     luaK_semerror(ls, msg);  /* error */
   }
 }
@@ -1286,11 +1286,11 @@ void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isloop) {
 static l_noret undefgoto (LexState *ls, Labeldesc *gt) {
   const char *msg;
   if (eqstr(gt->name, luaS_newliteral(ls->L, "break"))) {
-    msg = "在 %d 发现 break 语句位于循环外部 ";
+    msg = "break statement at line %d is outside a loop";
     msg = luaO_pushfstring(ls->L, msg, gt->line);
   }
   else {
-    msg = "未找到可见的标签 '%s' for <goto> at line %d";
+    msg = "no visible label '%s' for <goto> at line %d";
     msg = luaO_pushfstring(ls->L, msg, getstr(gt->name), gt->line);
   }
   luaK_semerror(ls, msg);
@@ -1584,6 +1584,8 @@ static void fieldsel (LexState *ls, expdesc *v) {
       /* Reserved words that can be used as field names */
       case TK_AND: ts = luaS_newliteral(ls->L, "and"); break;
       case TK_ASM: ts = luaS_newliteral(ls->L, "asm"); break;
+      case TK_ASYNC: ts = luaS_newliteral(ls->L, "async"); break;
+      case TK_AWAIT: ts = luaS_newliteral(ls->L, "await"); break;
       case TK_BREAK: ts = luaS_newliteral(ls->L, "break"); break;
       case TK_CASE: ts = luaS_newliteral(ls->L, "case"); break;
       case TK_CATCH: ts = luaS_newliteral(ls->L, "catch"); break;
@@ -1622,6 +1624,7 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
       case TK_TRY: ts = luaS_newliteral(ls->L, "try"); break;
       case TK_UNTIL: ts = luaS_newliteral(ls->L, "until"); break;
+      case TK_USING: ts = luaS_newliteral(ls->L, "using"); break;
       case TK_WHEN: ts = luaS_newliteral(ls->L, "when"); break;
       case TK_WITH: ts = luaS_newliteral(ls->L, "with"); break;
       case TK_WHILE: ts = luaS_newliteral(ls->L, "while"); break;
@@ -7508,12 +7511,12 @@ static int parse_destruct_items(LexState *ls, DestructItem *items, int max_items
     /* 检测是否是嵌套解构: name = {nested} 或直接 {nested} */
     if (ls->t.token == '{') {
       /* 直接嵌套解构，不支持这种形式，报错 */
-      luaX_syntaxerror(ls, "嵌套解构必须指定键名，如: addr = {city}");
+      luaX_syntaxerror(ls, "nested destructuring must specify key name, e.g. addr = {city}");
     }
     
     /* 解析变量名/键名 */
     if (ls->t.token != TK_NAME) {
-      luaX_syntaxerror(ls, "解构项需要标识符");
+      luaX_syntaxerror(ls, "identifier expected in destructuring");
     }
     item->varname = ls->t.seminfo.ts;
     item->keyname = item->varname;  /* 默认键名与变量名相同 */
@@ -7555,7 +7558,7 @@ static int parse_destruct_items(LexState *ls, DestructItem *items, int max_items
         /* 索引将在下一次循环开始时设置 */
       }
     } else if (ls->t.token != '}') {
-      luaX_syntaxerror(ls, "解构列表中期望 ',' 或 '}'");
+      luaX_syntaxerror(ls, "',' or '}' expected in destructuring list");
     }
   }
   
@@ -7675,7 +7678,7 @@ static void takestat_full(LexState *ls) {
     }
     
     if (ls->t.token != TK_NAME) {
-      luaX_syntaxerror(ls, "解构项需要标识符");
+      luaX_syntaxerror(ls, "identifier expected in destructuring");
     }
     
     TString *name = ls->t.seminfo.ts;
@@ -7705,7 +7708,7 @@ static void takestat_full(LexState *ls) {
           }
           
           if (ls->t.token != TK_NAME) {
-            luaX_syntaxerror(ls, "嵌套解构项需要标识符");
+            luaX_syntaxerror(ls, "identifier expected in nested destructuring");
           }
           
           varnames[nvars] = ls->t.seminfo.ts;
@@ -11058,7 +11061,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
   /* 解析类体 */
   while (!(has_brace ? testnext(ls, '}') : testnext(ls, TK_END))) {
     if (ls->t.token == TK_EOS) {
-      luaX_syntaxerror(ls, "期望 'end' 来结束类定义");
+      luaX_syntaxerror(ls, "'end' expected to close class definition");
       break;
     }
     
@@ -11084,7 +11087,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
       switch (skw) {
         case SKW_PRIVATE:
           if (has_access_modifier) {
-            luaX_syntaxerror(ls, "不能指定多个访问修饰符");
+            luaX_syntaxerror(ls, "multiple access modifiers not allowed");
           }
           access_level = ACCESS_PRIVATE;
           has_access_modifier = 1;
@@ -11093,7 +11096,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
           break;
         case SKW_PROTECTED:
           if (has_access_modifier) {
-            luaX_syntaxerror(ls, "不能指定多个访问修饰符");
+            luaX_syntaxerror(ls, "multiple access modifiers not allowed");
           }
           access_level = ACCESS_PROTECTED;
           has_access_modifier = 1;
@@ -11102,7 +11105,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
           break;
         case SKW_PUBLIC:
           if (has_access_modifier) {
-            luaX_syntaxerror(ls, "不能指定多个访问修饰符");
+            luaX_syntaxerror(ls, "multiple access modifiers not allowed");
           }
           access_level = ACCESS_PUBLIC;
           has_access_modifier = 1;
@@ -11111,7 +11114,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
           break;
         case SKW_STATIC:
           if (is_static) {
-            luaX_syntaxerror(ls, "重复的 static 修饰符");
+            luaX_syntaxerror(ls, "duplicate 'static' modifier");
           }
           is_static = 1;
           softkw_checknext(ls, SOFTKW_CTX_CLASS_BODY);
@@ -11119,7 +11122,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
           break;
         case SKW_ABSTRACT:
           if (is_abstract) {
-            luaX_syntaxerror(ls, "重复的 abstract 修饰符");
+            luaX_syntaxerror(ls, "duplicate 'abstract' modifier");
           }
           is_abstract = 1;
           softkw_checknext(ls, SOFTKW_CTX_CLASS_BODY);
@@ -11127,7 +11130,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
           break;
         case SKW_FINAL:
           if (is_final) {
-            luaX_syntaxerror(ls, "重复的 final 修饰符");
+            luaX_syntaxerror(ls, "duplicate 'final' modifier");
           }
           is_final = 1;
           softkw_checknext(ls, SOFTKW_CTX_CLASS_BODY);
@@ -11140,12 +11143,12 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
     
     /* abstract 和 final 互斥 */
     if (is_abstract && is_final) {
-      luaX_syntaxerror(ls, "方法不能同时是 abstract 和 final");
+      luaX_syntaxerror(ls, "method cannot be both 'abstract' and 'final'");
     }
     
     /* static 和 abstract 互斥（静态方法不能被重写，因此不能是抽象的） */
     if (is_static && is_abstract) {
-      luaX_syntaxerror(ls, "静态方法不能是 abstract");
+      luaX_syntaxerror(ls, "static method cannot be 'abstract'");
     }
     
     /* 检查是否是 getter/setter */
@@ -11186,7 +11189,7 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport) {
       break;
     }
     else {
-      luaX_syntaxerror(ls, "类体中的非法成员定义");
+      luaX_syntaxerror(ls, "invalid member definition in class body");
     }
   }
   
@@ -11246,7 +11249,7 @@ static void traitstat(LexState *ls, int line, int isexport) {
   /* 解析trait体 */
   while (!testnext(ls, TK_END)) {
     if (ls->t.token == TK_EOS) {
-      luaX_syntaxerror(ls, "期望 'end' 来结束trait定义");
+      luaX_syntaxerror(ls, "'end' expected to close trait definition");
       break;
     }
 
@@ -11305,7 +11308,7 @@ static void traitstat(LexState *ls, int line, int isexport) {
       luaX_next(ls);
     }
     else {
-      luaX_syntaxerror(ls, "trait中只能定义方法");
+      luaX_syntaxerror(ls, "only methods allowed in trait");
     }
   }
 
@@ -11361,7 +11364,7 @@ static void interfacestat(LexState *ls, int line, int isexport) {
   /* 解析接口体 - 只允许方法声明 */
   while (!testnext(ls, TK_END)) {
     if (ls->t.token == TK_EOS) {
-      luaX_syntaxerror(ls, "期望 'end' 来结束接口定义");
+      luaX_syntaxerror(ls, "'end' expected to close interface definition");
       break;
     }
     
@@ -11387,7 +11390,7 @@ static void interfacestat(LexState *ls, int line, int isexport) {
       luaX_next(ls);
     }
     else {
-      luaX_syntaxerror(ls, "接口中只能声明方法");
+      luaX_syntaxerror(ls, "only method declarations allowed in interface");
     }
   }
   
@@ -11805,9 +11808,9 @@ static void enumstat(LexState *ls, int line, int isexport) {
     
     if (ls->t.token == TK_EOS) {
       if (use_brace) {
-        luaX_syntaxerror(ls, "期望 '}' 来结束枚举定义");
+        luaX_syntaxerror(ls, "'}' expected to close enum definition");
       } else {
-        luaX_syntaxerror(ls, "期望 'end' 来结束枚举定义");
+        luaX_syntaxerror(ls, "'end' expected to close enum definition");
       }
       break;
     }
@@ -11820,7 +11823,7 @@ static void enumstat(LexState *ls, int line, int isexport) {
     
     /* 解析枚举成员名 */
     if (ls->t.token != TK_NAME) {
-      luaX_syntaxerror(ls, "期望枚举成员名称");
+      luaX_syntaxerror(ls, "enum member name expected");
       break;
     }
     
@@ -11961,7 +11964,7 @@ static void superexpr(LexState *ls, expdesc *v) {
   singlevaraux(fs, self_name, &self_exp, 1);
   
   if (self_exp.k == VVOID) {
-    luaX_syntaxerror(ls, "super 只能在类方法中使用");
+    luaX_syntaxerror(ls, "'super' can only be used inside class methods");
   }
   
   /* 检查是否是 super(...) 调用构造函数 */
@@ -12019,7 +12022,7 @@ static void superexpr(LexState *ls, expdesc *v) {
     luaX_next(ls);  /* 跳过 '.' */
   }
   else {
-    luaX_syntaxerror(ls, "super 后期望 '.', ':' 或 '('");
+    luaX_syntaxerror(ls, "'.', ':' or '(' expected after 'super'");
   }
   
   /* 获取方法名 */
@@ -12071,7 +12074,7 @@ static void superexpr(LexState *ls, expdesc *v) {
       luaK_fixline(fs, line);
       fs->freereg = base_reg + 1;  /* 调用后只留一个返回值 */
     } else {
-      luaX_syntaxerror(ls, "super:method 后期望 '('");
+      luaX_syntaxerror(ls, "'(' expected after 'super:method'");
     }
   }
   else {
@@ -13588,7 +13591,7 @@ void statement (LexState *ls) {
         if (next_skw == SKW_CLASS) {
           classstat(ls, line, CLASS_FLAG_ABSTRACT, 0);
         } else {
-          luaX_syntaxerror(ls, "'abstract' 后必须跟 'class'");
+          luaX_syntaxerror(ls, "'class' expected after 'abstract'");
         }
         break;
       }
@@ -13599,7 +13602,7 @@ void statement (LexState *ls) {
         if (next_skw == SKW_CLASS) {
           classstat(ls, line, CLASS_FLAG_FINAL, 0);
         } else {
-          luaX_syntaxerror(ls, "'final' 后必须跟 'class'");
+          luaX_syntaxerror(ls, "'class' expected after 'final'");
         }
         break;
       }
@@ -13610,7 +13613,7 @@ void statement (LexState *ls) {
         if (next_skw == SKW_CLASS) {
           classstat(ls, line, CLASS_FLAG_SEALED, 0);
         } else {
-          luaX_syntaxerror(ls, "'sealed' 后必须跟 'class'");
+          luaX_syntaxerror(ls, "'class' expected after 'sealed'");
         }
         break;
       }

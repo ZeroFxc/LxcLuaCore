@@ -134,7 +134,7 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(QJSC_O) $(LUA_A) $(LIBS)
 
 $(LUACCHECK_T): $(LUACCHECK_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
+	$(CC) -mconsole -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
 
 # ---- LSP Server (lxclua-lsp) ----
 # LSP 服务器不需要 wasmtime 运行时，仅链接基础数学库

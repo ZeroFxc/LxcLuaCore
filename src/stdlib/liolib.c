@@ -190,7 +190,7 @@ static int f_tostring (lua_State *L) {
 static FILE *tofile (lua_State *L) {
   LStream *p = tolstream(L);
   if (l_unlikely(isclosed(p)))
-    luaL_error(L, "[!] 错误: 尝试使用已关闭的文件");
+    luaL_error(L, "attempt to use a closed file");
   lua_assert(p->f);
   return p->f;
 }
@@ -265,7 +265,7 @@ static void opencheck (lua_State *L, const char *fname, const char *mode) {
   LStream *p = newfile(L);
   p->f = fopen(fname, mode);
   if (l_unlikely(p->f == NULL))
-    luaL_error(L, "无法打开文件 '%s' (%s)", fname, strerror(errno));
+    luaL_error(L, "cannot open file '%s' (%s)", fname, strerror(errno));
 }
 
 
@@ -638,7 +638,7 @@ static int io_readline (lua_State *L) {
   int i;
   int n = (int)lua_tointeger(L, lua_upvalueindex(2));
   if (isclosed(p))  /* file is already closed? */
-    return luaL_error(L, "文件已关闭");
+    return luaL_error(L, "attempt to use a closed file");
   lua_settop(L , 1);
   luaL_checkstack(L, n, "too many arguments");
   for (i = 1; i <= n; i++)  /* push arguments to 'g_read' */
@@ -769,7 +769,7 @@ static int io_readline_n (lua_State *L) {
   
   if (line_num < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "行号必须大于0");
+    lua_pushliteral(L, "line number must be greater than 0");
     return 2;
   }
   
@@ -785,7 +785,7 @@ static int io_readline_n (lua_State *L) {
     if (c == EOF) {
       fclose(f);
       luaL_pushfail(L);
-      lua_pushfstring(L, "文件只有 %d 行", current_line - 1);
+      lua_pushfstring(L, "file has only %d lines", current_line - 1);
       return 2;
     }
     if (c == '\n') current_line++;
@@ -834,7 +834,7 @@ static int io_writeline_n (lua_State *L) {
   
   if (line_num < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "行号必须大于0");
+    lua_pushliteral(L, "line number must be greater than 0");
     return 2;
   }
   
@@ -963,7 +963,7 @@ static int f_readline_n (lua_State *L) {
   
   if (line_num < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "行号必须大于0");
+    lua_pushliteral(L, "line number must be greater than 0");
     return 2;
   }
   
@@ -1069,12 +1069,12 @@ static int f_readlines_range (lua_State *L) {
   
   if (start_line < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "起始行号必须大于0");
+    lua_pushliteral(L, "start line must be greater than 0");
     return 2;
   }
   if (end_line < start_line) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "结束行号必须大于等于起始行号");
+    lua_pushliteral(L, "end line must be greater than or equal to start line");
     return 2;
   }
   
@@ -1136,7 +1136,7 @@ static int f_writelines_range (lua_State *L) {
   
   if (start_line < 1 || end_line < start_line) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "无效的行号范围");
+    lua_pushliteral(L, "invalid line range");
     return 2;
   }
   
@@ -1239,12 +1239,12 @@ static int io_readlines_range (lua_State *L) {
   
   if (start_line < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "起始行号必须大于0");
+    lua_pushliteral(L, "start line must be greater than 0");
     return 2;
   }
   if (end_line < start_line) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "结束行号必须大于等于起始行号");
+    lua_pushliteral(L, "end line must be greater than or equal to start line");
     return 2;
   }
   
@@ -1320,12 +1320,12 @@ static int io_writelines_range (lua_State *L) {
   
   if (start_line < 1) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "起始行号必须大于0");
+    lua_pushliteral(L, "start line must be greater than 0");
     return 2;
   }
   if (end_line < start_line) {
     luaL_pushfail(L);
-    lua_pushliteral(L, "结束行号必须大于等于起始行号");
+    lua_pushliteral(L, "end line must be greater than or equal to start line");
     return 2;
   }
   

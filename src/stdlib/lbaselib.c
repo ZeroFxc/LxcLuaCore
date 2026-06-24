@@ -360,7 +360,7 @@ static int luaB_setmetatable (lua_State *L) {
   luaL_argexpected(L, t == LUA_TNIL || t == LUA_TTABLE || t == LUA_TSUPERSTRUCT, 2, "nil, table or superstruct");
   
   if (l_unlikely(luaL_getmetafield(L, 1, "__metatable") != LUA_TNIL))
-    return luaL_error(L, "无法修改受保护的元表");
+    return luaL_error(L, "cannot modify a protected metatable");
   lua_settop(L, 2);
   lua_setmetatable(L, 1);
   return 1;
@@ -560,6 +560,12 @@ static int pairscont (lua_State *L, int status, lua_KContext k) {
 }
 
 
+static int ipairscont (lua_State *L, int status, lua_KContext k) {
+  (void)L; (void)status; (void)k;  /* unused */
+  return 3;
+}
+
+
 /*
 ** range 迭代器函数 - 用于 for in 循环中生成数值范围
 ** 用法: for i in range(start, limit, step) do ... end
@@ -645,9 +651,15 @@ static int luaB_ipairs (lua_State *L) {
   luaL_checkany(L, 1);
   /* map不支持数组遍历，传入map直接报错 */
   luaL_argcheck(L, lua_type(L, 1) != LUA_TMAP, 1, "map does not support ipairs (use mpairs)");
-  lua_pushcfunction(L, ipairsaux);  /* iteration function */
-  lua_pushvalue(L, 1);  /* state */
-  lua_pushinteger(L, 0);  /* initial value */
+  if (luaL_getmetafield(L, 1, "__ipairs") == LUA_TNIL) {  /* no metamethod? */
+    lua_pushcfunction(L, ipairsaux);  /* iteration function */
+    lua_pushvalue(L, 1);  /* state */
+    lua_pushinteger(L, 0);  /* initial value */
+  }
+  else {
+    lua_pushvalue(L, 1);  /* argument 'self' to metamethod */
+    lua_callk(L, 1, 3, 0, ipairscont);  /* get 3 values from metamethod */
+  }
   return 3;
 }
 
@@ -2512,7 +2524,7 @@ static int protect_global (lua_State *L) {
   
   // 检查是否为受保护的函数名
   if (strcmp(name, "getenv") == 0) {
-    return luaL_error(L, "无法修改受保护的函数 '%s'", name);
+    return luaL_error(L, "attempt to modify protected function '%s'", name);
   }
   
   // 允许修改其他全局变量
