@@ -378,7 +378,7 @@ static int convert(lua_State *L, unsigned (*conv)(unsigned)) {
     if (t == LUA_TNUMBER)
         lua_pushinteger(L, conv(lua_tointeger(L, 1)));
     else if (t != LUA_TSTRING)
-        return luaL_error(L, "需要数字或字符串，实际得到: %s", luaL_typename(L, 1));
+        return luaL_error(L, "number or string expected, got %s", luaL_typename(L, 1));
     else {
         luaL_Buffer b;
         const char *e, *s = to_utf8(L, 1, &e);
@@ -435,7 +435,7 @@ static int Lutf8_codepoint(lua_State *L) {
     if (posi > pose) return 0;  /* empty interval; return no values */
     n = (int)(pose -  posi + 1);
     if (posi + n <= pose)  /* (lua_Integer -> int) overflow? */
-        return luaL_error(L, "字符串切片过长");
+        return luaL_error(L, "string slice too long");
     luaL_checkstack(L, n, "string slice too long");
     n = 0;
     se = s + pose;
@@ -483,7 +483,7 @@ static const char *parse_escape(lua_State *L,
             ch = 10 + (ch - 'a');
         else {
             if (in_bracket)
-                luaL_error(L, "无效的转义字符 '%c'", ch);
+                luaL_error(L, "invalid escape character '%c'", ch);
             break;
         }
         escape *= is_hex ? 16 : 10;
@@ -515,7 +515,7 @@ static int Lutf8_escape(lua_State *L) {
                     goto next;
             }
             if (s >= e)
-                luaL_error(L, "无效的转义序列");
+                luaL_error(L, "invalid escape sequence");
             s = parse_escape(L, s, e, is_hex, &ch);
         }
         next:
@@ -612,7 +612,7 @@ static int Lutf8_offset(lua_State *L) {
     if (n == 0) cur = utf8_prev(s, cur == s+len ? cur : cur + 1);
     if (n > 0)  n -= 1;
     if ((unsigned char)*cur >= 0x80 && (unsigned char)*cur < 0xC0)
-        luaL_error(L, "起始位置是延续字节");
+        luaL_error(L, "starting position is a continuation byte");
     return push_offset(L, s, s+len, cur, n);
 }
 
@@ -697,7 +697,7 @@ static int Lutf8_width(lua_State *L) {
         lua_pushinteger(L, (lua_Integer)chwidth);
     }
     else if (t != LUA_TSTRING)
-        return luaL_error(L, "需要数字或字符串，实际得到: %s", luaL_typename(L, 1));
+        return luaL_error(L, "number or string expected, got %s", luaL_typename(L, 1));
     else {
         const char *e, *s = to_utf8(L, 1, &e);
         int width = 0;
@@ -800,7 +800,7 @@ static const char *match (MatchState *ms, const char *s, const char *p);
 static int check_capture (MatchState *ms, int l) {
     l -= '1';
     if (l < 0 || l >= ms->level || ms->capture[l].len == CAP_UNFINISHED)
-        return luaL_error(ms->L, "无效的捕获索引 %%%d", l + 1);
+        return luaL_error(ms->L, "invalid capture index %%%d", l + 1);
     return l;
 }
 
@@ -808,7 +808,7 @@ static int capture_to_close (MatchState *ms) {
     int level = ms->level;
     for (level--; level>=0; level--)
         if (ms->capture[level].len == CAP_UNFINISHED) return level;
-    return luaL_error(ms->L, "无效的模式捕获");
+    return luaL_error(ms->L, "invalid pattern capture");
 }
 
 static const char *classend (MatchState *ms, const char *p) {
@@ -817,14 +817,14 @@ static const char *classend (MatchState *ms, const char *p) {
     switch (ch) {
         case L_ESC: {
             if (p == ms->p_end)
-                luaL_error(ms->L, "格式错误的模式 (以 '%%' 结尾)");
+                luaL_error(ms->L, "malformed pattern (ends with '%%')");
             return utf8_next(p, ms->p_end);
         }
         case '[': {
             if (*p == '^') p++;
             do {  /* look for a `]' */
                 if (p == ms->p_end)
-                    luaL_error(ms->L, "格式错误的模式 (缺少 ']')");
+                    luaL_error(ms->L, "malformed pattern (missing ']')");
                 if (*(p++) == L_ESC && p < ms->p_end)
                     p++;  /* skip escapes (e.g. `%]') */
             } while (*p != ']');
@@ -912,8 +912,8 @@ static const char *matchbalance (MatchState *ms, const char *s, const char **p) 
     unsigned ch, begin, end;
     *p += utf8_decode(*p, ms->p_end, &begin);
     if (*p >= ms->p_end)
-        luaL_error(ms->L, "格式错误的模式 "
-                          "(缺少 '%%b' 的参数)");
+        luaL_error(ms->L, "malformed pattern "
+                          "(missing arguments to '%%b')");
     *p += utf8_decode(*p, ms->p_end, &end);
     s += utf8_decode(s, ms->src_end, &ch);
     if (ch != begin) return NULL;
@@ -1041,7 +1041,7 @@ static const char *min_expand (MatchState *ms, const char *s, const char *p, con
 static const char *start_capture (MatchState *ms, const char *s, const char *p, int what) {
     const char *res;
     int level = ms->level;
-    if (level >= LUA_MAXCAPTURES) luaL_error(ms->L, "捕获过多");
+    if (level >= LUA_MAXCAPTURES) luaL_error(ms->L, "too many captures");
     ms->capture[level].init = s;
     ms->capture[level].len = what;
     ms->level = level+1;
@@ -1071,7 +1071,7 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
 
 static const char *match (MatchState *ms, const char *s, const char *p) {
     if (ms->matchdepth-- == 0)
-        luaL_error(ms->L, "模式过于复杂");
+        luaL_error(ms->L, "pattern too complex");
     init: /* using goto's to optimize tail recursion */
     if (p != ms->p_end) {  /* end of pattern? */
         unsigned ch;
@@ -1265,11 +1265,11 @@ static void push_onecapture (MatchState *ms, int i, const char *s, const char *e
         if (i == 0)  /* ms->level == 0, too */
             lua_pushlstring(ms->L, s, e - s);  /* add whole match */
         else
-            luaL_error(ms->L, "无效的捕获索引");
+            luaL_error(ms->L, "invalid capture index");
     }
     else {
         ptrdiff_t l = ms->capture[i].len;
-        if (l == CAP_UNFINISHED) luaL_error(ms->L, "未完成的捕获");
+        if (l == CAP_UNFINISHED) luaL_error(ms->L, "unfinished capture");
         if (l == CAP_POSITION) {
             int idx;
             get_index(ms->capture[i].init, ms->src_init, ms->src_end, &idx);
@@ -1414,8 +1414,8 @@ static void add_s (MatchState *ms, luaL_Buffer *b, const char *s, const char *e)
             news += utf8_decode(news, new_end, &ch); /* skip ESC */
             if (!utf8_isdigit(ch)) {
                 if (ch != L_ESC)
-                    luaL_error(ms->L, "无效使用 '%c'"
-                                " 在替换字符串中", L_ESC);
+                    luaL_error(ms->L, "invalid use of '%c'"
+                                " in replacement string", L_ESC);
                 add_utf8char(b, ch);
             }
             else if (ch == '0')
@@ -1453,7 +1453,7 @@ static void add_value (MatchState *ms, luaL_Buffer *b, const char *s, const char
         lua_pushlstring(L, s, e - s);  /* keep original text */
     }
     else if (!lua_isstring(L, -1))
-        luaL_error(L, "无效的替换值 (类型: %s)", luaL_typename(L, -1));
+        luaL_error(L, "invalid replacement value (type: %s)", luaL_typename(L, -1));
     luaL_addvalue(b);  /* add result to accumulator */
 }
 

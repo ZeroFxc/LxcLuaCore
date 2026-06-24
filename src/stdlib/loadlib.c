@@ -171,7 +171,7 @@ static void setprogdir (lua_State *L) {
   DWORD nsize = sizeof(buff)/sizeof(char);
   DWORD n = GetModuleFileNameA(NULL, buff, nsize);  /* get exec. name */
   if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
-    luaL_error(L, "无法获取 ModuleFileName");
+    luaL_error(L, "cannot get ModuleFileName");
   else {
     *lb = '\0';  /* cut name on the last '\\' to get the path */
     luaL_gsub(L, lua_tostring(L, -1), LUA_EXEC_DIR, buff);
@@ -531,14 +531,14 @@ static int checkload (lua_State *L, int stat, const char *filename) {
     return 2;  /* return open function and file name */
   }
   else
-    return luaL_error(L, "[X] 加载模块错误\n\n"
-                          "    模块名称: %s\n"
-                          "    文件路径: %s\n"
-                          "    错误信息: %s\n\n"
-                          "[Tip] 可能原因:\n"
-                          "    1. Lua文件语法错误\n"
-                          "    2. 文件权限不足\n"
-                          "    3. 模块路径错误\n",
+    return luaL_error(L, "error loading module\n\n"
+                          "    module name: %s\n"
+                          "    file path: %s\n"
+                          "    error: %s\n\n"
+                          "[Tip] possible causes:\n"
+                          "    1. Lua file syntax error\n"
+                          "    2. insufficient file permissions\n"
+                          "    3. incorrect module path\n",
                           lua_tostring(L, 1), filename, lua_tostring(L, -1));
 }
 
@@ -628,7 +628,7 @@ static void findloader (lua_State *L, const char *name) {
   /* push 'package.searchers' to index 3 in the stack */
   if (l_unlikely(lua_getfield(L, lua_upvalueindex(1), "searchers")
                  != LUA_TTABLE))
-    luaL_error(L, "'package.searchers' 必须是表");
+    luaL_error(L, "'package.searchers' must be a table");
   luaL_buffinit(L, &msg);
   /*  iterate over available searchers to find a loader */
   for (i = 1; ; i++) {
@@ -701,7 +701,7 @@ static void set_env (lua_State *L) {
   if (lua_getstack(L, 1, &ar) == 0 ||
       lua_getinfo(L, "f", &ar) == 0 ||  /* get calling function */
       lua_iscfunction(L, -1))
-    luaL_error(L, "'module' 不是从 Lua 函数调用的");
+    luaL_error(L, "'module' not called from a Lua function");
   lua_pushvalue(L, -2);  /* copy new environment table to top */
   lua_setupvalue(L, -2, 1);
   lua_pop(L, 1);  /* remove function */

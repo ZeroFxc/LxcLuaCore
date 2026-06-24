@@ -857,9 +857,9 @@ l_noret luaG_ordererror (lua_State *L, const TValue *p1, const TValue *p2) {
   const char *t1 = luaT_objtypename(L, p1);
   const char *t2 = luaT_objtypename(L, p2);
   if (strcmp(t1, t2) == 0)
-    luaG_runerror(L, "[!] 错误: 无法比较两个%s值", t1);
+    luaG_runerror(L, "attempt to compare two %s values", t1);
   else
-    luaG_runerror(L, "[!] 错误: 无法比较%s和%s类型", t1, t2);
+    luaG_runerror(L, "attempt to compare %s with %s", t1, t2);
 }
 
 

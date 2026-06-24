@@ -1244,9 +1244,9 @@ LUA_API int lua_yieldk (lua_State *L, int nresults, lua_KContext ctx,
   api_checknelems(L, nresults);
   if (l_unlikely(!yieldable(L))) {
     if (L != G(L)->mainthread)
-      luaG_runerror(L, "[!] 错误: 尝试在C调用边界处yield");
+      luaG_runerror(L, "attempt to yield across a C-call boundary");
     else
-      luaG_runerror(L, "[!] 错误: 尝试从协程外部执行yield");
+      luaG_runerror(L, "attempt to yield from outside a coroutine");
   }
   L->status = LUA_YIELD;
   ci->u2.nyield = nresults;  /* save number of results */

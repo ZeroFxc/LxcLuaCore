@@ -177,7 +177,7 @@ static int class_call(lua_State *L) {
   
   /* 检查第一个参数是否是类 */
   if (!luaC_isclass(L, 1)) {
-    luaL_error(L, "尝试调用非类值");
+    luaL_error(L, "attempt to call a non-class value");
     return 0;
   }
   
@@ -264,8 +264,8 @@ static int class_newindex(lua_State *L) {
         if (lua_toboolean(L, -1)) {
           const char *parent_name = get_class_name_str(L, parent_idx);
           const char *method_name = lua_tostring(L, 2);
-          return luaL_error(L, "不能重写类 '%s' 的final方法 '%s'",
-                     parent_name, method_name ? method_name : "?");
+          return luaL_error(L, "cannot override final method '%s' of class '%s'",
+                     method_name ? method_name : "?", parent_name);
         }
         lua_pop(L, 1);
       }
@@ -661,8 +661,8 @@ static int object_index(lua_State *L) {
           /* 外部或子类不能访问私有成员 */
           const char *classname = get_class_name_str(L, class_idx);
           const char *key = lua_tostring(L, 2);
-          return luaL_error(L, "无法访问类 '%s' 的私有成员 '%s'", 
-                           classname, key ? key : "?");
+          return luaL_error(L, "cannot access private member '%s' of class '%s'",
+                           key ? key : "?", classname);
         }
       }
       
@@ -672,8 +672,8 @@ static int object_index(lua_State *L) {
           /* 外部不能访问受保护成员 */
           const char *classname = get_class_name_str(L, class_idx);
           const char *key = lua_tostring(L, 2);
-          return luaL_error(L, "无法访问类 '%s' 的受保护成员 '%s'", 
-                           classname, key ? key : "?");
+          return luaL_error(L, "cannot access protected member '%s' of class '%s'",
+                           key ? key : "?", classname);
         }
       }
       
@@ -714,8 +714,8 @@ next_class:
       if (caller_access != ACCESS_PRIVATE) {
         const char *classname = get_class_name_str(L, class_idx);
         const char *key = lua_tostring(L, 2);
-        return luaL_error(L, "无法访问对象 '%s' 的私有数据 '%s'", 
-                         classname, key ? key : "?");
+        return luaL_error(L, "cannot access private data '%s' of '%s' object",
+                         key ? key : "?", classname);
       }
       lua_remove(L, -2);
       return 1;
@@ -842,8 +842,8 @@ static int object_newindex(lua_State *L) {
         /* 尝试设置内部键，需要检查权限 */
         if (caller_access != ACCESS_PRIVATE) {
           const char *classname = get_class_name_str(L, class_idx);
-          return luaL_error(L, "无法从外部修改对象 '%s' 的内部属性 '%s'", 
-                           classname, key);
+          return luaL_error(L, "attempt to modify private field '%s' of '%s' object from outside",
+                           key, classname);
         }
       }
     }
@@ -856,15 +856,15 @@ static int object_newindex(lua_State *L) {
       if (member_access == ACCESS_PRIVATE && caller_access != ACCESS_PRIVATE) {
         const char *classname = get_class_name_str(L, class_idx);
         const char *key = lua_tostring(L, 2);
-        return luaL_error(L, "无法从外部修改类 '%s' 的私有成员 '%s'", 
-                         classname, key ? key : "?");
+        return luaL_error(L, "attempt to modify private member '%s' of class '%s' from outside",
+                         key ? key : "?", classname);
       }
       
       if (member_access == ACCESS_PROTECTED && caller_access == ACCESS_PUBLIC) {
         const char *classname = get_class_name_str(L, class_idx);
         const char *key = lua_tostring(L, 2);
-        return luaL_error(L, "无法从外部修改类 '%s' 的受保护成员 '%s'", 
-                         classname, key ? key : "?");
+        return luaL_error(L, "attempt to modify protected member '%s' of class '%s' from outside",
+                         key ? key : "?", classname);
       }
     }
   }
@@ -1054,7 +1054,7 @@ void luaC_inherit(lua_State *L, int child_idx, int parent_idx) {
   
   /* 检查父类是否是有效的类 */
   if (!luaC_isclass(L, parent_idx)) {
-    luaL_error(L, "父类不是有效的类");
+    luaL_error(L, "parent is not a valid class");
     return;
   }
   
@@ -1065,12 +1065,12 @@ void luaC_inherit(lua_State *L, int child_idx, int parent_idx) {
     int flags = (int)lua_tointeger(L, -1);
     if (flags & CLASS_FLAG_FINAL) {
       const char *parent_name = get_class_name_str(L, parent_idx);
-      luaL_error(L, "不能继承final类 '%s'", parent_name);
+      luaL_error(L, "cannot inherit from final class '%s'", parent_name);
       return;
     }
     if (flags & CLASS_FLAG_SEALED) {
       const char *parent_name = get_class_name_str(L, parent_idx);
-      luaL_error(L, "不能继承sealed类 '%s'", parent_name);
+      luaL_error(L, "cannot inherit from sealed class '%s'", parent_name);
       return;
     }
   }
@@ -1102,8 +1102,8 @@ void luaC_inherit(lua_State *L, int child_idx, int parent_idx) {
           lua_rawget(L, -2);
           if (lua_toboolean(L, -1)) {
             const char *parent_name = get_class_name_str(L, parent_idx);
-            luaL_error(L, "不能重写类 '%s' 的final方法 '%s'", 
-                       parent_name, method_name);
+            luaL_error(L, "cannot override final method '%s' of class '%s'",
+                       method_name, parent_name);
             return;
           }
           lua_pop(L, 1);
@@ -1309,7 +1309,7 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
   
   /* 检查是否是有效的类 */
   if (!luaC_isclass(L, class_idx)) {
-    luaL_error(L, "尝试实例化非类值");
+    luaL_error(L, "attempt to instantiate a non-class value");
     return;
   }
   
@@ -1319,11 +1319,11 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
   if (lua_isinteger(L, -1)) {
     int flags = (int)lua_tointeger(L, -1);
     if (flags & CLASS_FLAG_ABSTRACT) {
-      luaL_error(L, "不能实例化抽象类");
+      luaL_error(L, "cannot instantiate abstract class");
       return;
     }
     if (flags & CLASS_FLAG_INTERFACE) {
-      luaL_error(L, "不能实例化接口");
+      luaL_error(L, "cannot instantiate interface");
       return;
     }
   }
@@ -1531,8 +1531,8 @@ void luaC_setmethod(lua_State *L, int class_idx, TString *name, int func_idx) {
       lua_rawget(L, -2);
       if (lua_toboolean(L, -1)) {
         const char *parent_name = get_class_name_str(L, parent_idx);
-        luaL_error(L, "不能重写类 '%s' 的final方法 '%s'",
-                   parent_name, getstr(name));
+        luaL_error(L, "cannot override final method '%s' of class '%s'",
+                   getstr(name), parent_name);
         return;
       }
       lua_pop(L, 1);
@@ -2372,7 +2372,7 @@ int luaC_verify_abstracts(lua_State *L, int class_idx) {
       /* 方法未实现 */
       const char *classname = get_class_name_str(L, class_idx);
       const char *methodname = lua_tostring(L, -1);
-      luaL_error(L, "类 '%s' 必须实现抽象方法 '%s'", 
+      luaL_error(L, "class '%s' must implement abstract method '%s'",
                  classname, methodname ? methodname : "?");
       return 0;
     }
@@ -2381,8 +2381,8 @@ int luaC_verify_abstracts(lua_State *L, int class_idx) {
     if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
       const char *classname = get_class_name_str(L, class_idx);
       const char *methodname = lua_tostring(L, -1);
-      luaL_error(L, "类 '%s' 的方法 '%s' 参数数量不匹配: 期望 %d 个参数，实际 %d 个参数", 
-                 classname, methodname ? methodname : "?", 
+      luaL_error(L, "method '%s' of class '%s' has mismatched parameter count: expected %d, got %d",
+                 methodname ? methodname : "?", classname,
                  expected_params, actual_params);
       return 0;
     }
@@ -2500,9 +2500,8 @@ int luaC_verify_interfaces(lua_State *L, int class_idx) {
           /* 方法未实现 */
           const char *classname = get_class_name_str(L, class_idx);
           const char *methodname = lua_tostring(L, -1);
-          luaL_error(L, "类 '%s' 必须实现接口 '%s' 的方法 '%s'", 
-                     classname, iface_name,
-                     methodname ? methodname : "?");
+          luaL_error(L, "class '%s' must implement method '%s' of interface '%s'",
+                     classname, methodname ? methodname : "?", iface_name);
           return 0;
         }
         
@@ -2510,9 +2509,8 @@ int luaC_verify_interfaces(lua_State *L, int class_idx) {
         if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
           const char *classname = get_class_name_str(L, class_idx);
           const char *methodname = lua_tostring(L, -1);
-          luaL_error(L, "类 '%s' 实现接口 '%s' 的方法 '%s' 参数数量不匹配: 期望 %d 个参数，实际 %d 个参数", 
-                     classname, iface_name,
-                     methodname ? methodname : "?", 
+          luaL_error(L, "method '%s' from interface '%s' implemented by class '%s' has mismatched parameter count: expected %d, got %d",
+                     methodname ? methodname : "?", iface_name, classname,
                      expected_params, actual_params);
           return 0;
         }
@@ -2807,7 +2805,7 @@ void luaC_usetrait(lua_State *L, int class_idx, int trait_idx) {
   int flags = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 0;
   lua_pop(L, 1);
   if (!(flags & CLASS_FLAG_TRAIT)) {
-    luaL_error(L, "use的目标必须是trait");
+    luaL_error(L, "use target must be a trait");
     return;
   }
 
@@ -2953,7 +2951,7 @@ int luaC_verify_trait_requires(lua_State *L, int class_idx) {
       /* 方法未实现 */
       const char *classname = get_class_name_str(L, class_idx);
       const char *methodname = lua_tostring(L, -1);
-      luaL_error(L, "类 '%s' 必须实现trait的require方法 '%s'",
+      luaL_error(L, "class '%s' must implement required method '%s' from trait",
                  classname, methodname ? methodname : "?");
       return 0;
     }
@@ -2962,8 +2960,8 @@ int luaC_verify_trait_requires(lua_State *L, int class_idx) {
     if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
       const char *classname = get_class_name_str(L, class_idx);
       const char *methodname = lua_tostring(L, -1);
-      luaL_error(L, "类 '%s' 的方法 '%s' 参数数量不匹配trait要求: 期望 %d 个参数，实际 %d 个参数",
-                 classname, methodname ? methodname : "?",
+      luaL_error(L, "method '%s' of class '%s' does not match trait requirement: expected %d parameters, got %d",
+                 methodname ? methodname : "?", classname,
                  expected_params, actual_params);
       return 0;
     }
