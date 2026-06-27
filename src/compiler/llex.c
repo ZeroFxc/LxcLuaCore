@@ -1267,7 +1267,6 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         else if (check_next1(ls, '=')) return TK_DIVEQ;  /* '/=' 除法赋值 */
         else if (ls->current != '*' && ls->current != '\n' && ls->current != '\r') {
           /* 正则字面量：只有 / 后紧跟字母或 \ 时才尝试解析为正则
-           * (避免 lookahead 多读 token 时 lasttoken 未更新导致的除法/正则误判)
            * / 后是空格、数字、运算符、括号等时一定按除法处理 */
           if (lislalpha(ls->current) || ls->current == '\\') {
             switch (ls->lasttoken) {
@@ -1532,6 +1531,9 @@ int luaX_lookahead (LexState *ls) {
   }
   /* 保存当前行号，llex() 会更新 ls->linenumber，但 lookahead 不应改变当前 token 的行号 */
   int saved_linenumber = ls->linenumber;
+  /* 保存 lasttoken，并将 lasttoken 更新为当前 token，确保 / 能正确判断除法/正则 */
+  int saved_lasttoken = ls->lasttoken;
+  ls->lasttoken = ls->t.token;
   /* 检测当前 token 与 lookahead 之间是否有空白字符 */
   {
     int c = ls->current;
@@ -1541,11 +1543,13 @@ int luaX_lookahead (LexState *ls) {
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
   ls->lookahead.linenumber = ls->linenumber;  /* 记录lookahead token所在行号 */
   ls->linenumber = saved_linenumber;  /* 恢复当前行号 */
+  ls->lasttoken = saved_lasttoken;  /* 恢复 lasttoken */
   return ls->lookahead.token;
 }
 
 int luaX_lookahead2 (LexState *ls) {
   int saved_linenumber = ls->linenumber;
+  int saved_lasttoken = ls->lasttoken;
   if (ls->lookahead.token == TK_EOS) {
     /* 检测当前 token 与 lookahead 之间是否有空白字符 */
     {
@@ -1553,11 +1557,14 @@ int luaX_lookahead2 (LexState *ls) {
       ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                  c == '\n' || c == '\r');
     }
+    /* 更新 lasttoken 为当前 token，确保 / 能正确判断除法/正则 */
+    ls->lasttoken = ls->t.token;
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;  /* 记录token所在行号 */
   }
   if (ls->lookahead2.token != TK_EOS) {
     ls->linenumber = saved_linenumber;
+    ls->lasttoken = saved_lasttoken;
     return ls->lookahead2.token;
   }
   /* 检测 lookahead 与 lookahead2 之间是否有空白字符 */
@@ -1566,14 +1573,18 @@ int luaX_lookahead2 (LexState *ls) {
     ls->lookahead2.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                 c == '\n' || c == '\r');
   }
+  /* 更新 lasttoken 为第一个 lookahead token，确保 / 能正确判断除法/正则 */
+  ls->lasttoken = ls->lookahead.token;
   ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
   ls->lookahead2.linenumber = ls->linenumber;  /* 记录token所在行号 */
   ls->linenumber = saved_linenumber;
+  ls->lasttoken = saved_lasttoken;
   return ls->lookahead2.token;
 }
 
 int luaX_lookahead3 (LexState *ls) {
   int saved_linenumber = ls->linenumber;
+  int saved_lasttoken = ls->lasttoken;
   if (ls->lookahead.token == TK_EOS) {
     /* 检测当前 token 与 lookahead 之间是否有空白字符 */
     {
@@ -1581,6 +1592,8 @@ int luaX_lookahead3 (LexState *ls) {
       ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                  c == '\n' || c == '\r');
     }
+    /* 更新 lasttoken 为当前 token，确保 / 能正确判断除法/正则 */
+    ls->lasttoken = ls->t.token;
     ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
     ls->lookahead.linenumber = ls->linenumber;
   }
@@ -1591,11 +1604,14 @@ int luaX_lookahead3 (LexState *ls) {
       ls->lookahead2.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                   c == '\n' || c == '\r');
     }
+    /* 更新 lasttoken 为第一个 lookahead token，确保 / 能正确判断除法/正则 */
+    ls->lasttoken = ls->lookahead.token;
     ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
     ls->lookahead2.linenumber = ls->linenumber;
   }
   if (ls->lookahead3.token != TK_EOS) {
     ls->linenumber = saved_linenumber;
+    ls->lasttoken = saved_lasttoken;
     return ls->lookahead3.token;
   }
   /* 检测 lookahead2 与 lookahead3 之间是否有空白字符 */
@@ -1604,8 +1620,11 @@ int luaX_lookahead3 (LexState *ls) {
     ls->lookahead3.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                 c == '\n' || c == '\r');
   }
+  /* 更新 lasttoken 为第二个 lookahead token，确保 / 能正确判断除法/正则 */
+  ls->lasttoken = ls->lookahead2.token;
   ls->lookahead3.token = llex(ls, &ls->lookahead3.seminfo);
   ls->lookahead3.linenumber = ls->linenumber;
   ls->linenumber = saved_linenumber;
+  ls->lasttoken = saved_lasttoken;
   return ls->lookahead3.token;
 }

@@ -74,6 +74,7 @@ static void switchstat (LexState *ls, int line);  /* switch语句的前向声明
 static void matchstat (LexState *ls, int line);
 static void matchexpr (LexState *ls, expdesc *v);  /* match表达式的前向声明 */
 static void trystat (LexState *ls, int line);     /* try语句的前向声明 */
+static void guardstat (LexState *ls, int line);   /* guard语句的前向声明 */
 static void withstat (LexState *ls, int line);    /* with语句的前向声明 */
 static void classstat (LexState *ls, int line, int class_flags, int isexport);   /* class语句的前向声明 */
 static void namespacestat (LexState *ls, int line);
@@ -570,10 +571,12 @@ void check_match (LexState *ls, int what, int who, int where) {
 
 
 static int is_type_token(int token);
+static int is_nameable_keyword(int token);
+static int is_nametoken(int token);
 
 static TString *str_checkname (LexState *ls) {
   TString *ts;
-  if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+  if (is_nametoken(ls->t.token)) {
      ts = ls->t.seminfo.ts;
      luaX_next(ls);
      return ts;
@@ -1595,6 +1598,8 @@ static void fieldsel (LexState *ls, expdesc *v) {
       case TK_DEFAULT: ts = luaS_newliteral(ls->L, "default"); break;
       case TK_DEFER: ts = luaS_newliteral(ls->L, "defer"); break;
       case TK_DELETE: ts = luaS_newliteral(ls->L, "delete"); break;
+      case TK_GUARD: ts = luaS_newliteral(ls->L, "guard"); break;
+      case TK_LET: ts = luaS_newliteral(ls->L, "let"); break;
       case TK_DO: ts = luaS_newliteral(ls->L, "do"); break;
       case TK_ELSE: ts = luaS_newliteral(ls->L, "else"); break;
       case TK_ELSEIF: ts = luaS_newliteral(ls->L, "elseif"); break;
@@ -1947,7 +1952,7 @@ static void recfield (LexState *ls, ConsControl *cc) {
   FuncState *fs = ls->fs;
   int reg = ls->fs->freereg;
   expdesc tab, key, val;
-  if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+  if (is_nametoken(ls->t.token)) {
     checklimit(fs, cc->nh, MAX_INT, "items in a constructor");
     TString *ts = str_checkname(ls);
     codestring(&key, ts);
@@ -2047,7 +2052,10 @@ static void field (LexState *ls, ConsControl *cc) {
     case TK_BOOL:
     case TK_VOID:
     case TK_CHAR:
-    case TK_LONG: {  /* may be 'listfield' or 'recfield' */
+    case TK_LONG:
+    case TK_DELETE:
+    case TK_GUARD:
+    case TK_LET: {  /* may be 'listfield' or 'recfield' */
       int lookahead = luaX_lookahead(ls);
       if (lookahead != '=' && lookahead != ':')  /* expression? */
         listfield(ls, cc);
@@ -2410,7 +2418,7 @@ void parlist (LexState *ls, TString **varargname) {
   int isvararg = 0;
   if (ls->t.token != ')') {  /* is 'parlist' not empty? */
     do {
-      if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+      if (is_nametoken(ls->t.token)) {
           int vidx = new_localvar(ls, str_checkname(ls));
           getlocalvardesc(fs, vidx)->vd.hint = gettypehint(ls);
           /* 立即激活该参数变量并分配寄存器，以便后续默认值表达式可以引用它 */
@@ -2837,9 +2845,9 @@ static void lambda_parlist(LexState *ls, TString **varargname) {
     Proto *f = fs->f;
     int nparams = 0;
     f->is_vararg = 0;
-    if (ls->t.token == TK_NAME || ls->t.token == TK_DOTS || is_type_token(ls->t.token)) {
+    if (is_nametoken(ls->t.token) || ls->t.token == TK_DOTS) {
         do {
-            if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {  /* param -> NAME */
+            if (is_nametoken(ls->t.token)) {  /* param -> NAME */
                 new_localvar(ls, str_checkname(ls));
                 /* 立即激活该参数变量并分配寄存器 */
                 adjustlocalvars(ls, 1);
@@ -3218,7 +3226,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
          int nparams = 0;
          if (ls->t.token != ')') {
              do {
-                if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+                if (is_nametoken(ls->t.token)) {
                    new_localvar(ls, str_checkname(ls));
                    nparams++;
                 } else if (ls->t.token == TK_DOTS) {
@@ -3279,7 +3287,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
       luaX_next(ls); /* skip '(' */
 
       /* Check for (name) => or (...) => */
-      if ((ls->t.token == TK_NAME || ls->t.token == TK_DOTS || is_type_token(ls->t.token)) &&
+      if ((is_nametoken(ls->t.token) || ls->t.token == TK_DOTS) &&
           luaX_lookahead(ls) == ')' &&
           luaX_lookahead2(ls) == TK_MEAN) {
 
@@ -3287,7 +3295,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
           TString *param_name = NULL;
           int is_vararg = 0;
 
-          if (ls->t.token == TK_NAME || is_type_token(ls->t.token)) {
+          if (is_nametoken(ls->t.token)) {
              param_name = ls->t.seminfo.ts;
           } else {
              is_vararg = 1;
@@ -3400,7 +3408,10 @@ static void primaryexp (LexState *ls, expdesc *v) {
     case TK_BOOL:
     case TK_VOID:
     case TK_CHAR:
-    case TK_LONG: {
+    case TK_LONG:
+    case TK_DELETE:
+    case TK_GUARD:
+    case TK_LET: {
       singlevar(ls, v);
       return;
     }
@@ -3434,7 +3445,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
       expdesc keywords_table, key_exp;
       
       luaX_next(ls);  /* Skip '$' */
-      if (ls->t.token != TK_NAME && !is_type_token(ls->t.token))
+      if (!is_nametoken(ls->t.token))
         error_expected(ls, TK_NAME);
       kwname = ls->t.seminfo.ts;
       
@@ -3627,6 +3638,102 @@ static void primaryexp (LexState *ls, expdesc *v) {
       *v = operators_table;
       return;
     }
+    case '@': {  /* || -> 无参lambda 表达式 */
+      int line = ls->linenumber;
+      luaX_next(ls);  /* 跳过 '@' (即 ||) */
+
+      /* 期望 -> */
+      if (!testnext(ls, TK_ARROW)) {
+        luaX_syntaxerror(ls, "expected '->' after '||' in lambda expression");
+      }
+
+      /* 创建闭包 */
+      FuncState new_fs;
+      BlockCnt bl;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      open_func(ls, &new_fs, &bl);
+      new_fs.f->numparams = 0;
+      new_fs.f->is_vararg = 0;
+
+      /* 解析函数体 */
+      if (ls->t.token == '{') {
+        statement(ls);
+      } else {
+        enterlevel(ls);
+        retstat(ls);
+        new_fs.freereg = new_fs.nactvar;
+        leavelevel(ls);
+      }
+
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
+    case '|': {  /* |params| -> lambda 表达式 */
+      int line = ls->linenumber;
+      luaX_next(ls);  /* 跳过第一个 '|' */
+
+      /* 创建闭包 */
+      FuncState new_fs;
+      BlockCnt bl;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      open_func(ls, &new_fs, &bl);
+
+      TString *varargname = NULL;
+      int nparams = 0;
+
+      /* 解析参数列表 */
+      if (ls->t.token != '|') {
+        do {
+          if (is_nametoken(ls->t.token)) {
+            new_localvar(ls, str_checkname(ls));
+            nparams++;
+          } else if (ls->t.token == TK_DOTS) {
+            luaX_next(ls);
+            new_fs.f->is_vararg = 1;
+            if (ls->t.token == TK_NAME) {
+              varargname = ls->t.seminfo.ts;
+              luaX_next(ls);
+            }
+          } else {
+            luaX_syntaxerror(ls, "<name> or '...' expected in lambda parameter list");
+          }
+        } while (!new_fs.f->is_vararg && testnext(ls, ','));
+      }
+
+      adjustlocalvars(ls, nparams);
+      new_fs.f->numparams = cast_byte(new_fs.nactvar);
+      if (new_fs.f->is_vararg)
+        setvararg(&new_fs, new_fs.f->numparams);
+      luaK_reserveregs(&new_fs, new_fs.nactvar);
+      if (varargname) namedvararg(ls, varargname);
+
+      /* 期望闭合的 '|' */
+      checknext(ls, '|');
+
+      /* 期望 -> */
+      if (!testnext(ls, TK_ARROW)) {
+        luaX_syntaxerror(ls, "expected '->' after parameter list in lambda expression");
+      }
+
+      /* 解析函数体 */
+      if (ls->t.token == '{') {
+        statement(ls);
+      } else {
+        enterlevel(ls);
+        retstat(ls);
+        new_fs.freereg = new_fs.nactvar;
+        leavelevel(ls);
+      }
+
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
     default: {
       luaX_syntaxerror(ls, "unexpected symbol");
     }
@@ -3727,51 +3834,10 @@ static void suffixedexp (LexState *ls, expdesc *v) {
           codename(ls, &key);
         }
         else {
-          /* 处理关键字作为字段名的情况 */
-          TString *ts;
-          switch (ls->t.token) {
-            case TK_AND: ts = luaS_newliteral(ls->L, "and"); break;
-            case TK_BREAK: ts = luaS_newliteral(ls->L, "break"); break;
-            case TK_CASE: ts = luaS_newliteral(ls->L, "case"); break;
-            case TK_CATCH: ts = luaS_newliteral(ls->L, "catch"); break;
-            case TK_COMMAND: ts = luaS_newliteral(ls->L, "command"); break;
-            case TK_CONST: ts = luaS_newliteral(ls->L, "const"); break;
-            case TK_CONTINUE: ts = luaS_newliteral(ls->L, "continue"); break;
-            case TK_DEFAULT: ts = luaS_newliteral(ls->L, "default"); break;
-            case TK_DO: ts = luaS_newliteral(ls->L, "do"); break;
-            case TK_ELSE: ts = luaS_newliteral(ls->L, "else"); break;
-            case TK_ELSEIF: ts = luaS_newliteral(ls->L, "elseif"); break;
-            case TK_END: ts = luaS_newliteral(ls->L, "end"); break;
-            case TK_ENUM: ts = luaS_newliteral(ls->L, "enum"); break;
-            case TK_FALSE: ts = luaS_newliteral(ls->L, "false"); break;
-            case TK_FINALLY: ts = luaS_newliteral(ls->L, "finally"); break;
-            case TK_FOR: ts = luaS_newliteral(ls->L, "for"); break;
-            case TK_FUNCTION: ts = luaS_newliteral(ls->L, "function"); break;
-            case TK_GLOBAL: ts = luaS_newliteral(ls->L, "global"); break;
-            case TK_GOTO: ts = luaS_newliteral(ls->L, "goto"); break;
-            case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
-            case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
-            case TK_IS: ts = luaS_newliteral(ls->L, "is"); break;
-            case TK_INSTANCEOF: ts = luaS_newliteral(ls->L, "instanceof"); break;
-            case TK_LAMBDA: ts = luaS_newliteral(ls->L, "lambda"); break;
-            case TK_LOCAL: ts = luaS_newliteral(ls->L, "local"); break;
-            case TK_NIL: ts = luaS_newliteral(ls->L, "nil"); break;
-            case TK_NOT: ts = luaS_newliteral(ls->L, "not"); break;
-            case TK_OR: ts = luaS_newliteral(ls->L, "or"); break;
-            case TK_REPEAT: ts = luaS_newliteral(ls->L, "repeat"); break;
-            case TK_RETURN: ts = luaS_newliteral(ls->L, "return"); break;
-            case TK_SWITCH: ts = luaS_newliteral(ls->L, "switch"); break;
-            case TK_TAKE: ts = luaS_newliteral(ls->L, "take"); break;
-            case TK_THEN: ts = luaS_newliteral(ls->L, "then"); break;
-            case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
-            case TK_TRY: ts = luaS_newliteral(ls->L, "try"); break;
-            case TK_UNTIL: ts = luaS_newliteral(ls->L, "until"); break;
-            case TK_WHEN: ts = luaS_newliteral(ls->L, "when"); break;
-            case TK_WITH: ts = luaS_newliteral(ls->L, "with"); break;
-            case TK_WHILE: ts = luaS_newliteral(ls->L, "while"); break;
-            case TK_KEYWORD: ts = luaS_newliteral(ls->L, "keyword"); break;
-            case TK_OPERATOR: ts = luaS_newliteral(ls->L, "operator"); break;
-            default: error_expected(ls, TK_NAME);
+          /* 处理关键字作为字段名：所有保留字的seminfo.ts已由词法分析器设置 */
+          TString *ts = ls->t.seminfo.ts;
+          if (ts == NULL) {
+            error_expected(ls, TK_NAME);
           }
           codestring(&key, ts);
           luaX_next(ls);
@@ -5530,50 +5596,10 @@ static void cond_suffixedexp (LexState *ls, expdesc *v) {
           codename(ls, &key);
         }
         else {
-          TString *ts;
-          switch (ls->t.token) {
-            case TK_AND: ts = luaS_newliteral(ls->L, "and"); break;
-            case TK_BREAK: ts = luaS_newliteral(ls->L, "break"); break;
-            case TK_CASE: ts = luaS_newliteral(ls->L, "case"); break;
-            case TK_CATCH: ts = luaS_newliteral(ls->L, "catch"); break;
-            case TK_COMMAND: ts = luaS_newliteral(ls->L, "command"); break;
-            case TK_CONST: ts = luaS_newliteral(ls->L, "const"); break;
-            case TK_CONTINUE: ts = luaS_newliteral(ls->L, "continue"); break;
-            case TK_DEFAULT: ts = luaS_newliteral(ls->L, "default"); break;
-            case TK_DO: ts = luaS_newliteral(ls->L, "do"); break;
-            case TK_ELSE: ts = luaS_newliteral(ls->L, "else"); break;
-            case TK_ELSEIF: ts = luaS_newliteral(ls->L, "elseif"); break;
-            case TK_END: ts = luaS_newliteral(ls->L, "end"); break;
-            case TK_ENUM: ts = luaS_newliteral(ls->L, "enum"); break;
-            case TK_FALSE: ts = luaS_newliteral(ls->L, "false"); break;
-            case TK_FINALLY: ts = luaS_newliteral(ls->L, "finally"); break;
-            case TK_FOR: ts = luaS_newliteral(ls->L, "for"); break;
-            case TK_FUNCTION: ts = luaS_newliteral(ls->L, "function"); break;
-            case TK_GLOBAL: ts = luaS_newliteral(ls->L, "global"); break;
-            case TK_GOTO: ts = luaS_newliteral(ls->L, "goto"); break;
-            case TK_IF: ts = luaS_newliteral(ls->L, "if"); break;
-            case TK_IN: ts = luaS_newliteral(ls->L, "in"); break;
-            case TK_IS: ts = luaS_newliteral(ls->L, "is"); break;
-            case TK_INSTANCEOF: ts = luaS_newliteral(ls->L, "instanceof"); break;
-            case TK_LAMBDA: ts = luaS_newliteral(ls->L, "lambda"); break;
-            case TK_LOCAL: ts = luaS_newliteral(ls->L, "local"); break;
-            case TK_NIL: ts = luaS_newliteral(ls->L, "nil"); break;
-            case TK_NOT: ts = luaS_newliteral(ls->L, "not"); break;
-            case TK_OR: ts = luaS_newliteral(ls->L, "or"); break;
-            case TK_REPEAT: ts = luaS_newliteral(ls->L, "repeat"); break;
-            case TK_RETURN: ts = luaS_newliteral(ls->L, "return"); break;
-            case TK_SWITCH: ts = luaS_newliteral(ls->L, "switch"); break;
-            case TK_TAKE: ts = luaS_newliteral(ls->L, "take"); break;
-            case TK_THEN: ts = luaS_newliteral(ls->L, "then"); break;
-            case TK_TRUE: ts = luaS_newliteral(ls->L, "true"); break;
-            case TK_TRY: ts = luaS_newliteral(ls->L, "try"); break;
-            case TK_UNTIL: ts = luaS_newliteral(ls->L, "until"); break;
-            case TK_WHEN: ts = luaS_newliteral(ls->L, "when"); break;
-            case TK_WITH: ts = luaS_newliteral(ls->L, "with"); break;
-            case TK_WHILE: ts = luaS_newliteral(ls->L, "while"); break;
-            case TK_KEYWORD: ts = luaS_newliteral(ls->L, "keyword"); break;
-            case TK_OPERATOR: ts = luaS_newliteral(ls->L, "operator"); break;
-            default: error_expected(ls, TK_NAME);
+          /* 处理关键字作为字段名：所有保留字的seminfo.ts已由词法分析器设置 */
+          TString *ts = ls->t.seminfo.ts;
+          if (ts == NULL) {
+            error_expected(ls, TK_NAME);
           }
           codestring(&key, ts);
           luaX_next(ls);
@@ -7122,6 +7148,99 @@ static void switchstat (LexState *ls, int line) {
   }
 
   leaveblock(fs);
+}
+
+
+/*
+** guard 语句解析
+** 语法:
+**   guard cond else { block }
+**   guard let name = expr else { block }
+**
+** 功能:
+**   计算条件，如果条件为 nil/false，则执行 else 块；否则继续执行。
+**   guard let 形式先进行赋值，再检查是否为 nil。
+*/
+static void guardstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  expdesc v;
+  int jf;  /* 条件为假时跳转到 else 块 */
+  int nvars = 0;
+
+  luaX_next(ls);  /* skip GUARD */
+
+  /* 检查是否是 guard let 形式 */
+  if (testnext(ls, TK_LET)) {
+    /* guard let name = expr else { ... } */
+    nvars = 1;
+    /* 解析变量名 */
+    if (ls->t.token == TK_NAME) {
+      TString *varname = str_checkname(ls);
+      /* 创建局部变量 */
+      new_localvar(ls, varname);
+      adjustlocalvars(ls, 1);
+      luaK_reserveregs(fs, 1);
+    } else {
+      luaX_syntaxerror(ls, "<name> expected after 'let' in guard statement");
+    }
+    checknext(ls, '=');
+    expr(ls, &v);
+    /* 将表达式赋值给新变量 */
+    {
+      expdesc var;
+      init_var(fs, &var, fs->nactvar - 1);
+      luaK_storevar(fs, &var, &v);
+    }
+    /* 重新加载变量进行nil检查 */
+    init_exp(&v, VLOCAL, fs->nactvar - 1);
+    luaK_dischargevars(fs, &v);
+  } else {
+    /* 普通 guard cond else { ... } */
+    cond_expr(ls, &v);
+  }
+
+  checknext(ls, TK_ELSE);
+
+  /* 解析 else 块 */
+  if (ls->t.token != '{') {
+    luaX_syntaxerror(ls, "'{' expected after 'else' in guard statement");
+  }
+  luaX_next(ls);  /* skip '{' */
+
+  /* 条件为假/nil时执行 else 块 */
+  if (nvars) {
+    /* guard let: 检查变量是否为 nil
+     * luaK_goifnil语义:
+     *   - nil时 → fall through（执行else块）
+     *   - 非nil时 → 跳转到v.t列表
+     */
+    luaK_goifnil(fs, &v);
+
+    /* 解析 else 块（nil时执行） */
+    while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+      statement(ls);
+    }
+    checknext(ls, '}');
+
+    /* 非nil时跳转到这里，跳过else块继续执行 */
+    luaK_patchtohere(fs, v.t);
+  } else {
+    /* 普通guard: cond为假时执行else块，为真时跳过
+     * luaK_goiffalse语义:
+     *   - 条件为假 → fall through（执行else块）
+     *   - 条件为真 → 跳转到v.t列表（跳过else块）
+     */
+    luaK_goiffalse(fs, &v);
+
+    /* 解析 else 块（条件为假时执行） */
+    while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+      statement(ls);
+    }
+    checknext(ls, '}');
+
+    /* 条件为真时跳转到这里，跳过else块继续执行 */
+    luaK_patchtohere(fs, v.t);
+  }
 }
 
 
@@ -10356,7 +10475,7 @@ static void keywordstat (LexState *ls, int line) {
   luaX_next(ls);  /* skip KEYWORD */
   
   /* 先保存关键字名（不消费 token）允许类型标记作为keyword名 */
-  if (ls->t.token != TK_NAME && !is_type_token(ls->t.token))
+  if (!is_nametoken(ls->t.token))
     error_expected(ls, TK_NAME);
   kwname = ls->t.seminfo.ts;
   
@@ -11414,6 +11533,16 @@ static int is_type_token(int token) {
   return token == TK_TYPE_INT || token == TK_TYPE_FLOAT || token == TK_DOUBLE ||
          token == TK_BOOL || token == TK_VOID || token == TK_CHAR ||
          token == TK_LONG || token == TK_NAME; /* NAME for structs/classes */
+}
+
+/* 判断token是否是可作为标识符使用的软关键字（delete/guard/let） */
+static int is_nameable_keyword(int token) {
+  return token == TK_DELETE || token == TK_GUARD || token == TK_LET;
+}
+
+/* 判断token是否可作为名字使用（普通名字+类型名+软关键字） */
+static int is_nametoken(int token) {
+  return token == TK_NAME || is_type_token(token) || is_nameable_keyword(token);
 }
 
 /*
@@ -12989,6 +13118,32 @@ static void deferstat (LexState *ls) {
 }
 
 /**
+ * 解析 delete 语句
+ * 语法: delete suffixedexp
+ * 功能: 删除表中的指定键（将其设为nil）
+ * 示例: delete t.key, delete t["key"], delete t.a.b.c
+ * 
+ * @param ls 词法分析器状态
+ */
+static void deletestat (LexState *ls) {
+  FuncState *fs = ls->fs;
+  luaX_next(ls);  /* 跳过 delete 关键字 */
+
+  expdesc v;
+  suffixedexp(ls, &v);  /* 解析要删除的变量/字段 */
+
+  /* 只能删除表字段或全局变量，不能删除局部变量/upvalue */
+  check_condition(ls, vkisindexed(v.k) || v.k == VINDEXED || v.k == VINDEXUP || v.k == VINDEXI || v.k == VINDEXSTR,
+                  "cannot delete local variable or upvalue");
+  check_readonly(ls, &v);
+
+  /* 生成nil常量并赋值给该字段 */
+  expdesc nilval;
+  init_exp(&nilval, VNIL, 0);
+  luaK_storevar(fs, &v, &nilval);
+}
+
+/**
  * 解析 C++ 风格的函数参数列表
  * 支持类型前缀（int x, float y 等）和参数默认值（x = expr）
  * 
@@ -13353,8 +13508,26 @@ void statement (LexState *ls) {
       trystat(ls, line);
       break;
     }
+    case TK_GUARD: {  /* stat -> guardstat */
+      guardstat(ls, line);
+      break;
+    }
     case TK_DEFER: {
       deferstat(ls);
+      break;
+    }
+    case TK_DELETE: {
+      deletestat(ls);
+      break;
+    }
+    case TK_LET: {  /* let 变量声明，类似 local */
+      luaX_next(ls);  /* skip LET */
+      if (testnext(ls, TK_FUNCTION))  /* let function? */
+        localfunc(ls, 0, 0);
+      else if (testnext(ls, TK_TAKE))  /* let take {...} = expr 解构? */
+        takestat_full(ls);
+      else
+        localstat(ls, 0);
       break;
     }
     case TK_WITH: {  /* stat -> withstat */
