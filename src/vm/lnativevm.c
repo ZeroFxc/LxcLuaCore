@@ -94,6 +94,18 @@ enum {
   NI_SQRT,        /* R[a] = sqrt(R[b]) */
   NI_HALT,        /* stop */
   NI_CALL,        /* R[a] = call(R[b], R[c..c+imm-1], imm) — 统一调用 Lua/NLang 函数 */
+  NI_GETFIELD,   /* R[a] = getfield(R[b], key_ref) — 成员访问 t.key */
+  NI_GETTABLE,   /* R[a] = gettable(R[b], R[c]) — 索引访问 t[idx] */
+  NI_SETFIELD,   /* setfield(R[a], key_ref, R[b]) — 成员赋值 t.key = val */
+  NI_SETTABLE,   /* settable(R[a], R[b], R[c]) — 索引赋值 t[idx] = val */
+  NI_LEN,        /* R[a] = #R[b] — 长度运算符 */
+  NI_CONCAT,     /* R[a] = R[b] .. R[c] — 字符串拼接 */
+  NI_POW,        /* R[a] = R[b] ^ R[c] — 幂运算 */
+  NI_IDIV,       /* R[a] = R[b] // R[c] — 整除 */
+  NI_BNOT,       /* R[a] = ~R[b] — 按位取反 */
+  NI_FOR_IN_INIT,/* for_in_init(R[a..a+n-1], R[b..b+m-1]) — 泛型for初始化 */
+  NI_FOR_IN_NEXT,/* for_in_next(R[a..a+n-1]) — 泛型for迭代 */
+  NI_LOADKPTR,   /* R[a] = imm32 as NTYPE_PTR（Lua registry 引用） */
   NI_MAX
 };
 
@@ -147,6 +159,11 @@ typedef struct {
   int ncode;           /* 字节码长度 */
   int nregs;           /* 函数需要的寄存器数 */
   int nparams;         /* 参数个数 */
+  /* 上值（闭包捕获的外部变量） */
+  int *upvalue_src;    /* 上值在父作用域中的寄存器索引 */
+  int *upvalue_dst;    /* 上值在闭包中的寄存器索引 */
+  int nupvalues;       /* 上值数量 */
+  NReg *upvalue_data;  /* 上值持久化数据（跨调用保存） */
 } NLangFunc;
 
 /* 调用栈帧：保存执行上下文 */
@@ -171,6 +188,9 @@ typedef struct NativeVM {
   CallFrame *call_stack;     /* 调用栈 */
   int call_depth, cap_call;  /* 调用深度/容量 */
   int func_returning;        /* 标记：当前正在从函数返回（跳过 HALT） */
+  /* 寄存器保存栈：预分配，避免每次递归调用 malloc/free */
+  NReg *reg_save_buf;        /* 寄存器保存缓冲区，按 save_count * call_depth 索引 */
+  int   reg_save_cap;        /* 缓冲区容量（以 NReg 个数计） */
 } NativeVM;
 
 
@@ -187,6 +207,12 @@ static void push_reg_to_lua(NativeVM *nv, int reg) {
     case NTYPE_INT:   lua_pushinteger(L, r->v.i); break;
     case NTYPE_FLOAT: lua_pushnumber(L, r->v.f); break;
     case NTYPE_NIL:   lua_pushnil(L); break;
+    case NTYPE_PTR: {
+      /* 从 Lua registry 取出实际值（字符串、表等对象引用） */
+      int ref = (int)(intptr_t)r->v.p;
+      lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+      break;
+    }
     default:          lua_pushnil(L); break;
   }
 }
@@ -212,6 +238,12 @@ static void pop_lua_to_reg(NativeVM *nv, int reg) {
   } else if (ltype == LUA_TNIL) {
     nv->regs[reg].type = NTYPE_NIL;
     nv->regs[reg].v.i = 0;
+  } else if (ltype == LUA_TSTRING || ltype == LUA_TTABLE) {
+    /* 将字符串/表存入 Lua registry，ref 存为 NTYPE_PTR */
+    lua_pushvalue(L, -1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    nv->regs[reg].type = NTYPE_PTR;
+    nv->regs[reg].v.p = (void *)(intptr_t)ref;
   } else {
     nv->regs[reg].type = NTYPE_NIL;
     nv->regs[reg].v.i = 0;
@@ -230,9 +262,49 @@ static void pop_lua_to_reg(NativeVM *nv, int reg) {
 static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nargs, int ret_reg) {
   if (func_id < 0 || func_id >= nv->nfuncs) return;
   NLangFunc *f = &nv->funcs[func_id];
-  /* 将参数复制到函数的前 nargs 个寄存器 */
+  /* 扩展寄存器数组以容纳函数体所需的寄存器 */
+  if (f->nregs > nv->nregs) {
+    nv->regs = (NReg *)realloc(nv->regs, sizeof(NReg) * f->nregs);
+    /* 将新增的寄存器清零 */
+    for (int i = nv->nregs; i < f->nregs; i++) {
+      nv->regs[i].type = NTYPE_NIL;
+      nv->regs[i].v.i = 0;
+    }
+  }
+  /* 保存调用者的所有寄存器（按当前实际大小，不是函数体大小） */
+  int save_count = nv->nregs;
+  /* 使用预分配缓冲区，避免每次递归调用 malloc/free */
+  int save_offset = nv->call_depth * save_count;
+  int save_needed = save_offset + save_count;
+  if (save_count > 0 && save_needed > nv->reg_save_cap) {
+    /* 扩展缓冲区：保持索引对齐，每次至少翻倍 */
+    int new_cap = nv->reg_save_cap ? nv->reg_save_cap * 2 : save_count * 16;
+    if (new_cap < save_needed) new_cap = save_needed;
+    nv->reg_save_buf = (NReg *)realloc(nv->reg_save_buf, sizeof(NReg) * new_cap);
+    nv->reg_save_cap = new_cap;
+  }
+  NReg *saved_regs = save_count > 0 ? &nv->reg_save_buf[save_offset] : NULL;
+  if (saved_regs) {
+    memcpy(saved_regs, nv->regs, sizeof(NReg) * save_count);
+  }
+  /* 将参数复制到函数的参数寄存器（R1 开始，R0 保留给自引用） */
   for (int i = 0; i < nargs && i < f->nregs && (args_start + i) < nv->nregs; i++) {
-    nv->regs[i] = nv->regs[args_start + i];
+    nv->regs[i + 1] = nv->regs[args_start + i];
+  }
+  /* 初始化上值：必须在设置 R0 自引用之前，因为上值可能引用 R0 */
+  if (f->nupvalues > 0) {
+    for (int i = 0; i < f->nupvalues; i++) {
+      int src = f->upvalue_src[i];
+      int dst = f->upvalue_dst[i];
+      if (src < nv->nregs && dst < f->nregs) {
+        nv->regs[dst] = nv->regs[src];
+      }
+    }
+  }
+  /* 设置 R0 为自引用（NTYPE_FUNC），使函数体内可以通过函数名递归调用自己 */
+  if (f->nregs > 0) {
+    nv->regs[0].type = NTYPE_FUNC;
+    nv->regs[0].v.i = func_id;
   }
   /* 执行函数字节码 */
   int saved_ret_dst = nv->func_returning;
@@ -240,6 +312,9 @@ static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nar
   nv->halted = 0;
   nv->retstart = 0;
   nv->retcount = 0;
+  /* 临时切换寄存器数量为函数体的 nregs，确保指令边界检查正确 */
+  int saved_nregs = nv->nregs;
+  nv->nregs = f->nregs;
   {
     const lua_Integer *fcode = f->code;
     int fncode = f->ncode;
@@ -255,6 +330,16 @@ static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nar
         case NI_NOP: break;
         case NI_LOADK:  nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (int64_t)fimm; break;
         case NI_LOADKF: { union { int32_t i; float f; } u; u.i = fimm; nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = (double)u.f; } break;
+        case NI_LOADK64:
+          if (fpc + 1 < fncode && NI_OP(fcode[fpc + 1]) == NI_LOADKHI) {
+            int64_t hi = (int64_t)NI_IMM(fcode[fpc + 1]) << 32;
+            nv->regs[fa].type = NTYPE_INT;
+            nv->regs[fa].v.i = hi | (int64_t)(uint32_t)fimm;
+            fpc += 2; continue;
+          }
+          nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (int64_t)fimm; break;
+        case NI_LOADKHI: break;
+        case NI_LOADKPTR: nv->regs[fa].type = NTYPE_PTR; nv->regs[fa].v.p = (void *)(intptr_t)fimm; break;
         case NI_MOV: if (fb < nv->nregs) nv->regs[fa] = nv->regs[fb]; break;
         case NI_ADD: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i + nv->regs[fc].v.i; } break;
         case NI_SUB: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i - nv->regs[fc].v.i; } break;
@@ -282,11 +367,16 @@ static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nar
         case NI_RET: {
           int ret_cnt = fb; if (ret_cnt <= 0) ret_cnt = 1;
           int rdst = nv->func_returning;
-          if (rdst >= 0 && rdst < nv->nregs) {
-            for (int ri = 0; ri < ret_cnt && (fa + ri) < nv->nregs && (rdst + ri) < nv->nregs; ri++) {
+          /* 始终写入返回值到 rdst，即使 rdst 超出当前函数体的 nregs
+           * （因为 nv->regs 数组实际大小是调用者的 nregs，这里只是临时限制了边界） */
+          if (rdst >= 0) {
+            for (int ri = 0; ri < ret_cnt && (fa + ri) < nv->nregs; ri++) {
               nv->regs[rdst + ri] = nv->regs[fa + ri];
             }
           }
+          /* 设置返回值位置，供 native_call_nlang 读取 */
+          nv->retstart = rdst >= 0 ? rdst : fa;
+          nv->retcount = ret_cnt;
           nv->halted = 1;
           break;
         }
@@ -300,12 +390,141 @@ static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nar
         case NI_SETNIL: nv->regs[fa].type = NTYPE_NIL; nv->regs[fa].v.i = 0; break;
         case NI_ISNIL: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].type == NTYPE_NIL) ? 1 : 0; } break;
         case NI_SQRT: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; double val = (nv->regs[fb].type == NTYPE_INT) ? (double)nv->regs[fb].v.i : nv->regs[fb].v.f; nv->regs[fa].v.f = (val >= 0.0) ? sqrt(val) : 0.0; } break;
+        case NI_GETFIELD:
+          if (fb < nv->nregs && nv->L) { lua_State *L = nv->L; int kref = (int)fimm; push_reg_to_lua(nv, fb); lua_rawgeti(L, LUA_REGISTRYINDEX, kref); lua_gettable(L, -2); pop_lua_to_reg(nv, fa); lua_pop(L, 1); }
+          break;
+        case NI_GETTABLE:
+          if (fb < nv->nregs && fc < nv->nregs && nv->L) { lua_State *L = nv->L; push_reg_to_lua(nv, fb); push_reg_to_lua(nv, fc); lua_gettable(L, -2); pop_lua_to_reg(nv, fa); lua_pop(L, 1); }
+          break;
+        case NI_SETFIELD:
+          if (fa < nv->nregs && fb < nv->nregs && nv->L) { lua_State *L = nv->L; int kref = (int)fimm; push_reg_to_lua(nv, fa); lua_rawgeti(L, LUA_REGISTRYINDEX, kref); push_reg_to_lua(nv, fb); lua_settable(L, -3); lua_pop(L, 1); }
+          break;
+        case NI_SETTABLE:
+          if (fa < nv->nregs && fb < nv->nregs && fc < nv->nregs && nv->L) { lua_State *L = nv->L; push_reg_to_lua(nv, fa); push_reg_to_lua(nv, fb); push_reg_to_lua(nv, fc); lua_settable(L, -3); lua_pop(L, 1); }
+          break;
+        case NI_LEN:
+          if (fb < nv->nregs && nv->L) { lua_State *L = nv->L; push_reg_to_lua(nv, fb); lua_len(L, -1); pop_lua_to_reg(nv, fa); lua_pop(L, 1); }
+          break;
+        case NI_CONCAT:
+          if (fb < nv->nregs && fc < nv->nregs && nv->L) { lua_State *L = nv->L; push_reg_to_lua(nv, fb); push_reg_to_lua(nv, fc); lua_concat(L, 2); pop_lua_to_reg(nv, fa); }
+          break;
+        case NI_POW:
+          if (fb < nv->nregs && fc < nv->nregs && nv->L) { lua_State *L = nv->L; push_reg_to_lua(nv, fb); push_reg_to_lua(nv, fc); lua_getglobal(L, "math"); if (lua_istable(L, -1)) { lua_getfield(L, -1, "pow"); lua_pushvalue(L, -4); lua_pushvalue(L, -4); lua_call(L, 2, 1); } pop_lua_to_reg(nv, fa); lua_pop(L, 2); }
+          break;
+        case NI_IDIV:
+          if (fb < nv->nregs && fc < nv->nregs) { int64_t dv = nv->regs[fc].v.i; if (dv) { int64_t lh = nv->regs[fb].v.i; int64_t q = lh / dv; if (lh % dv != 0 && ((lh ^ dv) < 0)) q--; nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = q; } }
+          break;
+        case NI_BNOT:
+          if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = ~nv->regs[fb].v.i; }
+          break;
+        case NI_FOR_IN_INIT:
+          if (fa < nv->nregs) { for (int i = 0; i < (int)fimm && (fa + i) < nv->nregs; i++) { nv->regs[fa + i].type = NTYPE_NIL; nv->regs[fa + i].v.i = 0; } }
+          break;
+        case NI_FOR_IN_NEXT:
+          if (fa < nv->nregs && nv->L) { lua_State *L = nv->L; if (nv->regs[fa].type == NTYPE_PTR) { int lref = (int)(intptr_t)nv->regs[fa].v.p; lua_rawgeti(L, LUA_REGISTRYINDEX, lref); if (lua_isfunction(L, -1)) { push_reg_to_lua(nv, fa + 1); push_reg_to_lua(nv, fa + 2); if (lua_pcall(L, 2, LUA_MULTRET, 0) == LUA_OK) { int nret = lua_gettop(L); if (nret == 0 || lua_isnil(L, 1)) { nv->regs[fa].type = NTYPE_NIL; nv->regs[fa].v.i = 0; } else { for (int i = 0; i < (int)fimm && i < nret && (fa + i) < nv->nregs; i++) { lua_pushvalue(L, i + 1); pop_lua_to_reg(nv, fa + i); } } lua_settop(L, 0); } } else { lua_pop(L, 1); nv->regs[fa].type = NTYPE_NIL; nv->regs[fa].v.i = 0; } } }
+          break;
+        case NI_CALL:
+          /* 递归调用：R[fa] = call(R[fb], R[fc..fc+imm-1], imm) */
+          if (fb < nv->nregs) {
+            if (nv->regs[fb].type == NTYPE_FUNC ||
+                (nv->regs[fb].type == NTYPE_INT && nv->regs[fb].v.i >= 0 && nv->regs[fb].v.i < nv->nfuncs)) {
+              /* NLang 函数递归调用 */
+              int nested_func_id = (int)nv->regs[fb].v.i;
+              int nested_nargs = (int)fimm;
+              if (nested_nargs <= 0) nested_nargs = 0;
+              /* 保存当前执行位置到调用栈 */
+              if (nv->call_depth >= nv->cap_call) {
+                nv->cap_call = nv->cap_call ? nv->cap_call * 2 : 16;
+                nv->call_stack = (CallFrame *)realloc(nv->call_stack, sizeof(CallFrame) * nv->cap_call);
+              }
+              CallFrame *frame = &nv->call_stack[nv->call_depth++];
+              frame->saved_pc = 0;  /* 由 native_call_nlang 内部管理 */
+              frame->saved_retstart = nv->retstart;
+              frame->saved_retcount = nv->retcount;
+              frame->func_id = nested_func_id;
+              native_call_nlang(nv, nested_func_id, fc, nested_nargs, fa);
+              nv->call_depth--;
+              nv->halted = 0;  /* 递归调用返回后清除 halted，继续执行父函数 */
+            } else if (nv->regs[fb].type == NTYPE_PTR && nv->L) {
+              /* Lua 函数递归调用 */
+              lua_State *L = nv->L;
+              int lua_ref = (int)(intptr_t)nv->regs[fb].v.p;
+              int nargs = (int)fimm;
+              if (nargs < 0) nargs = 0;
+              lua_rawgeti(L, LUA_REGISTRYINDEX, lua_ref);
+              if (lua_isfunction(L, -1)) {
+                for (int i = 0; i < nargs && (fc + i) < nv->nregs; i++) {
+                  push_reg_to_lua(nv, fc + i);
+                }
+                if (lua_pcall(L, nargs, 1, 0) == LUA_OK) {
+                  pop_lua_to_reg(nv, fa);
+                } else {
+                  lua_pop(L, 1);
+                  nv->regs[fa].type = NTYPE_NIL;
+                  nv->regs[fa].v.i = 0;
+                }
+              } else {
+                lua_pop(L, 1);
+                nv->regs[fa].type = NTYPE_NIL;
+                nv->regs[fa].v.i = 0;
+              }
+            } else {
+              nv->regs[fa].type = NTYPE_NIL;
+              nv->regs[fa].v.i = 0;
+            }
+          }
+          break;
         default: break;
       }
       fpc = fnext;
     }
   }
+  nv->nregs = saved_nregs;
   nv->func_returning = saved_ret_dst;
+  /* 保存返回值（在恢复寄存器之前，因为返回值在函数体寄存器范围内） */
+  int ret_cnt = nv->retcount;
+  if (ret_cnt <= 0) ret_cnt = 1;
+  NReg saved_ret[8];  /* 栈缓冲区，最多 8 个返回值 */
+  int has_ret = 0;
+  if (saved_regs && nv->retstart >= 0 && nv->retstart < save_count) {
+    for (int i = 0; i < ret_cnt && i < 8 && (nv->retstart + i) < save_count; i++) {
+      saved_ret[i] = nv->regs[nv->retstart + i];
+    }
+    has_ret = 1;
+  }
+  /* 保存上值修改（在恢复寄存器之前，闭包的上值寄存器在 R[0..f->nregs-1] 内） */
+  NReg saved_upvalues[16];  /* 栈缓冲区，最多 16 个上值 */
+  int n_saved_uv = 0;
+  if (f->nupvalues > 0 && f->nupvalues <= 16) {
+    n_saved_uv = f->nupvalues;
+    for (int i = 0; i < f->nupvalues; i++) {
+      int dst = f->upvalue_dst[i];
+      if (dst < f->nregs) {
+        saved_upvalues[i] = nv->regs[dst];
+      }
+    }
+  }
+  /* 恢复调用者的所有寄存器（预分配缓冲区无需 free） */
+  if (saved_regs) {
+    memcpy(nv->regs, saved_regs, sizeof(NReg) * save_count);
+  }
+  /* 将返回值写回 */
+  if (has_ret) {
+    for (int i = 0; i < ret_cnt && i < 8 && (nv->retstart + i) < save_count; i++) {
+      nv->regs[nv->retstart + i] = saved_ret[i];
+    }
+  }
+  /* 上值写回：将闭包修改后的上值写回父作用域寄存器 */
+  if (n_saved_uv > 0) {
+    for (int i = 0; i < n_saved_uv; i++) {
+      int src = f->upvalue_src[i];
+      if (src < nv->nregs) {
+        nv->regs[src] = saved_upvalues[i];
+      }
+      /* 同时更新持久化存储 */
+      f->upvalue_data[i] = saved_upvalues[i];
+    }
+  }
 }
 
 static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
@@ -351,6 +570,11 @@ static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
 
     case NI_LOADKHI:
       /* 不应单独出现，跳过 */
+      break;
+
+    case NI_LOADKPTR:
+      nv->regs[a].type = NTYPE_PTR;
+      nv->regs[a].v.p = (void *)(intptr_t)imm;
       break;
 
     case NI_MOV:
@@ -626,15 +850,28 @@ static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
           }
           CallFrame *frame = &nv->call_stack[nv->call_depth++];
           frame->saved_pc = pc + 1;
-          frame->saved_retstart = nv->retstart;
-          frame->saved_retcount = nv->retcount;
           frame->func_id = func_id;
           native_call_nlang(nv, func_id, c, nargs, a);
           /* 恢复调用者上下文 */
           nv->call_depth--;
+          nv->halted = 0;  /* 函数返回后清除 halted，继续执行后续指令 */
           next = frame->saved_pc;
-          nv->retstart = frame->saved_retstart;
-          nv->retcount = frame->saved_retcount;
+        } else if (nv->regs[b].type == NTYPE_INT && nv->regs[b].v.i >= 0 && nv->regs[b].v.i < nv->nfuncs) {
+          /* 整数 func_id（编译器回填的占位符）→ NLang 函数调用 */
+          int func_id = (int)nv->regs[b].v.i;
+          int nargs = (int)imm;
+          if (nargs <= 0) nargs = 0;
+          if (nv->call_depth >= nv->cap_call) {
+            nv->cap_call = nv->cap_call ? nv->cap_call * 2 : 16;
+            nv->call_stack = (CallFrame *)realloc(nv->call_stack, sizeof(CallFrame) * nv->cap_call);
+          }
+          CallFrame *frame = &nv->call_stack[nv->call_depth++];
+          frame->saved_pc = pc + 1;
+          frame->func_id = func_id;
+          native_call_nlang(nv, func_id, c, nargs, a);
+          nv->call_depth--;
+          nv->halted = 0;  /* 函数返回后清除 halted，继续执行后续指令 */
+          next = frame->saved_pc;
         } else if (nv->regs[b].type == NTYPE_PTR && nv->L) {
           /* Lua 函数调用: R[b].v.p 存储 registry 引用索引 */
           lua_State *L = nv->L;
@@ -670,6 +907,168 @@ static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
       }
       break;
 
+    case NI_GETFIELD:
+      /* R[a] = getfield(R[b], key_ref): 通过 lua_State 获取字段 */
+      if (b < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        int key_ref = (int)imm;
+        push_reg_to_lua(nv, b);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, key_ref);
+        lua_gettable(L, -2);
+        pop_lua_to_reg(nv, a);
+        lua_pop(L, 1);  /* 弹出表 */
+      }
+      break;
+
+    case NI_GETTABLE:
+      /* R[a] = gettable(R[b], R[c]): 通过 lua_State 索引访问 */
+      if (b < nv->nregs && c < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        push_reg_to_lua(nv, b);
+        push_reg_to_lua(nv, c);
+        lua_gettable(L, -2);
+        pop_lua_to_reg(nv, a);
+        lua_pop(L, 1);  /* 弹出表 */
+      }
+      break;
+
+    case NI_SETFIELD:
+      /* setfield(R[a], key_ref, R[b]): 成员赋值 t.key = val */
+      if (a < nv->nregs && b < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        int key_ref = (int)imm;
+        push_reg_to_lua(nv, a);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, key_ref);
+        push_reg_to_lua(nv, b);
+        lua_settable(L, -3);
+        lua_pop(L, 1);  /* 弹出表 */
+      }
+      break;
+
+    case NI_SETTABLE:
+      /* settable(R[a], R[b], R[c]): 索引赋值 t[idx] = val */
+      if (a < nv->nregs && b < nv->nregs && c < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        push_reg_to_lua(nv, a);
+        push_reg_to_lua(nv, b);
+        push_reg_to_lua(nv, c);
+        lua_settable(L, -3);
+        lua_pop(L, 1);  /* 弹出表 */
+      }
+      break;
+
+    case NI_LEN:
+      /* R[a] = #R[b]: 长度运算符 */
+      if (b < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        push_reg_to_lua(nv, b);
+        lua_len(L, -1);
+        pop_lua_to_reg(nv, a);
+        lua_pop(L, 1);
+      }
+      break;
+
+    case NI_CONCAT:
+      /* R[a] = R[b] .. R[c]: 字符串拼接 */
+      if (b < nv->nregs && c < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        push_reg_to_lua(nv, b);
+        push_reg_to_lua(nv, c);
+        lua_concat(L, 2);
+        pop_lua_to_reg(nv, a);
+      }
+      break;
+
+    case NI_POW:
+      /* R[a] = R[b] ^ R[c]: 幂运算 */
+      if (b < nv->nregs && c < nv->nregs && nv->L) {
+        lua_State *L = nv->L;
+        push_reg_to_lua(nv, b);
+        push_reg_to_lua(nv, c);
+        /* 调用 math.pow */
+        lua_getglobal(L, "math");
+        if (lua_istable(L, -1)) {
+          lua_getfield(L, -1, "pow");
+          lua_pushvalue(L, -4);
+          lua_pushvalue(L, -4);
+          lua_call(L, 2, 1);
+        }
+        pop_lua_to_reg(nv, a);
+        lua_pop(L, 2);  /* 弹出 math 表和多余值 */
+      }
+      break;
+
+    case NI_IDIV:
+      /* R[a] = R[b] // R[c]: 整除 */
+      if (b < nv->nregs && c < nv->nregs) {
+        int64_t divisor = nv->regs[c].v.i;
+        if (divisor != 0) {
+          /* Lua 整除：向负无穷取整 */
+          int64_t lhs = nv->regs[b].v.i;
+          int64_t q = lhs / divisor;
+          if (lhs % divisor != 0 && ((lhs ^ divisor) < 0)) q--;
+          nv->regs[a].type = NTYPE_INT;
+          nv->regs[a].v.i = q;
+        }
+      }
+      break;
+
+    case NI_BNOT:
+      /* R[a] = ~R[b]: 按位取反 */
+      if (b < nv->nregs) {
+        nv->regs[a].type = NTYPE_INT;
+        nv->regs[a].v.i = ~nv->regs[b].v.i;
+      }
+      break;
+
+    case NI_FOR_IN_INIT:
+      /* for_in_init(R[a..a+n-1], R[b..b+m-1]): 泛型for初始化
+       * 将循环变量寄存器初始化为 nil，实际迭代由 FOR_IN_NEXT 驱动 */
+      {
+        int nvars = ((int)imm >> 16) & 0xFF;
+        for (int i = 0; i < nvars && (a + i) < nv->nregs; i++) {
+          nv->regs[a + i].type = NTYPE_NIL;
+          nv->regs[a + i].v.i = 0;
+        }
+      }
+      break;
+
+    case NI_FOR_IN_NEXT:
+      /* for_in_next(R[a..a+n-1]): 泛型for迭代，从 R[a] 取迭代器函数，下一值存入 R[a..a+n-1]
+       * imm: nvars */
+      if (a < nv->nregs && nv->L) {
+        int nvars = (int)imm;
+        lua_State *L = nv->L;
+        /* 调用迭代器函数：R[a] 是函数引用，R[a+1] 是状态，R[a+2] 是初始值 */
+        if (nv->regs[a].type == NTYPE_PTR) {
+          int lua_ref = (int)(intptr_t)nv->regs[a].v.p;
+          lua_rawgeti(L, LUA_REGISTRYINDEX, lua_ref);
+          if (lua_isfunction(L, -1)) {
+            push_reg_to_lua(nv, a + 1);
+            push_reg_to_lua(nv, a + 2);
+            if (lua_pcall(L, 2, LUA_MULTRET, 0) == LUA_OK) {
+              int nret = lua_gettop(L);
+              /* 第一个返回值 == nil 表示循环结束 */
+              if (nret == 0 || lua_isnil(L, 1)) {
+                nv->regs[a].type = NTYPE_NIL;
+                nv->regs[a].v.i = 0;
+              } else {
+                for (int i = 0; i < nvars && i < nret && (a + i) < nv->nregs; i++) {
+                  lua_pushvalue(L, i + 1);
+                  pop_lua_to_reg(nv, a + i);
+                }
+              }
+              lua_settop(L, 0);
+            }
+          } else {
+            lua_pop(L, 1);
+            nv->regs[a].type = NTYPE_NIL;
+            nv->regs[a].v.i = 0;
+          }
+        }
+      }
+      break;
+
     default:
       break;
     }
@@ -696,11 +1095,15 @@ static int nativevm_gc(lua_State *L) {
     if (w->nv.funcs) {
       for (int i = 0; i < w->nv.nfuncs; i++) {
         if (w->nv.funcs[i].code) free(w->nv.funcs[i].code);
+        if (w->nv.funcs[i].upvalue_src) free(w->nv.funcs[i].upvalue_src);
+        if (w->nv.funcs[i].upvalue_dst) free(w->nv.funcs[i].upvalue_dst);
+        if (w->nv.funcs[i].upvalue_data) free(w->nv.funcs[i].upvalue_data);
       }
       free(w->nv.funcs);
       w->nv.funcs = NULL;
     }
     if (w->nv.call_stack) { free(w->nv.call_stack); w->nv.call_stack = NULL; }
+    if (w->nv.reg_save_buf) { free(w->nv.reg_save_buf); w->nv.reg_save_buf = NULL; }
   }
   return 0;
 }
@@ -794,28 +1197,16 @@ static int nativecall(lua_State *L) {
   if (nret == 0) return 0;
 
   for (int i = nv->retstart; i < nv->retstart + nret && i < nv->nregs; i++) {
-    switch (nv->regs[i].type) {
-    case NTYPE_INT:
-      lua_pushinteger(L, nv->regs[i].v.i);
-      break;
-    case NTYPE_FLOAT:
-      lua_pushnumber(L, nv->regs[i].v.f);
-      break;
-    case NTYPE_NIL:
-      lua_pushnil(L);
-      break;
-    default:
-      lua_pushnil(L);
-      break;
-    }
+    push_reg_to_lua(nv, i);
   }
   return nret;
 }
 
 /**
- * @brief native.deffunc(nv, inst_array, nregs, nparams) -> func_id
+ * @brief native.deffunc(nv, inst_array, nregs, nparams, upvalues) -> func_id
  * 定义一个 NLang 函数，将其字节码注册到 VM 的函数表中
  * 返回函数 ID，用于后续 NI_CALL 调用
+ * upvalues: 可选，上值表，每项 {src=parent_reg, dst=closure_reg}
  */
 static int nativedeffunc(lua_State *L) {
   NativeVMWrapper *w = (NativeVMWrapper *)luaL_checkudata(L, 1, "nativevm_meta");
@@ -837,11 +1228,43 @@ static int nativedeffunc(lua_State *L) {
   f->ncode = ncode;
   f->nregs = nregs;
   f->nparams = nparams;
+  /* 如果函数体需要的寄存器数超过当前 regs 数组大小，扩展 regs 数组 */
+  if (nregs > nv->nregs) {
+    nv->regs = (NReg *)realloc(nv->regs, sizeof(NReg) * nregs);
+    for (int i = nv->nregs; i < nregs; i++) {
+      nv->regs[i].type = NTYPE_NIL;
+      nv->regs[i].v.i = 0;
+    }
+    nv->nregs = nregs;
+  }
   f->code = (lua_Integer *)malloc(sizeof(lua_Integer) * ncode);
   for (int i = 0; i < ncode; i++) {
     lua_rawgeti(L, 2, i + 1);
     f->code[i] = lua_tointeger(L, -1);
     lua_pop(L, 1);
+  }
+
+  /* 解析上值信息（第5个参数，可选） */
+  if (lua_gettop(L) >= 5 && lua_istable(L, 5)) {
+    f->nupvalues = (int)luaL_len(L, 5);
+    if (f->nupvalues > 0) {
+      f->upvalue_src = (int *)malloc(sizeof(int) * f->nupvalues);
+      f->upvalue_dst = (int *)malloc(sizeof(int) * f->nupvalues);
+      f->upvalue_data = (NReg *)malloc(sizeof(NReg) * f->nupvalues);
+      memset(f->upvalue_data, 0, sizeof(NReg) * f->nupvalues);
+      for (int i = 0; i < f->nupvalues; i++) {
+        lua_rawgeti(L, 5, i + 1);
+        if (lua_istable(L, -1)) {
+          lua_getfield(L, -1, "src");
+          f->upvalue_src[i] = (int)lua_tointeger(L, -1);
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "dst");
+          f->upvalue_dst[i] = (int)lua_tointeger(L, -1);
+          lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+      }
+    }
   }
 
   lua_pushinteger(L, func_id);
@@ -1279,7 +1702,7 @@ static int nativeasm(lua_State *L) {
             else         { inst->b = r1; inst->c = r2; }
           } else if (op1_is_reg && (op2_is_int || op2_is_fp)) {
             /* R0 = R1 op imm → 需要临时寄存器存 imm */
-            int tmp = nregs_hint >= 0 ? nregs_hint : 250; /* 用户指定或 250 */
+            int tmp = nregs_hint > 0 ? nregs_hint - 1 : 250; /* 最后一个寄存器作为临时寄存器 */
             /* 生成: LOADK tmp, imm ; OP Rdest, R1, tmp */
             AsmInst *li = &insts[n_insts];
             memset(li, 0, sizeof(AsmInst));
@@ -1298,7 +1721,7 @@ static int nativeasm(lua_State *L) {
             else         { inst->b = r1; inst->c = tmp; }
           } else if ((op1_is_int || op1_is_fp) && op2_is_reg) {
             /* R0 = imm op R1 → 需要临时寄存器 */
-            int tmp = nregs_hint >= 0 ? nregs_hint : 250;
+            int tmp = nregs_hint > 0 ? nregs_hint - 1 : 250;
             AsmInst *li = &insts[n_insts];
             memset(li, 0, sizeof(AsmInst));
             if (op1_is_fp) li->op = NI_LOADKF;
@@ -1473,7 +1896,10 @@ static int nativedisasm(lua_State *L) {
     "EQ","NE","LT","LE","LTF","LEF",
     "JMP","JT","JF","RET",
     "I2F","F2I","NEG","NEGF","MOVF","MOVI",
-    "SETNIL","ISNIL","SQRT","HALT","CALL"
+    "SETNIL","ISNIL","SQRT","HALT","CALL",
+    "GETFIELD","GETTABLE","SETFIELD","SETTABLE",
+    "LEN","CONCAT","POW","IDIV","BNOT",
+    "FOR_IN_INIT","FOR_IN_NEXT"
   };
 
   if (op >= 0 && op < (int)(sizeof(names)/sizeof(names[0]))) {
