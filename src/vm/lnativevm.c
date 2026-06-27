@@ -93,6 +93,7 @@ enum {
   NI_ISNIL,       /* R[a] = (R[b].type == NTYPE_NIL) */
   NI_SQRT,        /* R[a] = sqrt(R[b]) */
   NI_HALT,        /* stop */
+  NI_CALL,        /* R[a] = call(R[b], R[c..c+imm-1], imm) — 统一调用 Lua/NLang 函数 */
   NI_MAX
 };
 
@@ -125,6 +126,12 @@ typedef struct {
 } AsmAlias;
 
 /* ---- 寄存器值：tagged union ---- */
+#define NTYPE_NIL   0
+#define NTYPE_INT   1
+#define NTYPE_FLOAT 2
+#define NTYPE_PTR   3
+#define NTYPE_FUNC  4   /* 函数引用：v.i 存储 func_id */
+
 typedef struct {
   int type;
   union {
@@ -134,6 +141,22 @@ typedef struct {
   } v;
 } NReg;
 
+/* NLang 函数描述符：存储编译后的字节码 */
+typedef struct {
+  lua_Integer *code;   /* 函数字节码 */
+  int ncode;           /* 字节码长度 */
+  int nregs;           /* 函数需要的寄存器数 */
+  int nparams;         /* 参数个数 */
+} NLangFunc;
+
+/* 调用栈帧：保存执行上下文 */
+typedef struct {
+  int saved_pc;         /* 调用前的 PC */
+  int saved_retstart;   /* 调用前的 retstart */
+  int saved_retcount;   /* 调用前的 retcount */
+  int func_id;          /* 被调用的函数 ID */
+} CallFrame;
+
 /* 原生 VM 状态 */
 typedef struct NativeVM {
   NReg *regs;
@@ -141,14 +164,152 @@ typedef struct NativeVM {
   int   halted;
   int   retstart;  /* RET 起始寄存器 */
   int   retcount;  /* RET 返回数量 */
+  /* 函数调用支持 */
+  lua_State *L;              /* Lua 状态机，用于调用 Lua 函数 */
+  NLangFunc *funcs;          /* NLang 函数表 */
+  int nfuncs, capfuncs;      /* 函数表大小/容量 */
+  CallFrame *call_stack;     /* 调用栈 */
+  int call_depth, cap_call;  /* 调用深度/容量 */
+  int func_returning;        /* 标记：当前正在从函数返回（跳过 HALT） */
 } NativeVM;
 
 
-/* ---- 执行核心（纯 C，零 Lua 调用） ---- */
+/* ---- 执行核心 ---- */
+
+/**
+ * @brief 将 NLang 寄存器值推入 Lua 栈
+ */
+static void push_reg_to_lua(NativeVM *nv, int reg) {
+  lua_State *L = nv->L;
+  if (reg >= nv->nregs) { lua_pushnil(L); return; }
+  NReg *r = &nv->regs[reg];
+  switch (r->type) {
+    case NTYPE_INT:   lua_pushinteger(L, r->v.i); break;
+    case NTYPE_FLOAT: lua_pushnumber(L, r->v.f); break;
+    case NTYPE_NIL:   lua_pushnil(L); break;
+    default:          lua_pushnil(L); break;
+  }
+}
+
+/**
+ * @brief 将 Lua 栈顶值存入 NLang 寄存器
+ */
+static void pop_lua_to_reg(NativeVM *nv, int reg) {
+  lua_State *L = nv->L;
+  if (reg >= nv->nregs) { lua_pop(L, 1); return; }
+  int ltype = lua_type(L, -1);
+  if (ltype == LUA_TNUMBER) {
+    if (lua_isinteger(L, -1)) {
+      nv->regs[reg].type = NTYPE_INT;
+      nv->regs[reg].v.i = lua_tointeger(L, -1);
+    } else {
+      nv->regs[reg].type = NTYPE_FLOAT;
+      nv->regs[reg].v.f = lua_tonumber(L, -1);
+    }
+  } else if (ltype == LUA_TBOOLEAN) {
+    nv->regs[reg].type = NTYPE_INT;
+    nv->regs[reg].v.i = lua_toboolean(L, -1) ? 1 : 0;
+  } else if (ltype == LUA_TNIL) {
+    nv->regs[reg].type = NTYPE_NIL;
+    nv->regs[reg].v.i = 0;
+  } else {
+    nv->regs[reg].type = NTYPE_NIL;
+    nv->regs[reg].v.i = 0;
+  }
+  lua_pop(L, 1);
+}
+
+/**
+ * @brief 调用 NLang 函数（内部函数调用）
+ * @param nv         VM 状态
+ * @param func_id    函数 ID
+ * @param args_start 参数起始寄存器
+ * @param nargs      参数个数
+ * @param ret_reg    返回值目标寄存器
+ */
+static void native_call_nlang(NativeVM *nv, int func_id, int args_start, int nargs, int ret_reg) {
+  if (func_id < 0 || func_id >= nv->nfuncs) return;
+  NLangFunc *f = &nv->funcs[func_id];
+  /* 将参数复制到函数的前 nargs 个寄存器 */
+  for (int i = 0; i < nargs && i < f->nregs && (args_start + i) < nv->nregs; i++) {
+    nv->regs[i] = nv->regs[args_start + i];
+  }
+  /* 执行函数字节码 */
+  int saved_ret_dst = nv->func_returning;
+  nv->func_returning = ret_reg;
+  nv->halted = 0;
+  nv->retstart = 0;
+  nv->retcount = 0;
+  {
+    const lua_Integer *fcode = f->code;
+    int fncode = f->ncode;
+    int fpc = 0;
+    while (fpc >= 0 && fpc < fncode && !nv->halted) {
+      lua_Integer finst = fcode[fpc];
+      int fop = NI_OP(finst);
+      int fa = NI_A(finst), fb = NI_B(finst), fc = NI_C(finst);
+      int32_t fimm = NI_IMM(finst);
+      int fnext = fpc + 1;
+      if (fa >= nv->nregs) { fpc++; continue; }
+      switch (fop) {
+        case NI_NOP: break;
+        case NI_LOADK:  nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (int64_t)fimm; break;
+        case NI_LOADKF: { union { int32_t i; float f; } u; u.i = fimm; nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = (double)u.f; } break;
+        case NI_MOV: if (fb < nv->nregs) nv->regs[fa] = nv->regs[fb]; break;
+        case NI_ADD: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i + nv->regs[fc].v.i; } break;
+        case NI_SUB: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i - nv->regs[fc].v.i; } break;
+        case NI_MUL: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i * nv->regs[fc].v.i; } break;
+        case NI_DIV: if (fb < nv->nregs && fc < nv->nregs) { int64_t dv = nv->regs[fc].v.i; if (dv) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i / dv; } } break;
+        case NI_MOD: if (fb < nv->nregs && fc < nv->nregs) { int64_t dv = nv->regs[fc].v.i; if (dv) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i % dv; } } break;
+        case NI_ADDF: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = nv->regs[fb].v.f + nv->regs[fc].v.f; } break;
+        case NI_SUBF: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = nv->regs[fb].v.f - nv->regs[fc].v.f; } break;
+        case NI_MULF: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = nv->regs[fb].v.f * nv->regs[fc].v.f; } break;
+        case NI_DIVF: if (fb < nv->nregs && fc < nv->nregs) { double dv = nv->regs[fc].v.f; if (dv != 0.0) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = nv->regs[fb].v.f / dv; } } break;
+        case NI_AND: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i & nv->regs[fc].v.i; } break;
+        case NI_OR:  if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i | nv->regs[fc].v.i; } break;
+        case NI_XOR: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i ^ nv->regs[fc].v.i; } break;
+        case NI_SHL: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i << (int)(nv->regs[fc].v.i & 63); } break;
+        case NI_SHR: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = nv->regs[fb].v.i >> (int)(nv->regs[fc].v.i & 63); } break;
+        case NI_EQ: if (fb < nv->nregs && fc < nv->nregs) { NReg *rb = &nv->regs[fb], *rc = &nv->regs[fc]; nv->regs[fa].type = NTYPE_INT; if (rb->type == NTYPE_FLOAT && rc->type == NTYPE_FLOAT) nv->regs[fa].v.i = (rb->v.f == rc->v.f) ? 1 : 0; else nv->regs[fa].v.i = (rb->v.i == rc->v.i) ? 1 : 0; } break;
+        case NI_NE: if (fb < nv->nregs && fc < nv->nregs) { NReg *rb = &nv->regs[fb], *rc = &nv->regs[fc]; nv->regs[fa].type = NTYPE_INT; if (rb->type == NTYPE_FLOAT && rc->type == NTYPE_FLOAT) nv->regs[fa].v.i = (rb->v.f != rc->v.f) ? 1 : 0; else nv->regs[fa].v.i = (rb->v.i != rc->v.i) ? 1 : 0; } break;
+        case NI_LT:  if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].v.i < nv->regs[fc].v.i) ? 1 : 0; } break;
+        case NI_LE:  if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].v.i <= nv->regs[fc].v.i) ? 1 : 0; } break;
+        case NI_LTF: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].v.f < nv->regs[fc].v.f) ? 1 : 0; } break;
+        case NI_LEF: if (fb < nv->nregs && fc < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].v.f <= nv->regs[fc].v.f) ? 1 : 0; } break;
+        case NI_JMP: fnext = fpc + 1 + (int)fimm; break;
+        case NI_JT:  if (fa < nv->nregs && nv->regs[fa].v.i != 0) fnext = fpc + 1 + (int)fimm; break;
+        case NI_JF:  if (fa < nv->nregs && nv->regs[fa].v.i == 0) fnext = fpc + 1 + (int)fimm; break;
+        case NI_RET: {
+          int ret_cnt = fb; if (ret_cnt <= 0) ret_cnt = 1;
+          int rdst = nv->func_returning;
+          if (rdst >= 0 && rdst < nv->nregs) {
+            for (int ri = 0; ri < ret_cnt && (fa + ri) < nv->nregs && (rdst + ri) < nv->nregs; ri++) {
+              nv->regs[rdst + ri] = nv->regs[fa + ri];
+            }
+          }
+          nv->halted = 1;
+          break;
+        }
+        case NI_HALT: nv->halted = 1; break;
+        case NI_I2F: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = (double)nv->regs[fb].v.i; } break;
+        case NI_F2I: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (int64_t)nv->regs[fb].v.f; } break;
+        case NI_NEG: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = -nv->regs[fb].v.i; } break;
+        case NI_NEGF: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = -nv->regs[fb].v.f; } break;
+        case NI_MOVF: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; nv->regs[fa].v.f = (nv->regs[fb].type == NTYPE_INT) ? (double)nv->regs[fb].v.i : nv->regs[fb].v.f; } break;
+        case NI_MOVI: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].type == NTYPE_FLOAT) ? (int64_t)nv->regs[fb].v.f : nv->regs[fb].v.i; } break;
+        case NI_SETNIL: nv->regs[fa].type = NTYPE_NIL; nv->regs[fa].v.i = 0; break;
+        case NI_ISNIL: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_INT; nv->regs[fa].v.i = (nv->regs[fb].type == NTYPE_NIL) ? 1 : 0; } break;
+        case NI_SQRT: if (fb < nv->nregs) { nv->regs[fa].type = NTYPE_FLOAT; double val = (nv->regs[fb].type == NTYPE_INT) ? (double)nv->regs[fb].v.i : nv->regs[fb].v.f; nv->regs[fa].v.f = (val >= 0.0) ? sqrt(val) : 0.0; } break;
+        default: break;
+      }
+      fpc = fnext;
+    }
+  }
+  nv->func_returning = saved_ret_dst;
+}
 
 static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
   int pc = 0;
-  int ret_offset = -1;
 
   while (pc >= 0 && pc < ncode && !nv->halted) {
     lua_Integer inst = code[pc];
@@ -449,6 +610,66 @@ static void native_exec(NativeVM *nv, const lua_Integer *code, int ncode) {
       }
       break;
 
+    case NI_CALL:
+      /* 统一函数调用: R[a] = call(R[b], R[c..c+imm-1], imm)
+       * R[b] 是函数引用: NTYPE_FUNC → NLang 函数, NTYPE_PTR → Lua 函数 */
+      if (b < nv->nregs) {
+        if (nv->regs[b].type == NTYPE_FUNC) {
+          /* NLang 函数调用 */
+          int func_id = (int)nv->regs[b].v.i;
+          int nargs = (int)imm;
+          if (nargs <= 0) nargs = 0;
+          /* 保存当前执行上下文 */
+          if (nv->call_depth >= nv->cap_call) {
+            nv->cap_call = nv->cap_call ? nv->cap_call * 2 : 16;
+            nv->call_stack = (CallFrame *)realloc(nv->call_stack, sizeof(CallFrame) * nv->cap_call);
+          }
+          CallFrame *frame = &nv->call_stack[nv->call_depth++];
+          frame->saved_pc = pc + 1;
+          frame->saved_retstart = nv->retstart;
+          frame->saved_retcount = nv->retcount;
+          frame->func_id = func_id;
+          native_call_nlang(nv, func_id, c, nargs, a);
+          /* 恢复调用者上下文 */
+          nv->call_depth--;
+          next = frame->saved_pc;
+          nv->retstart = frame->saved_retstart;
+          nv->retcount = frame->saved_retcount;
+        } else if (nv->regs[b].type == NTYPE_PTR && nv->L) {
+          /* Lua 函数调用: R[b].v.p 存储 registry 引用索引 */
+          lua_State *L = nv->L;
+          int lua_ref = (int)(intptr_t)nv->regs[b].v.p;
+          int nargs = (int)imm;
+          if (nargs < 0) nargs = 0;
+          /* 从 registry 取出函数 */
+          lua_rawgeti(L, LUA_REGISTRYINDEX, lua_ref);
+          if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            nv->regs[a].type = NTYPE_NIL;
+            nv->regs[a].v.i = 0;
+            break;
+          }
+          /* 推送参数 */
+          for (int i = 0; i < nargs && (c + i) < nv->nregs; i++) {
+            push_reg_to_lua(nv, c + i);
+          }
+          /* 调用 Lua 函数 */
+          int call_result = lua_pcall(L, nargs, 1, 0);
+          if (call_result == LUA_OK) {
+            pop_lua_to_reg(nv, a);
+          } else {
+            /* 出错: 弹出错误消息 */
+            lua_pop(L, 1);
+            nv->regs[a].type = NTYPE_NIL;
+            nv->regs[a].v.i = 0;
+          }
+        } else {
+          nv->regs[a].type = NTYPE_NIL;
+          nv->regs[a].v.i = 0;
+        }
+      }
+      break;
+
     default:
       break;
     }
@@ -468,13 +689,18 @@ typedef struct NativeVMWrapper {
 
 static int nativevm_gc(lua_State *L) {
   NativeVMWrapper *w = (NativeVMWrapper *)lua_touserdata(L, 1);
-  if (w && w->nv.regs) {
-    free(w->nv.regs);
-    w->nv.regs = NULL;
-  }
-  if (w && w->code) {
-    free(w->code);
-    w->code = NULL;
+  if (w) {
+    if (w->nv.regs) { free(w->nv.regs); w->nv.regs = NULL; }
+    if (w->code) { free(w->code); w->code = NULL; }
+    /* 释放函数表 */
+    if (w->nv.funcs) {
+      for (int i = 0; i < w->nv.nfuncs; i++) {
+        if (w->nv.funcs[i].code) free(w->nv.funcs[i].code);
+      }
+      free(w->nv.funcs);
+      w->nv.funcs = NULL;
+    }
+    if (w->nv.call_stack) { free(w->nv.call_stack); w->nv.call_stack = NULL; }
   }
   return 0;
 }
@@ -526,6 +752,7 @@ static int nativecall(lua_State *L) {
   lua_Integer *code = w->code;
   int ncode = w->ncode;
 
+  nv->L = L;  /* 设置 Lua 状态机，供 NI_CALL 调用 Lua 函数 */
   nv->halted = 0;
   nv->retstart = 0;
   nv->retcount = 0;
@@ -583,6 +810,77 @@ static int nativecall(lua_State *L) {
     }
   }
   return nret;
+}
+
+/**
+ * @brief native.deffunc(nv, inst_array, nregs, nparams) -> func_id
+ * 定义一个 NLang 函数，将其字节码注册到 VM 的函数表中
+ * 返回函数 ID，用于后续 NI_CALL 调用
+ */
+static int nativedeffunc(lua_State *L) {
+  NativeVMWrapper *w = (NativeVMWrapper *)luaL_checkudata(L, 1, "nativevm_meta");
+  NativeVM *nv = &w->nv;
+  luaL_checktype(L, 2, LUA_TTABLE);
+  int nregs = (int)luaL_optinteger(L, 3, 16);
+  int nparams = (int)luaL_optinteger(L, 4, 0);
+  int ncode = (int)luaL_len(L, 2);
+
+  /* 扩展函数表 */
+  if (nv->nfuncs >= nv->capfuncs) {
+    nv->capfuncs = nv->capfuncs ? nv->capfuncs * 2 : 8;
+    nv->funcs = (NLangFunc *)realloc(nv->funcs, sizeof(NLangFunc) * nv->capfuncs);
+  }
+  int func_id = nv->nfuncs++;
+  NLangFunc *f = &nv->funcs[func_id];
+  memset(f, 0, sizeof(NLangFunc));
+
+  f->ncode = ncode;
+  f->nregs = nregs;
+  f->nparams = nparams;
+  f->code = (lua_Integer *)malloc(sizeof(lua_Integer) * ncode);
+  for (int i = 0; i < ncode; i++) {
+    lua_rawgeti(L, 2, i + 1);
+    f->code[i] = lua_tointeger(L, -1);
+    lua_pop(L, 1);
+  }
+
+  lua_pushinteger(L, func_id);
+  return 1;
+}
+
+/**
+ * @brief native.loadfunc(nv, func_id) -> 将函数引用存入寄存器
+ * 返回用于 NI_CALL 的函数引用值（NTYPE_FUNC）
+ */
+static int nativeloadfunc(lua_State *L) {
+  luaL_checktype(L, 1, LUA_TUSERDATA);
+  int func_id = (int)luaL_checkinteger(L, 2);
+  /* 返回函数引用：{type=NTYPE_FUNC, value=func_id} */
+  lua_newtable(L);
+  lua_pushinteger(L, NTYPE_FUNC);
+  lua_setfield(L, -2, "type");
+  lua_pushinteger(L, func_id);
+  lua_setfield(L, -2, "value");
+  return 1;
+}
+
+/**
+ * @brief native.luafunc(nv, lua_func) -> 将 Lua 函数注册到 registry 并返回引用
+ * 返回用于 NI_CALL 的函数引用值（NTYPE_PTR）
+ */
+static int nativeluafunc(lua_State *L) {
+  luaL_checktype(L, 1, LUA_TUSERDATA);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  /* 将函数存入 registry */
+  lua_pushvalue(L, 2);
+  int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  /* 返回指针引用 */
+  lua_newtable(L);
+  lua_pushinteger(L, NTYPE_PTR);
+  lua_setfield(L, -2, "type");
+  lua_pushinteger(L, ref);
+  lua_setfield(L, -2, "ref");
+  return 1;
 }
 
 /**
@@ -1175,7 +1473,7 @@ static int nativedisasm(lua_State *L) {
     "EQ","NE","LT","LE","LTF","LEF",
     "JMP","JT","JF","RET",
     "I2F","F2I","NEG","NEGF","MOVF","MOVI",
-    "SETNIL","ISNIL","SQRT","HALT"
+    "SETNIL","ISNIL","SQRT","HALT","CALL"
   };
 
   if (op >= 0 && op < (int)(sizeof(names)/sizeof(names[0]))) {
@@ -1806,6 +2104,9 @@ static const luaL_Reg native_funcs[] = {
   {"asm",     nativeasm},
   {"disasm",  nativedisasm},
   {"compile", nativecompile},
+  {"deffunc", nativedeffunc},
+  {"loadfunc", nativeloadfunc},
+  {"luafunc", nativeluafunc},
   {NULL, NULL}
 };
 
@@ -1852,6 +2153,14 @@ LUAMOD_API int luaopen_nativevm(lua_State *L) {
   lua_pushinteger(L, NI_ISNIL);   lua_setfield(L, -2, "ISNIL");
   lua_pushinteger(L, NI_SQRT);    lua_setfield(L, -2, "SQRT");
   lua_pushinteger(L, NI_HALT);    lua_setfield(L, -2, "HALT");
+  lua_pushinteger(L, NI_CALL);    lua_setfield(L, -2, "CALL");
+
+  /* 导出类型常量 */
+  lua_pushinteger(L, NTYPE_NIL);   lua_setfield(L, -2, "NTYPE_NIL");
+  lua_pushinteger(L, NTYPE_INT);   lua_setfield(L, -2, "NTYPE_INT");
+  lua_pushinteger(L, NTYPE_FLOAT); lua_setfield(L, -2, "NTYPE_FLOAT");
+  lua_pushinteger(L, NTYPE_PTR);   lua_setfield(L, -2, "NTYPE_PTR");
+  lua_pushinteger(L, NTYPE_FUNC);  lua_setfield(L, -2, "NTYPE_FUNC");
 
   return 1;
 }
