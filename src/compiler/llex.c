@@ -613,6 +613,7 @@ static void inclinenumber (LexState *ls) {
 void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
                     int firstchar) {
   ls->t.token = 0;
+  ls->lasttoken = 0;  /* 显式初始化 lasttoken，避免 case '/' 使用未初始化值 */
   ls->L = L;
   ls->current = firstchar;
   ls->lookahead.token = TK_EOS;  /* no look-ahead token */
