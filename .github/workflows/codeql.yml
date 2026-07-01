@@ -43,7 +43,7 @@ jobs:
 
       - name: Cache wasmtime
         id: cache-wasmtime
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: wasmtime
           key: wasmtime-${{ env.WASMTIME_VERSION }}-linux
