@@ -114,7 +114,6 @@ LOCAL_SRC_FILES := \
 	src/vm/jit/codegen/ljit_cg_arith.c \
 	src/vm/jit/codegen/ljit_cg_ctrl.c \
 	src/vm/jit/codegen/ljit_cg_table.c \
-	src/vm/jit/codegen/ljit_cg_call.c \
 	src/vm/jit/codegen/ljit_cg_conv.c \
 	src/vm/jit/codegen/ljit_cg_closure.c \
 	src/vm/jit/codegen/ljit_cg_oop.c \

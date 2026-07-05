@@ -106,7 +106,9 @@ static void lsp_doc_free(LspDocument *doc) {
     for (int i = 0; i < doc->nimports; i++) lsp_free(doc->imports[i]);
     lsp_free(doc->imports);
     /* Free AST recursively */
-    /* (AST free logic would go here - simplified for now) */
+    /* AST 节点在当前 LSP 实现中未实际分配（文档解析直接操作词法单元，
+     * 不构建持久化 AST 树），因此无需释放逻辑。若后续实现 AST 构建，
+     * 需在此处添加递归释放代码。 */
     lsp_free(doc);
 }
 

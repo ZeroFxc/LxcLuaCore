@@ -337,7 +337,7 @@ static int lvm_async_start(lua_State *L) {
     return 1;
 }
 
-static int lvm_generic_call (lua_State *L) {
+int lvm_generic_call (lua_State *L) {
     /* Upvalues: 1:factory, 2:params, 3:mapping */
     int nargs = lua_gettop(L) - 1; /* Skip self */
     int base = 2;

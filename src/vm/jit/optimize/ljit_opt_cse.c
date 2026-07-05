@@ -41,8 +41,13 @@ void ljit_opt_cse(ljit_ctx_t *ctx) {
             int found_match = 0;
             ljit_ir_node_t *match_node = NULL;
 
-            /* Track registers clobbered between current node and match_node */
-            int clobbered_regs[256] = {0};
+            /*
+             * 动态分配 clobbered_regs 数组, 大小基于函数最大栈深度.
+             * 之前硬编码为 256, 当 maxstacksize > 256 时存在越界风险.
+             */
+            int maxstack = ctx->proto->maxstacksize;
+            int *clobbered_regs = (int *)calloc(maxstack, sizeof(int));
+            if (!clobbered_regs) break;  /* 内存分配失败, 跳过当前节点的 CSE */
 
             while (prev) {
                 /* Stop searching backwards if we hit a control flow instruction */
@@ -84,7 +89,7 @@ void ljit_opt_cse(ljit_ctx_t *ctx) {
 
                 /* If prev modifies a register, mark it as clobbered for subsequent backwards checks */
                 if (prev->dest.type == IR_VAL_REG) {
-                    if (prev->dest.v.reg >= 0 && prev->dest.v.reg < 256) {
+                    if (prev->dest.v.reg >= 0 && prev->dest.v.reg < maxstack) {
                         clobbered_regs[prev->dest.v.reg] = 1;
                     }
                 }
@@ -100,6 +105,7 @@ void ljit_opt_cse(ljit_ctx_t *ctx) {
                 node->src1 = match_node->dest;
                 node->src2.type = IR_VAL_NONE;
             }
+            free(clobbered_regs);
         }
         node = node->next;
     }

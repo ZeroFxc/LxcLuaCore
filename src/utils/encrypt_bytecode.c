@@ -66,9 +66,15 @@ int main(int argc, char **argv) {
     fseek(f, 0, SEEK_SET);
 
     unsigned char *content = (unsigned char*)malloc(fsize);
+    if (!content) {
+        fprintf(stderr, "Memory allocation failed\n");
+        fclose(f);
+        return 1;
+    }
     if (fread(content, 1, fsize, f) != (size_t)fsize) {
         fprintf(stderr, "Error reading file\n");
         fclose(f);
+        free(content);
         return 1;
     }
     fclose(f);
@@ -97,12 +103,17 @@ int main(int argc, char **argv) {
     char *b64 = nirithy_encode(payload, payload_len);
     if (!b64) {
         fprintf(stderr, "Base64 encode failed\n");
+        free(content);
+        free(payload);
         return 1;
     }
 
     f = fopen(argv[2], "wb");
     if (!f) {
         perror("Error opening output file");
+        free(content);
+        free(payload);
+        free(b64);
         return 1;
     }
     fwrite("Nirithy==", 1, 9, f);

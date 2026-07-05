@@ -54,7 +54,7 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblxclua.a
-CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_call.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
 CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 # lua2wasm: Lua-to-WASM 编译器模块（编译进 liblxclua.a）
@@ -744,8 +744,6 @@ $(BUILDDIR)/ljit_cg_ctrl.o: src/vm/jit/codegen/ljit_cg_ctrl.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_ctrl.c -o $@
 $(BUILDDIR)/ljit_cg_table.o: src/vm/jit/codegen/ljit_cg_table.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_table.c -o $@
-$(BUILDDIR)/ljit_cg_call.o: src/vm/jit/codegen/ljit_cg_call.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_call.c -o $@
 $(BUILDDIR)/ljit_cg_conv.o: src/vm/jit/codegen/ljit_cg_conv.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_conv.c -o $@
 $(BUILDDIR)/ljit_reg_live.o: src/vm/jit/regalloc/ljit_reg_live.c | $(BUILDDIR)

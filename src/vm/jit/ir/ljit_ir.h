@@ -82,14 +82,22 @@ typedef struct ljit_ir_node {
     ljit_ir_val_t src2;
     int original_pc;  /* Maps back to original bytecode PC */
     int self_rec;     /* 自递归标记: 1表示IR_CALL的目标函数与当前函数相同 */
+    int flags;        /* 类型推断结果，低4位存储目标类型，复用ljit_type_t枚举值 */
     struct ljit_ir_node *prev;
     struct ljit_ir_node *next;
 } ljit_ir_node_t;
 
 typedef struct ljit_bb {
-    int start_pc;
-    int end_pc;
-    struct ljit_bb *next;
+    int start_pc;       /* BB 起始字节码 PC */
+    int end_pc;         /* BB 结束字节码 PC */
+    int bb_id;          /* BB 编号，从 0 开始 */
+    struct ljit_bb *next; /* 链表后继 */
+    struct ljit_bb **preds; /* 前驱 BB 数组 */
+    int pred_count;     /* 前驱数量 */
+    int pred_cap;       /* 前驱容量 */
+    struct ljit_bb **succs; /* 后继 BB 数组 */
+    int succ_count;     /* 后继数量 */
+    int succ_cap;       /* 后继容量 */
 } ljit_bb_t;
 
 /* 递归调用返回地址栈，用于自递归时跳过 C 函数调用开销 */

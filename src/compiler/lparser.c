@@ -5372,11 +5372,26 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
             op = OPR_INFIX;
           }
         } else {
+          /* 范围操作符检测：'..' 前无空格且两端为整数常量时生成范围表 */
+          int concat_nospace = (op == OPR_CONCAT) ? ls->t.nospace : 0;
           luaX_next(ls);  /* skip operator */
-          luaK_infix(ls->fs, op, v);
-          /* read sub-expression with higher priority */
-          nextop = subexpr(ls, &v2, priority[op].right);
-          luaK_posfix(ls->fs, op, v, &v2, line);
+          if (op == OPR_CONCAT && concat_nospace && v->k == VKINT) {
+            /* 范围操作符：先解析右操作数，若也是整数则生成范围表 */
+            nextop = subexpr(ls, &v2, priority[op].right);
+            if (v2.k == VKINT) {
+              luaK_range(ls->fs, v, v->u.ival, v2.u.ival, line);
+              op = nextop;
+              continue;  /* 跳过 infix/posfix，直接处理下一个运算符 */
+            }
+            /* 右操作数不是整数，回退到正常拼接 */
+            luaK_infix(ls->fs, op, v);
+            luaK_posfix(ls->fs, op, v, &v2, line);
+          } else {
+            luaK_infix(ls->fs, op, v);
+            /* read sub-expression with higher priority */
+            nextop = subexpr(ls, &v2, priority[op].right);
+            luaK_posfix(ls->fs, op, v, &v2, line);
+          }
           op = nextop;
           if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
               is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
@@ -5498,11 +5513,34 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
         op = OPR_INFIX;
       }
     } else {
+      /* 范围操作符检测：'..' 前无空格且两端为整数常量时生成范围表 */
+      int concat_nospace = (op == OPR_CONCAT) ? ls->t.nospace : 0;
       luaX_next(ls);  /* skip operator */
-      luaK_infix(ls->fs, op, v);
-      /* read sub-expression with higher priority */
-      nextop = subexpr(ls, &v2, priority[op].right);
-      luaK_posfix(ls->fs, op, v, &v2, line);
+      if (op == OPR_CONCAT && concat_nospace && v->k == VKINT) {
+        /* 范围操作符：先解析右操作数，若也是整数则生成范围表 */
+        nextop = subexpr(ls, &v2, priority[op].right);
+        if (v2.k == VKINT) {
+          luaK_range(ls->fs, v, v->u.ival, v2.u.ival, line);
+          op = nextop;
+          /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
+          if (op == OPR_INFIX && ls->t.linenumber != line) {
+            op = OPR_NOBINOPR;
+          }
+          if (op == OPR_NOBINOPR && ls->t.token == TK_NAME && ls->t.linenumber == line &&
+              is_infix_expr_start(luaX_lookahead(ls)) && is_same_line_infix(ls)) {
+            op = OPR_INFIX;
+          }
+          continue;  /* 跳过 infix/posfix，直接处理下一个运算符 */
+        }
+        /* 右操作数不是整数，回退到正常拼接 */
+        luaK_infix(ls->fs, op, v);
+        luaK_posfix(ls->fs, op, v, &v2, line);
+      } else {
+        luaK_infix(ls->fs, op, v);
+        /* read sub-expression with higher priority */
+        nextop = subexpr(ls, &v2, priority[op].right);
+        luaK_posfix(ls->fs, op, v, &v2, line);
+      }
       op = nextop;
       /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
       if (op == OPR_INFIX && ls->t.linenumber != line) {

@@ -1857,8 +1857,9 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       break;
     }
     case OPR_CONCAT: {  /* e1 .. e2 */
-      /* 范围操作符：TODO - 需要精确检测 '..' 前无空格后重新启用
-       * 目前暂时禁用，避免 "1 .. 2 .. 3" 被误判为范围操作符 */
+      /* 范围操作符已在解析器中处理（lparser.c:5374-5396）：
+       * 当 '..' 前无空格且两端为整数常量时，调用 luaK_range 生成范围表。
+       * 此处处理正常的字符串拼接操作。 */
       luaK_dischargevars(fs, e1);
       luaK_dischargevars(fs, e2);
       /* e1 已在 luaK_infix 中保存到新寄存器，确保 e2 在 e1 的下一个寄存器 */

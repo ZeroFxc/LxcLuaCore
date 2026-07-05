@@ -42,6 +42,9 @@ void ljit_context_destroy(void *ctx_ptr) {
         ljit_bb_t *bb = ctx->cfg;
         while (bb) {
             ljit_bb_t *next = bb->next;
+            /* 释放 CFG 边数组 */
+            if (bb->preds) free(bb->preds);
+            if (bb->succs) free(bb->succs);
             free(bb);
             bb = next;
         }
