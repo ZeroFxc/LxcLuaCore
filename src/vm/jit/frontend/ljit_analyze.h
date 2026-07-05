@@ -22,6 +22,10 @@ typedef struct {
     ljit_type_t *reg_types; /* Array of inferred types for each virtual register */
     int *def_pc;        /* Array storing the PC where the register was last defined */
     int *is_live;       /* Boolean array indicating if a register is live */
+    /* CFG 数据流分析字段 */
+    int num_bbs;        /* BB 数量 */
+    ljit_type_t *in_types;  /* 扁平数组: num_bbs * max_regs, 每个 BB 入口类型 */
+    ljit_type_t *out_types; /* 扁平数组: num_bbs * max_regs, 每个 BB 出口类型 */
 } ljit_analyze_info_t;
 
 void ljit_analyze(ljit_ctx_t *ctx);

@@ -2207,6 +2207,7 @@ LUAMOD_API int luaopen_ecc(lua_State *L) {
   lua_pushcfunction(L, l_ecc_verify);
   lua_setfield(L, -2, "verify");
 
+#ifdef LUA_DEBUG
   /* -- ecc._debug_verify 函数 (调试用) -- */
   lua_pushcfunction(L, l_ecc_debug_verify);
   lua_setfield(L, -2, "_debug_verify");
@@ -2226,6 +2227,7 @@ LUAMOD_API int luaopen_ecc(lua_State *L) {
   /* -- ecc._debug_mul_test 函数 (调试用) -- */
   lua_pushcfunction(L, l_ecc_debug_mul_test);
   lua_setfield(L, -2, "_debug_mul_test");
+#endif
 
   /* -- ecc.ecdh 函数 -- */
   lua_pushcfunction(L, l_ecc_ecdh);

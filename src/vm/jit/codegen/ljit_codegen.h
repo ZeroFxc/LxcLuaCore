@@ -44,9 +44,6 @@ void ljit_cg_emit_gettabup(void *node, void *ctx);
 void ljit_cg_emit_settabup(void *node, void *ctx);
 void ljit_cg_emit_setlist(void *node, void *ctx);
 
-void ljit_cg_emit_call(void *node, void *ctx);
-
-void ljit_cg_emit_concat(void *node, void *ctx);
 void ljit_cg_emit_forprep(void *node, void *ctx);
 void ljit_cg_emit_forloop(void *node, void *ctx);
 void ljit_cg_emit_tforprep(void *node, void *ctx);
@@ -97,7 +94,6 @@ void ljit_cg_emit_getsuper(void *node, void *ctx);
 void ljit_cg_emit_len(void *node, void *ctx);
 
 void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb);
-void ljit_cg_emit_len(void *node, void *ctx);
 
 void SLJIT_FUNC ljit_icall_getupval(lua_State *L, StkId ra, int b);
 void SLJIT_FUNC ljit_icall_setupval(lua_State *L, StkId ra, int b);
@@ -116,3 +112,21 @@ void SLJIT_FUNC ljit_icall_tbc(lua_State *L, StkId ra);
 int SLJIT_FUNC ljit_icall_eqk(lua_State *L, StkId ra, TValue *rb, int k);
 int SLJIT_FUNC ljit_icall_test(lua_State *L, StkId ra, int k);
 int SLJIT_FUNC ljit_icall_compare(lua_State *L, TValue *a, TValue *b, int op_k);
+
+/* VARARG/VARARGPREP 原生辅助函数 */
+void SLJIT_FUNC ljit_icall_vararg(lua_State *L, StkId ra, int wanted);
+StkId SLJIT_FUNC ljit_icall_varargprep(lua_State *L, int nfixparams);
+
+/* OOP 原生辅助函数 */
+void SLJIT_FUNC ljit_icall_newclass(lua_State *L, TString *classname, StkId ra);
+void SLJIT_FUNC ljit_icall_inherit(lua_State *L, StkId ra, StkId rb);
+void SLJIT_FUNC ljit_icall_getsuper(lua_State *L, StkId rb, TString *key, StkId ra);
+void SLJIT_FUNC ljit_icall_newobj(lua_State *L, StkId rb, int nargs, StkId ra_args_base);
+
+/* 异步/Trait 原生辅助函数 */
+void SLJIT_FUNC ljit_icall_asyncwrap(lua_State *L, StkId rb);
+void SLJIT_FUNC ljit_icall_await(lua_State *L, StkId ra, TValue *await_val);
+void SLJIT_FUNC ljit_icall_genericwrap(lua_State *L, StkId base, int a, int b);
+void SLJIT_FUNC ljit_icall_settraitflag(lua_State *L, StkId ra);
+void SLJIT_FUNC ljit_icall_settraitrequire(lua_State *L, StkId ra, TString *method_name, int nparams);
+void SLJIT_FUNC ljit_icall_usetrait(lua_State *L, StkId ra, StkId rb);

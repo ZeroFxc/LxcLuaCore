@@ -14,7 +14,12 @@
 #include "../../../core/lfunc.h"
 #include "../../../core/ldo.h"
 #include "../../../core/ldebug.h"
+#include "../../../stdlib/lclass.h"
+#include "../../../core/lstring.h"
 #include <string.h>
+
+/* lvm_generic_call 声明 (lvm.c 中为 static，需改为非 static 以支持 JIT codegen) */
+extern int lvm_generic_call(lua_State *L);
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
     if (ttistable(rb)) {
@@ -392,7 +397,8 @@ void SLJIT_FUNC ljit_icall_len(lua_State *L, StkId ra, TValue *rb) {
     luaV_objlen(L, ra, rb);
 }
 
-/* ljit_icall_call 已移至 ljit_cg_call.c，包含自递归快速路径优化 */
+/* ljit_icall_call 已废弃，IR_CALL 的 codegen 在主循环中内联实现，
+ * 使用 ljit_fast_dispatch/ljit_jitcall/ljit_jitcall_self 三条路径. */
 
 void SLJIT_FUNC ljit_icall_ret(lua_State *L, StkId ra, int nresults) {
     CallInfo *ci = L->ci;
@@ -617,21 +623,180 @@ void SLJIT_FUNC ljit_jitcall_self(lua_State *L, StkId func, int nresults, Proto 
  */
 
 /*
- * VARARG 回退辅助函数: 在JIT代码中遇到VARARG/VARARGPREP时,
- * 调用解释器执行该操作码, 然后返回JIT代码继续执行.
- * 这实现了分级回退机制: 仅对不支持的操作码回退解释器, 其余部分继续JIT执行.
+ * VARARG 原生辅助函数: 调用 luaT_getvarargs 将变长参数复制到栈上
+ * @param L Lua 状态
+ * @param ra 目标寄存器栈地址
+ * @param wanted 需要的结果数量 (-1 表示全部)
  */
-void SLJIT_FUNC ljit_icall_vararg(lua_State *L, StkId base) {
+void SLJIT_FUNC ljit_icall_vararg(lua_State *L, StkId ra, int wanted) {
     CallInfo *ci = L->ci;
-    if (!ci || !ttisLclosure(s2v(ci->func.p))) return;
-    Proto *p = clLvalue(s2v(ci->func.p))->p;
+    luaT_getvarargs(L, ci, ra, wanted);
+}
 
-    /* 重新设置解释器状态 */
-    L->top.p = ci->top.p;
+/*
+ * VARARGPREP 原生辅助函数: 调整变长参数函数的栈帧，返回新的 base 指针
+ * @param L Lua 状态
+ * @param nfixparams 固定参数数量
+ * @return 新的 base 指针 (ci->func.p + 1)
+ */
+StkId SLJIT_FUNC ljit_icall_varargprep(lua_State *L, int nfixparams) {
+    CallInfo *ci = L->ci;
+    if (ttisLclosure(s2v(ci->func.p))) {
+        LClosure *cl = clLvalue(s2v(ci->func.p));
+        luaT_adjustvarargs(L, nfixparams, ci, cl->p);
+        return ci->func.p + 1;
+    }
+    return ci->func.p + 1;
+}
+
+/*
+ * ASYNCWRAP 原生辅助函数: 在函数 Proto 上设置 PF_ASYNC 标志
+ * @param L Lua 状态
+ * @param rb 目标函数所在的栈地址
+ */
+void SLJIT_FUNC ljit_icall_asyncwrap(lua_State *L, StkId rb) {
+    (void)L;
+    if (ttisLclosure(s2v(rb))) {
+        clLvalue(s2v(rb))->p->flag |= PF_ASYNC;
+    }
+}
+
+/*
+ * AWAIT 原生辅助函数: 处理 await 语义
+ * 非 Promise 值直接复制到目标寄存器; Promise 值则挂起协程等待
+ * @param L Lua 状态
+ * @param ra 结果寄存器栈地址
+ * @param await_val 待 await 的值
+ */
+void SLJIT_FUNC ljit_icall_await(lua_State *L, StkId ra, TValue *await_val) {
+    if (ttisfulluserdata(await_val)) {
+        /* Promise 值: 挂起协程，等待 Promise 完成 */
+        CallInfo *ci = L->ci;
+        LClosure *cl = clLvalue(s2v(ci->func.p));
+        setobj2s(L, L->top.p, await_val);
+        L->top.p++;
+        ci->u.l.savedpc = cl->p->code;
+        ci->callstatus |= CIST_AWAIT;
+        L->status = LUA_YIELD;
+        ci->u2.nyield = 1;
+        luaD_throw(L, LUA_YIELD);
+    } else {
+        /* 普通值: 直接复制到目标寄存器 */
+        setobj2s(L, ra, await_val);
+    }
+}
+
+/*
+ * GENERICWRAP 原生辅助函数: 创建泛型函数包装器
+ * 参考 lvm.c OP_GENERICWRAP 实现
+ * @param L Lua 状态
+ * @param base 当前函数栈基址
+ * @param a 目标寄存器索引 (RA)
+ * @param b 源寄存器起始索引 (RB)
+ */
+void SLJIT_FUNC ljit_icall_genericwrap(lua_State *L, StkId base, int a, int b) {
+    CallInfo *ci = L->ci;
+    LClosure *cl = clLvalue(s2v(ci->func.p));
+
+    while (L->top.p < base + cl->p->maxstacksize)
+         setnilvalue(s2v(L->top.p++));
+    luaD_checkstack(L, 5);
+    base = ci->func.p + 1;  /* 栈可能已重新分配 */
+
+    StkId base_args = base + b;
+
+    /* 1. 创建 Closure */
+    CClosure *ncl = luaF_newCclosure(L, 3);
+    ncl->f = lvm_generic_call;
+
+    base = ci->func.p + 1;  /* 栈可能已重新分配 */
+    base_args = base + b;
+    setobj(L, &ncl->upvalue[0], s2v(base_args));
+    setobj(L, &ncl->upvalue[1], s2v(base_args + 1));
+    setobj(L, &ncl->upvalue[2], s2v(base_args + 2));
+
+    StkId ra = base + a;
+    setclCvalue(L, s2v(ra), ncl);
+
+    /* 2. 创建 Proxy Table */
+    Table *proxy = luaH_new(L);
     base = ci->func.p + 1;
+    ra = base + a;
+    sethvalue2s(L, L->top.p, proxy);
+    L->top.p++;
 
-    /* 执行解释器, 直到遇到RETURN或函数结束 */
-    luaV_execute(L, ci);
+    /* 3. 创建 Metatable */
+    Table *mt = luaH_new(L);
+    base = ci->func.p + 1;
+    ra = base + a;
+    sethvalue2s(L, L->top.p, mt);
+    L->top.p++;
+
+    /* 链接: proxy.mt = mt */
+    proxy->metatable = obj2gco(mt);
+
+    /* 链接: mt.__call = ncl */
+    setsvalue2s(L, L->top.p, luaS_newliteral(L, "__call"));
+    L->top.p++;
+    luaH_set(L, mt, s2v(L->top.p - 1), s2v(ra));
+    L->top.p--;
+
+    /* 链接: mt.__is_generic = true */
+    setsvalue2s(L, L->top.p, luaS_newliteral(L, "__is_generic"));
+    L->top.p++;
+    TValue val_true;
+    setbtvalue(&val_true);
+    luaH_set(L, mt, s2v(L->top.p - 1), &val_true);
+    L->top.p--;
+
+    /* 移动 proxy 到 ra */
+    setobj2s(L, ra, s2v(L->top.p - 2));
+
+    /* 弹出 proxy 和 mt */
+    L->top.p -= 2;
+
+    luaC_checkGC(L);
+}
+
+/*
+ * SETTRAITFLAG 原生辅助函数: 标记一个值为 trait
+ * @param L Lua 状态
+ * @param ra trait 值所在栈地址
+ */
+void SLJIT_FUNC ljit_icall_settraitflag(lua_State *L, StkId ra) {
+    setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    luaC_settraitflag(L, -1);
+    L->top.p--;
+}
+
+/*
+ * SETTRAITREQUIRE 原生辅助函数: 注册 trait 的必需方法
+ * @param L Lua 状态
+ * @param ra trait 值所在栈地址
+ * @param method_name 方法名
+ * @param nparams 参数个数
+ */
+void SLJIT_FUNC ljit_icall_settraitrequire(lua_State *L, StkId ra, TString *method_name, int nparams) {
+    setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    luaC_settraitrequire(L, -1, method_name, nparams);
+    L->top.p--;
+}
+
+/*
+ * USETRAIT 原生辅助函数: 将 trait 的方法复制到 class
+ * @param L Lua 状态
+ * @param ra class 值所在栈地址
+ * @param rb trait 值所在栈地址
+ */
+void SLJIT_FUNC ljit_icall_usetrait(lua_State *L, StkId ra, StkId rb) {
+    setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    setobj2s(L, L->top.p, s2v(rb));
+    L->top.p++;
+    luaC_usetrait(L, -2, -1);
+    L->top.p -= 2;
 }
 
 /*
@@ -1134,13 +1299,127 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 break;
             }
 
+            /*
+             * 异步/Trait 操作码原生 codegen
+             * 包装为 C 函数调用 (ljit_icall_*)，执行后继续 JIT 流程
+             */
+            case IR_ASYNCWRAP: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int b = GETARG_B(i);
+                int tvalue_size = sizeof(TValue);
+
+                JIT_DBG(MOD_CG, "ASYNCWRAP: pc=%d, B=%d", node->original_pc, b);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(b * tvalue_size));
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_asyncwrap);
+                break;
+            }
+            case IR_GENERICWRAP: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int a = GETARG_A(i);
+                int b = GETARG_B(i);
+
+                JIT_DBG(MOD_CG, "GENERICWRAP: pc=%d, A=%d, B=%d", node->original_pc, a, b);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)a);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)b);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_genericwrap);
+
+                /* 重新加载 base (GENERICWRAP 可能重新分配栈) */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
+                               SLJIT_MEM1(SLJIT_R2), offsetof(lua_State, ci));
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S0, 0,
+                               SLJIT_MEM1(SLJIT_R2), offsetof(CallInfo, func));
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_S0, 0,
+                               SLJIT_S0, 0, SLJIT_IMM, sizeof(TValue));
+                break;
+            }
+            case IR_SETTRAITFLAG: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int a = GETARG_A(i);
+                int tvalue_size = sizeof(TValue);
+
+                JIT_DBG(MOD_CG, "SETTRAITFLAG: pc=%d, A=%d", node->original_pc, a);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(a * tvalue_size));
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_settraitflag);
+                break;
+            }
+            case IR_SETTRAITREQUIRE: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int a = GETARG_A(i);
+                int b = GETARG_B(i);
+                int c = GETARG_C(i);
+                int tvalue_size = sizeof(TValue);
+                TString *method_name = tsvalue(&ctx->proto->k[b]);
+
+                JIT_DBG(MOD_CG, "SETTRAITREQUIRE: pc=%d, A=%d, B=%d, C=%d",
+                    node->original_pc, a, b, c);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(a * tvalue_size));
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)method_name);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)c);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_settraitrequire);
+                break;
+            }
+            case IR_USETRAIT: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int a = GETARG_A(i);
+                int b = GETARG_B(i);
+                int tvalue_size = sizeof(TValue);
+
+                JIT_DBG(MOD_CG, "USETRAIT: pc=%d, A=%d, B=%d", node->original_pc, a, b);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(a * tvalue_size));
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R2, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(b * tvalue_size));
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_usetrait);
+                break;
+            }
+            case IR_AWAIT: {
+                Instruction i = ctx->proto->code[node->original_pc];
+                int a = GETARG_A(i);
+                int b = GETARG_B(i);
+                int tvalue_size = sizeof(TValue);
+
+                JIT_DBG(MOD_CG, "AWAIT: pc=%d, A=%d, B=%d", node->original_pc, a, b);
+
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(a * tvalue_size));
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R2, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(b * tvalue_size));
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_await);
+                break;
+            }
+
+            /*
+             * 未实现原生 codegen 的 IR 操作码: 统一触发解释器回退.
+             * 之前这些 case 被 break 跳过, 既不生成代码也不触发 fallback,
+             * 导致运行时状态不一致 (如 trait 设置、namespace 链接等被静默忽略).
+             */
             case IR_ADDMETHOD:
-            case IR_ASYNCWRAP:
             case IR_CASE:
             case IR_CHECKTYPE:
             case IR_ERRNNIL:
             case IR_EXTRAARG:
-            case IR_GENERICWRAP:
             case IR_GETCMDS:
             case IR_GETOPS:
             case IR_GETPROP:
@@ -1160,13 +1439,12 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_SETSUPER:
             case IR_SLICE:
             case IR_SPACESHIP:
-            case IR_TESTNIL: break;
-            case IR_SETTRAITFLAG:
-            case IR_SETTRAITREQUIRE:
-            case IR_USETRAIT:
-            case IR_AWAIT:
+            case IR_TESTNIL:
+            case IR_CJMP:
             case IR_MERGE:
-            case IR_REGEX: break;
+            case IR_REGEX:
+                JIT_DBG(MOD_CG, "NYI fallback: op=%d, pc=%d", node->op, node->original_pc);
+                goto codegen_fallback;
             case IR_TESTSET: {
                 int tvalue_size = sizeof(TValue);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
@@ -1196,35 +1474,115 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_TFORPREP: ljit_cg_emit_tforprep(node, ctx); break;
             case IR_TFORCALL: ljit_cg_emit_tforcall(node, ctx); break;
             case IR_TFORLOOP: ljit_cg_emit_tforloop(node, ctx); break;
-            case IR_VARARG:
-            case IR_VARARGPREP:
+            case IR_VARARG: {
                 /*
-                 * 分级回退: 调用解释器执行当前函数剩余部分,
-                 * 解释器返回后JIT代码返回1(成功).
-                 * 这避免了因局部不支持特性导致整体编译结果被废弃.
+                 * 原生 codegen: 调用 ljit_icall_vararg(L, ra, wanted)
+                 * 将变长参数复制到栈上，然后继续 JIT 执行
                  */
-                JIT_DBG(MOD_CG, "VARARG/VARARGPREP fallback: calling interpreter, pc=%d", node->original_pc);
+                int a = node->dest.v.reg;
+                int wanted = node->src2.v.i - 1;
+                int tvalue_size = sizeof(TValue);
+                if (wanted < -1) wanted = -1;
+
+                JIT_DBG(MOD_CG, "VARARG native: ra=R%d, wanted=%d", a, wanted);
+
+                /* R0 = L */
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
-                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
-                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
-                                 SLJIT_IMM, (sljit_sw)ljit_icall_fallback);
-                /* 解释器执行完成, JIT返回成功 */
-                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
-                sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
-                node = NULL;
-                continue;  /* 跳过 node = node->next，直接退出循环 */
+
+                /* R1 = ra = base + a * tvalue_size */
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(a * tvalue_size));
+
+                /* R2 = wanted */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)wanted);
+
+                /* Call ljit_icall_vararg(L, ra, wanted) */
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_vararg);
+
+                break;
+            }
+            case IR_VARARGPREP: {
+                /*
+                 * 原生 codegen: 调用 ljit_icall_varargprep(L, nfixparams)
+                 * 调整变长参数函数的栈帧，返回新的 base 指针，继续 JIT 执行
+                 */
+                int a = node->dest.v.reg;  /* nfixparams = GETARG_A */
+
+                JIT_DBG(MOD_CG, "VARARGPREP native: nfixparams=%d, reloading base", a);
+
+                /* R0 = L */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+
+                /* R1 = nfixparams */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)a);
+
+                /* Call ljit_icall_varargprep(L, nfixparams) -> 返回新 base 在 R0 */
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_varargprep);
+
+                /* 关键: VARARGPREP 会移动栈帧，必须更新 S0 = 返回值(新 base) */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S0, 0, SLJIT_R0, 0);
+
+                break;
+            }
             case IR_GETSUPER: ljit_cg_emit_getsuper(node, ctx); break;
             case IR_INHERIT: ljit_cg_emit_inherit(node, ctx); break;
             case IR_NEWCLASS: ljit_cg_emit_newclass(node, ctx); break;
             case IR_NEWOBJ: ljit_cg_emit_newobj(node, ctx); break;
             case IR_CLOSURE: ljit_cg_emit_closure(node, ctx); break;
 
-            case IR_CONCAT:
+            case IR_CONCAT: {
                 /*
-                 * 分级回退: CONCAT操作涉及栈操作, 直接调用解释器处理.
-                 * 避免 JIT no-op 导致栈状态不一致.
+                 * 字符串拼接原生 codegen:
+                 * 调用 ljit_icall_concat(L, total, ra) 执行拼接，
+                 * 拼接完成后从栈重新加载目标寄存器，继续执行后续 IR 节点，
+                 * 不再触发全函数 fallback 返回。
+                 *
+                 * ljit_icall_concat 会设置 L->top = ra + total，
+                 * 然后调用 luaV_concat(L, total) 将结果放在 ra 位置。
                  */
-                JIT_DBG(MOD_CG, "CONCAT fallback: calling interpreter, pc=%d", node->original_pc);
+                int tvalue_size = sizeof(TValue);
+                int ra = node->dest.v.reg;
+                int total = node->src1.v.i;
+
+                JIT_DBG(MOD_CG, "CONCAT native: total=%d, ra=R%d", total, ra);
+
+                /* R0 = L (lua_State 指针) */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+
+                /* R1 = total (待拼接的值数量) */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)total);
+
+                /* R2 = ra 地址 (栈基址 S0 + ra * sizeof(TValue)) */
+                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R2, 0, SLJIT_S0, 0,
+                               SLJIT_IMM, (sljit_sw)(ra * tvalue_size));
+
+                /* 调用 C 函数 ljit_icall_concat(L, total, ra) */
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_concat);
+
+                /*
+                 * 拼接后目标寄存器 ra 在物理寄存器中的值已失效，
+                 * 需要从栈槽重新加载到物理寄存器（如果未溢出到栈）
+                 */
+                if (!node->dest.is_spilled) {
+                    sljit_emit_op1(compiler, SLJIT_MOV, node->dest.phys_reg, 0,
+                                   SLJIT_MEM1(SLJIT_S0), ra * tvalue_size);
+                }
+                break;
+            }
+            case IR_FORPREP: ljit_cg_emit_forprep(node, ctx); break;
+            case IR_FORLOOP: ljit_cg_emit_forloop(node, ctx); break;
+
+            // Additional instructions can be mapped here as they are implemented
+            codegen_fallback:
+                /*
+                 * 通用回退路径: 未实现的操作码调用解释器执行当前函数剩余部分,
+                 * 解释器返回后 JIT 代码返回 1 (成功).
+                 * 所有 goto codegen_fallback 的 case 统一走此路径.
+                 */
+                JIT_DBG(MOD_CG, "fallback: calling interpreter, op=%d, pc=%d", node->op, node->original_pc);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
                 sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2V(W, W),
@@ -1233,10 +1591,6 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
                 node = NULL;
                 continue;
-            case IR_FORPREP: ljit_cg_emit_forprep(node, ctx); break;
-            case IR_FORLOOP: ljit_cg_emit_forloop(node, ctx); break;
-
-            // Additional instructions can be mapped here as they are implemented
             default: break;
         }
         node = node->next;
@@ -1274,36 +1628,100 @@ void SLJIT_FUNC ljit_icall_closure(lua_State *L, Proto *p, StkId base, StkId ra)
     luaC_step(L);
 }
 
-#include "../../../stdlib/lclass.h"
-void SLJIT_FUNC ljit_icall_newclass(lua_State *L, TString *classname) {
+void SLJIT_FUNC ljit_icall_newclass(lua_State *L, TString *classname, StkId ra) {
+    CallInfo *ci = L->ci;
+    Proto *p = clLvalue(s2v(ci->func.p))->p;
+    StkId base = ci->func.p + 1;
+    /* 保存ra的寄存器索引，用于栈重分配后重新计算 */
+    ptrdiff_t ra_reg = ra - base;
+    /* 填充栈顶nil到maxstacksize */
+    while (L->top.p < base + p->maxstacksize)
+        setnilvalue(s2v(L->top.p++));
+    luaD_checkstack(L, 1);
+    /* 栈可能重分配，重新获取base和ra */
+    ci = L->ci;
+    base = ci->func.p + 1;
+    ra = base + ra_reg;
+    /* 保存pc用于错误报告 */
+    ci->u.l.savedpc = p->code;
+    /* 调用luaC_newclass，结果在栈顶 */
     luaC_newclass(L, classname);
-}
-
-void SLJIT_FUNC ljit_icall_newobj(lua_State *L, int nargs, StkId rb, StkId ra) {
-        setobj2s(L, L->top.p, s2v(rb));
-    L->top.p++;
-    for (int j = 0; j < nargs; j++) {
-        setobj2s(L, L->top.p, s2v(ra + 1 + j));
-        L->top.p++;
-    }
-    luaC_newobject(L, -(nargs + 1), nargs);
+    /* luaC_newclass内部会调用API可能再次导致栈重分配 */
+    ci = L->ci;
+    base = ci->func.p + 1;
+    ra = base + ra_reg;
+    /* 将结果从栈顶移动到目标寄存器ra */
     setobj2s(L, ra, s2v(L->top.p - 1));
-    L->top.p -= 1;
+    L->top.p--;
 }
 
-void SLJIT_FUNC ljit_icall_inherit(lua_State *L, StkId rb, StkId ra) {
-        setobj2s(L, L->top.p, s2v(ra));
+void SLJIT_FUNC ljit_icall_inherit(lua_State *L, StkId ra, StkId rb) {
+    CallInfo *ci = L->ci;
+    /* 保存pc和top（同savestate语义） */
+    L->top.p = ci->top.p;
+    ci->u.l.savedpc = ci->u.l.savedpc;
+    /* 压入子类和父类到栈顶 */
+    setobj2s(L, L->top.p, s2v(ra));
     L->top.p++;
     setobj2s(L, L->top.p, s2v(rb));
     L->top.p++;
+    /* 调用luaC_inherit设置继承关系 */
     luaC_inherit(L, -2, -1);
+    /* 弹出临时压入的值 */
     L->top.p -= 2;
 }
 
-void SLJIT_FUNC ljit_icall_getsuper(lua_State *L, TString *key, StkId rb, StkId ra) {
-        setobj2s(L, L->top.p, s2v(rb));
+void SLJIT_FUNC ljit_icall_getsuper(lua_State *L, StkId rb, TString *key, StkId ra) {
+    CallInfo *ci = L->ci;
+    StkId base = ci->func.p + 1;
+    /* 保存ra的寄存器索引 */
+    ptrdiff_t ra_reg = ra - base;
+    /* 保存pc和top */
+    L->top.p = ci->top.p;
+    ci->u.l.savedpc = ci->u.l.savedpc;
+    /* 压入对象 */
+    setobj2s(L, L->top.p, s2v(rb));
     L->top.p++;
+    /* 调用luaC_super获取父类方法，结果在栈顶 */
     luaC_super(L, -1, key);
+    /* 栈可能重分配，重新获取base和ra */
+    ci = L->ci;
+    base = ci->func.p + 1;
+    ra = base + ra_reg;
+    /* 将结果写入目标寄存器 */
     setobj2s(L, ra, s2v(L->top.p - 1));
     L->top.p -= 2;
+}
+
+void SLJIT_FUNC ljit_icall_newobj(lua_State *L, StkId rb, int nargs, StkId ra_args_base) {
+    CallInfo *ci = L->ci;
+    StkId base = ci->func.p + 1;
+    /* 保存ra的寄存器索引 */
+    ptrdiff_t ra_reg = ra_args_base - base;
+    /* 保存pc和top */
+    L->top.p = ci->top.p;
+    ci->u.l.savedpc = ci->u.l.savedpc;
+    /* 压入类 */
+    setobj2s(L, L->top.p, s2v(rb));
+    L->top.p++;
+    /* 复制构造参数: ra_args_base+1 到 ra_args_base+nargs */
+    {
+        StkId arg_src = ra_args_base + 1;
+        int j;
+        for (j = 0; j < nargs; j++) {
+            setobj2s(L, L->top.p, s2v(arg_src + j));
+            L->top.p++;
+        }
+    }
+    /* 调用luaC_newobject创建实例，结果在栈顶 */
+    luaC_newobject(L, -(nargs + 1), nargs);
+    /* 栈可能重分配，重新获取base和ra */
+    ci = L->ci;
+    base = ci->func.p + 1;
+    ra_args_base = base + ra_reg;
+    /* 将结果写入目标寄存器ra */
+    setobj2s(L, ra_args_base, s2v(L->top.p - 1));
+    L->top.p -= (nargs + 2);
+    /* 触发GC检查（如果需要） */
+    luaC_checkGC(L);
 }
