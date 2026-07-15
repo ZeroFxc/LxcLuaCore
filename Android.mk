@@ -47,6 +47,11 @@ LOCAL_SRC_FILES := \
 	src/core/lopcodes.c \
 	src/stdlib/loslib.c \
 	src/compiler/lparser.c \
+	src/compiler/lasm.c \
+	src/compiler/last.c \
+	src/compiler/last_parse.c \
+	src/compiler/last_visitor.c \
+	src/compiler/lcodegen.c \
 	src/utils/lpromise.c \
 	src/core/lstate.c \
 	src/core/lstring.c \

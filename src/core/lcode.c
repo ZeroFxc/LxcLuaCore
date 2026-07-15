@@ -483,9 +483,12 @@ static int luaK_codek (FuncState *fs, int reg, int k) {
 void luaK_checkstack (FuncState *fs, int n) {
   int newstack = fs->freereg + n;
   if (newstack > fs->f->maxstacksize) {
-    if (newstack >= MAXREGS)
+    if (newstack >= MAXREGS) {
+      fprintf(stderr, "[DEBUG] luaK_checkstack: freereg=%d, n=%d, newstack=%d, MAXREGS=%d, maxstacksize=%d\n",
+              fs->freereg, n, newstack, MAXREGS, fs->f->maxstacksize);
       luaX_syntaxerror(fs->ls,
         "function or expression needs too many registers");
+    }
     fs->f->maxstacksize = cast_byte(newstack);
   }
 }
@@ -593,6 +596,17 @@ int luaK_stringK (FuncState *fs, TString *s) {
   TValue o;
   setsvalue(fs->ls->L, &o, s);
   return addk(fs, &o, &o);  /* use string itself as key */
+}
+
+
+/*
+** Add a closure to list of constants and return its index.
+** 将闭包添加到常量列表并返回其索引
+** 用于字符串插值中复杂表达式的预编译
+*/
+int luaK_closureK (FuncState *fs, TValue *cl) {
+  lua_assert(ttisfunction(cl) || ttisclfunction(cl));
+  return addk(fs, cl, cl);  /* use closure itself as key */
 }
 
 
@@ -2133,6 +2147,10 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int e1_reg = -1;
   int nargs = 1;  /* 默认1个参数 */
   int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
+  /* 在 dischange 前判断 e1 是否为链式管道（前一次管道的结果） */
+  int e1_is_chain = (e1->k == VCALL);
+  fprintf(stderr, "[DEBUG luaK_pipe] e1->k=%d e1->u.info=%d e2->k=%d e2->u.info=%d is_self=%d is_chain=%d freereg=%d\n",
+          e1->k, e1->u.info, e2->k, e2->u.info, is_self, e1_is_chain, fs->freereg);
 
   if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
 
@@ -2140,9 +2158,6 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   luaK_dischargevars(fs, e1);
   if (e1->k == VNONRELOC) {
     e1_reg = e1->u.info;
-  } else if (e1->k == VCALL) {
-    /* 从 VCALL 指令中提取结果寄存器，用于后续将管道结果移回原位 */
-    e1_reg = GETARG_A(fs->f->code[e1->u.info]);
   }
 
   /* 步骤2：方法引用不使用链式优化，避免 SELF 指令的寄存器冲突 */
@@ -2161,7 +2176,7 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
     }
     arg_reg = func_reg + 2;
     luaK_exp2reg(fs, e1, arg_reg);
-  } else if (e1_reg >= 0) {
+  } else if (e1_is_chain && e1_reg >= 0) {
     /*
      * 链式管道：e1 已经在寄存器 R[e1_reg] 中
      * 结果应该也在 R[e1_reg]，这样链式调用的最终结果
@@ -2197,6 +2212,14 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
       luaK_codeABC(fs, OP_MOVE, temp_reg, e1_reg, 0);  /* 保存 e1 到临时寄存器 */
       luaK_exp2reg(fs, e2, func_reg);  /* 移动 e2 从 arg_reg 到 func_reg */
       luaK_codeABC(fs, OP_MOVE, arg_reg, temp_reg, 0);  /* 恢复 e1 到 arg_reg */
+    } else if (e2->k == VRELOC) {
+      /* VRELOC：指令已在字节码流中，修复其目标寄存器到 func_reg 会覆盖 e1_reg
+       * 需要先保存 e1 到临时寄存器，再修复 VRELOC，最后移动管道值到 arg_reg */
+      int temp_reg = fs->freereg;
+      luaK_reserveregs(fs, 1);
+      luaK_codeABC(fs, OP_MOVE, temp_reg, e1_reg, 0);  /* 保存管道值到临时寄存器 */
+      luaK_exp2reg(fs, e2, func_reg);  /* 修复 VRELOC 到 func_reg（覆盖 e1_reg） */
+      luaK_codeABC(fs, OP_MOVE, arg_reg, temp_reg, 0);  /* 管道值移动到 arg_reg */
     } else {
       /* 无冲突：先保存 e1 到 arg_reg，再加载 e2 到 func_reg */
       luaK_codeABC(fs, OP_MOVE, arg_reg, e1_reg, 0);
@@ -2224,6 +2247,8 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
    *   C = 返回值数量+1（2表示1个返回值）
    */
   e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
+  fprintf(stderr, "[DEBUG luaK_pipe] OP_CALL func_reg=%d nargs+1=%d freereg=%d\n",
+          func_reg, nargs + 1, fs->freereg);
   e1->k = VCALL;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;

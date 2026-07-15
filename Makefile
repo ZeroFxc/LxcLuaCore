@@ -54,8 +54,8 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblxclua.a
-CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
-CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
+CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
+CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 # lua2wasm: Lua-to-WASM 编译器模块（编译进 liblxclua.a）
 # 核心编译管线：词法分析→语法分析→代码生成→WAT输出
@@ -614,6 +614,9 @@ $(BUILDDIR)/llex.o: llex.c | $(BUILDDIR)
 $(BUILDDIR)/lparser.o: lparser.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
+$(BUILDDIR)/lasm.o: lasm.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
+
 $(BUILDDIR)/sljitLir.o: src/jit/sljitLir.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/jit/sljitLir.c -o $@
 
@@ -671,6 +674,8 @@ loslib.o: loslib.c lprefix.h lua.h luaconf.h lauxlib.h lualib.h llimits.h
 lparser.o: lparser.c lprefix.h lua.h luaconf.h lcode.h llex.h lobject.h \
  llimits.h lzio.h lmem.h lopcodes.h lparser.h ldebug.h lstate.h ltm.h \
  ldo.h lfunc.h lstring.h lgc.h ltable.h
+lasm.o: lasm.c lprefix.h lua.h luaconf.h llex.h lcode.h lopcodes.h \
+ lstring.h ltable.h lobject.h lmem.h lparser.h lasm.h llimits.h
 lstate.o: lstate.c lprefix.h lua.h luaconf.h lapi.h llimits.h lstate.h \
  lobject.h ltm.h lzio.h lmem.h ldebug.h ldo.h lfunc.h lgc.h llex.h \
  lstring.h ltable.h

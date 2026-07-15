@@ -2810,11 +2810,7 @@ void luaC_usetrait(lua_State *L, int class_idx, int trait_idx) {
   }
 
   /* 1. 复制trait的公开方法到类 */
-  lua_pushstring(L, CLASS_KEY_METHODS);
-  lua_rawget(L, trait_idx);
-  if (lua_istable(L, -1)) {
-    int trait_methods = lua_gettop(L);
-
+  {
     /* 获取类的公开方法表 */
     lua_pushstring(L, CLASS_KEY_METHODS);
     lua_rawget(L, class_idx);
@@ -2828,27 +2824,60 @@ void luaC_usetrait(lua_State *L, int class_idx, int trait_idx) {
     }
     int class_methods = lua_gettop(L);
 
-    /* 复制方法（类已有的方法不覆盖） */
+    /* 复制trait.__methods（如果存在） */
+    lua_pushstring(L, CLASS_KEY_METHODS);
+    lua_rawget(L, trait_idx);
+    if (lua_istable(L, -1)) {
+      int trait_methods = lua_gettop(L);
+      /* 复制方法（类已有的方法不覆盖） */
+      lua_pushnil(L);
+      while (lua_next(L, trait_methods) != 0) {
+        lua_pushvalue(L, -2);  /* 复制key */
+        lua_rawget(L, class_methods);
+        if (lua_isnil(L, -1)) {
+          lua_pop(L, 1);  /* 移除nil */
+          lua_pushvalue(L, -2);  /* key */
+          lua_pushvalue(L, -2);  /* value */
+          lua_rawset(L, class_methods);
+        } else {
+          lua_pop(L, 1);  /* 移除已有的值 */
+        }
+        lua_pop(L, 1);  /* 移除value */
+      }
+      lua_pop(L, 1);  /* 移除trait_methods */
+    }
+    lua_pop(L, 1);  /* 移除trait.__methods 或 nil */
+
+    /* 复制trait表上的直接函数字段（兼容编译器直接将方法存储到trait表的简化实现） */
     lua_pushnil(L);
-    while (lua_next(L, trait_methods) != 0) {
+    while (lua_next(L, trait_idx) != 0) {
       /* 栈: key, value */
-      lua_pushvalue(L, -2);  /* 复制key */
-      lua_rawget(L, class_methods);
-      if (lua_isnil(L, -1)) {
-        /* 类没有这个方法，从trait复制 */
-        lua_pop(L, 1);  /* 移除nil */
-        lua_pushvalue(L, -2);  /* key */
-        lua_pushvalue(L, -2);  /* value */
-        lua_rawset(L, class_methods);
-      } else {
-        lua_pop(L, 1);  /* 移除已有的值 */
+      if (lua_isfunction(L, -1)) {
+        /* 跳过内部键（以 __ 开头的键） */
+        if (lua_isstring(L, -2)) {
+          const char *k = lua_tostring(L, -2);
+          if (k && k[0] == '_' && k[1] == '_') {
+            lua_pop(L, 1);  /* 移除value */
+            continue;  /* 跳过内部键 */
+          }
+        }
+        /* 检查类是否已有此方法 */
+        lua_pushvalue(L, -2);  /* 复制key */
+        lua_rawget(L, class_methods);
+        if (lua_isnil(L, -1)) {
+          lua_pop(L, 1);  /* 移除nil */
+          lua_pushvalue(L, -2);  /* key */
+          lua_pushvalue(L, -2);  /* value */
+          lua_rawset(L, class_methods);
+        } else {
+          lua_pop(L, 1);  /* 移除已有的值 */
+        }
       }
       lua_pop(L, 1);  /* 移除value */
     }
 
     lua_pop(L, 1);  /* 移除class_methods */
   }
-  lua_pop(L, 1);  /* 移除trait_methods */
 
   /* 2. 收集trait的require方法到类的__trait_requires表 */
   lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);

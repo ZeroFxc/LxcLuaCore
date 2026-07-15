@@ -288,6 +288,7 @@ LUAI_FUNC void statlist (struct LexState *ls);
 LUAI_FUNC void statement (struct LexState *ls);
 LUAI_FUNC void enterblock (FuncState *fs, struct BlockCnt *bl, lu_byte isloop);
 LUAI_FUNC void leaveblock (FuncState *fs);
+LUAI_FUNC void add_export (struct LexState *ls, TString *name);
 LUAI_FUNC void adjustlocalvars (struct LexState *ls, int nvars);
 LUAI_FUNC int testnext (struct LexState *ls, int c);
 LUAI_FUNC void checknext (struct LexState *ls, int c);

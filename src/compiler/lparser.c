@@ -16,6 +16,7 @@
 
 #include "lua.h"
 
+#include "lauxlib.h"
 #include "lcode.h"
 #include "lclass.h"
 #include "ldebug.h"
@@ -33,6 +34,9 @@
 #include "ltm.h"
 #include "lopnames.h"
 #include "lobfuscate.h"
+#include "last.h"
+#include "last_parse.h"
+#include "lcodegen.h"
 
 __attribute__((noinline))
 void lparser_vmp_hook_point(void) {
@@ -1300,7 +1304,7 @@ static l_noret undefgoto (LexState *ls, Labeldesc *gt) {
 }
 
 
-static void add_export(LexState *ls, TString *name) {
+void add_export (LexState *ls, TString *name) {
   BlockCnt *bl = ls->fs->bl;
   if (bl->exports.n >= bl->exports.size) {
     bl->exports.size = (bl->exports.size == 0) ? 4 : bl->exports.size * 2;
@@ -4626,9 +4630,8 @@ static void simpleexp (LexState *ls, expdesc *v) {
               /*
               ** 生成代码字符串:
               ** function(var1, var2) return tostring(expr) end
-              ** 使用 load() 编译后得到一个函数（它返回闭包），然后再执行，并传递变量。
+              ** 在编译期使用 luaL_loadbuffer 预编译闭包，避免运行时调用 load()
               */
-              size_t code_prefix_len = 10;  /* "return function(" */
 
               /* calculate total length */
               size_t total_len = 16; /* "return function(" */
@@ -4639,9 +4642,9 @@ static void simpleexp (LexState *ls, expdesc *v) {
               total_len += 19; /* ") return tostring(" */
               total_len += expr_len;
               total_len += 5; /* ") end" */
-              
+
               char *code_str = luaM_newblock(ls->L, total_len + 1);
-              
+
               /* 构建代码字符串 */
               size_t pos = 0;
               memcpy(code_str + pos, "return function(", 16); pos += 16;
@@ -4656,40 +4659,52 @@ static void simpleexp (LexState *ls, expdesc *v) {
               memcpy(code_str + pos, str + expr_start, expr_len); pos += expr_len;
               memcpy(code_str + pos, ") end", 5); pos += 5;
               code_str[pos] = '\0';
-              
-              /* 调用 load() 编译代码 */
-              expdesc load_func;
-              TString *load_name = luaS_newliteral(ls->L, "load");
-              singlevaraux(fs, load_name, &load_func, 1);
-              if (load_func.k == VVOID) {
-                expdesc env_v;
-                singlevaraux(fs, ls->envn, &env_v, 1);
-                expdesc key;
-                codestring(&key, load_name);
-                luaK_indexed(fs, &env_v, &key);
-                load_func = env_v;
-              }
-              
-              int load_reg = fs->freereg;
-              luaK_exp2nextreg(fs, &load_func);
-              
-              /* 参数1: 代码字符串 */
-              TString *code_ts = luaS_newlstr(ls->L, code_str, pos);
-              expdesc code_exp;
-              codestring(&code_exp, code_ts);
-              luaK_exp2nextreg(fs, &code_exp);
-              
-              /* 调用 load(code_str) 得到 chunk function */
-              luaK_codeABC(fs, OP_CALL, load_reg, 2, 2);
-              fs->freereg = load_reg + 1;
-              
-              /* 调用 chunk function 得到 closure */
-              int chunk_reg = fs->freereg - 1;
-              luaK_codeABC(fs, OP_CALL, chunk_reg, 1, 2);
-              fs->freereg = chunk_reg + 1;
 
-              /* 调用 closure 传递参数 */
+              /*
+              ** 在编译期使用 luaL_loadbuffer 编译代码字符串，
+              ** 然后调用得到闭包，存入常量表中。
+              ** 运行时直接加载常量并调用，避免依赖 load() 全局函数。
+              */
+              int status = luaL_loadbuffer(ls->L, code_str, pos, "=interp");
+              if (status != LUA_OK) {
+                const char *err = lua_tostring(ls->L, -1);
+                luaO_pushfstring(ls->L, "interpolation: failed to compile expression '%s': %s",
+                                 code_str, err ? err : "unknown error");
+                lua_pop(ls->L, 1);
+                luaM_freearray(ls->L, code_str, total_len + 1);
+                luaK_semerror(ls, lua_tostring(ls->L, -1));
+                /* unreachable */
+              }
+
+              /* 执行 chunk 得到闭包函数 */
+              status = lua_pcall(ls->L, 0, 1, 0);
+              if (status != LUA_OK) {
+                const char *err = lua_tostring(ls->L, -1);
+                luaO_pushfstring(ls->L, "interpolation: failed to evaluate expression '%s': %s",
+                                 code_str, err ? err : "unknown error");
+                lua_pop(ls->L, 1);
+                luaM_freearray(ls->L, code_str, total_len + 1);
+                luaK_semerror(ls, lua_tostring(ls->L, -1));
+                /* unreachable */
+              }
+
+              /*
+              ** 栈顶是闭包函数 function(var1, var2, ...) return tostring(expr) end
+              ** 将其存入常量表，运行时直接加载并调用
+              */
+              TValue closure_val;
+              setobj(ls->L, &closure_val, s2v(ls->L->top.p - 1));
+              int closure_kidx = luaK_closureK(fs, &closure_val);
+              ls->L->top.p--;  /* 弹出闭包 */
+
+              luaM_freearray(ls->L, code_str, total_len + 1);
+
+              /* 运行时：加载预编译闭包常量，推入参数，调用 */
+              expdesc closure_exp;
+              init_exp(&closure_exp, VK, closure_kidx);
+              luaK_exp2nextreg(fs, &closure_exp);
               int closure_reg = fs->freereg - 1;
+
               for (int k = 0; k < nused; k++) {
                   expdesc var_exp;
                   int vk = searchvar(fs, used_vars[k], &var_exp);
@@ -4700,14 +4715,13 @@ static void simpleexp (LexState *ls, expdesc *v) {
               }
               luaK_codeABC(fs, OP_CALL, closure_reg, nused + 1, 2);
               fs->freereg = closure_reg + 1;
-              
+
               /* 移动结果到正确位置 */
               if (closure_reg != base_reg + part_count) {
                 luaK_codeABC(fs, OP_MOVE, base_reg + part_count, closure_reg, 0);
                 fs->freereg = base_reg + part_count + 1;
               }
-              
-              luaM_freearray(ls->L, code_str, total_len + 1);
+
               part_count++;
               }  /* end of else (complex expression) */
             }
@@ -13911,45 +13925,24 @@ static void mainfunc (LexState *ls, FuncState *fs) {
 
 LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                        Dyndata *dyd, const char *name, int firstchar) {
-  LexState lexstate;
-  FuncState funcstate;
-  lparser_vmp_hook_point();
-  LClosure *cl = luaF_newLclosure(L, 1);  /* create main closure */
-  setclLvalue2s(L, L->top.p, cl);  /* anchor it (to avoid being collected) */
+  LClosure *cl = luaF_newLclosure(L, 1);
+  setclLvalue2s(L, L->top.p, cl);
   luaD_inctop(L);
-  lexstate.h = luaH_new(L);  /* create table for scanner */
-  sethvalue2s(L, L->top.p, lexstate.h);  /* anchor it */
-  luaD_inctop(L);
-  lexstate.named_types = luaH_new(L);  /* create table for named types */
-  sethvalue2s(L, L->top.p, lexstate.named_types);  /* anchor it */
-  luaD_inctop(L);
-  lexstate.declared_globals = luaH_new(L); /* create table for declared globals */
-  sethvalue2s(L, L->top.p, lexstate.declared_globals); /* anchor it */
-  luaD_inctop(L);
-  lexstate.all_type_hints = NULL;
-  lexstate.defines = NULL;
-  funcstate.f = cl->p = luaF_newproto(L);
-  luaC_objbarrier(L, cl, cl->p);
-  funcstate.f->source = luaS_new(L, name);  /* create and anchor TString */
-  luaC_objbarrier(L, funcstate.f, funcstate.f->source);
-  lexstate.buff = buff;
-  lexstate.dyd = dyd;
-  lexstate.curpos=0;
-  lexstate.tokpos=0;
   dyd->actvar.n = dyd->gt.n = dyd->label.n = 0;
-  luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar);
-  mainfunc(&lexstate, &funcstate);
-  lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
-  /* all scopes should be correctly finished */
+  /* 暂停GC，防止AST内存池中的TString被GC回收 */
+  int old_gc_state = lua_gc(L, LUA_GCISRUNNING, 0);
+  lua_gc(L, LUA_GCSTOP, 0);
+  AstChunk *chunk = luaY_parse_ast(L, z, buff, dyd, name, firstchar);
+  chunk->main_func->is_vararg = 1;
+  Proto *p = luaY_codegen_chunk(L, chunk, dyd);
+  cl->p = p;
+  luaC_objbarrier(L, cl, p);
+  ast_pool_free(chunk->pool);
+  luaM_free(L, chunk->pool);
+  if (old_gc_state) lua_gc(L, LUA_GCRESTART, 0);  /* 恢复GC */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
-  typehint_free(&lexstate);
-  if (lexstate.defines) {
-     L->top.p--; /* remove defines table */
-  }
-  L->top.p--;  /* remove declared globals table */
-  L->top.p--;  /* remove named types table */
-  L->top.p--;  /* remove scanner's table */
-  return cl;  /* closure is on the stack, too */
+  lua_assert(cl->nupvalues == cl->p->sizeupvalues);
+  return cl;
 }
 
 

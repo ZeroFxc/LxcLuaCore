@@ -689,7 +689,8 @@ typedef struct MatchState {
   pcre2_code *code;
   pcre2_match_data *mdata;
   PCRE2_SIZE *ovector;
-  uint32_t ovec_count;
+  uint32_t ovec_count;   /* ovector 元素总数（用于边界检查） */
+  uint32_t ovec_pairs;   /* pcre2_match 实际返回的 pair 数 */
   /* 原版 Lua 引擎字段 */
   const char *p_end;
   int matchdepth;
@@ -894,9 +895,13 @@ static ptrdiff_t pcre2_get_onecapture (MatchState *ms, int i, const char *s,
     *cap = s;
     return (e - s);
   }
-  else if (i * 2 < (int)ms->ovec_count) {
+  else if (i < (int)ms->ovec_pairs) {
     PCRE2_SIZE start = ms->ovector[i * 2];
     PCRE2_SIZE end = ms->ovector[i * 2 + 1];
+    #ifdef LXCLUA_PCRE2_DEBUG
+    fprintf(stderr, "[DEBUG pcre2_get_onecapture] i=%d ovec_pairs=%u start=%d end=%d PCRE2_UNSET=%d\n",
+            i, ms->ovec_pairs, (int)start, (int)end, (int)PCRE2_UNSET);
+#endif
     if (start == PCRE2_UNSET) {
       *cap = NULL;
       return CAP_POSITION;
@@ -924,7 +929,7 @@ static void pcre2_push_onecapture (MatchState *ms, int i, const char *s,
 /* 将所有捕获组压入栈（有捕获组时跳过全匹配） */
 static int pcre2_push_captures (MatchState *ms, const char *s, const char *e) {
   int i;
-  int nlevels = (int)(ms->ovec_count / 2);
+  int nlevels = (int)ms->ovec_pairs;  /* 实际匹配的 pair 数 */
   if (nlevels <= 1) {
     /* 没有捕获组，返回全匹配 */
     const char *cap;
@@ -957,6 +962,12 @@ static int pcre2_do_match (MatchState *ms, const char *s) {
   ms->ovector = pcre2_get_ovector_pointer(ms->mdata);
   /* pcre2_get_ovector_count 返回的是 pair 数，代码内部按元素数使用，需乘以 2 */
   ms->ovec_count = pcre2_get_ovector_count(ms->mdata) * 2;
+  ms->ovec_pairs = (unsigned int)rc;  /* 实际匹配的 pair 数 */
+  #ifdef LXCLUA_PCRE2_DEBUG
+  fprintf(stderr, "[DEBUG pcre2_do_match] rc=%d ovec_pairs=%u ovector[0]=%d ovector[1]=%d ovector[2]=%d ovector[3]=%d\n",
+          rc, ms->ovec_pairs, (int)ms->ovector[0], (int)ms->ovector[1],
+          (int)ms->ovector[2], (int)ms->ovector[3]);
+#endif
   return 1;
 }
 
@@ -989,6 +1000,7 @@ static int pcre2_str_find_aux (lua_State *L, int find) {
     ms.mdata = mdata;
     ms.ovector = NULL;
     ms.ovec_count = 0;
+    ms.ovec_pairs = 0;
 
     int anchor = (*p == '^');
     const char *s1 = s + init;
@@ -1065,6 +1077,7 @@ static int pcre2_gfind_aux (lua_State *L) {
     ms.mdata = mdata;
     ms.ovector = NULL;
     ms.ovec_count = 0;
+    ms.ovec_pairs = 0;
 
     int anchor = (*p == '^');
     const char *s1 = s + init - 1;
@@ -1170,6 +1183,7 @@ static int pcre2_gmatch (lua_State *L) {
   gm->ms.mdata = gm->mdata;
   gm->ms.ovector = NULL;
   gm->ms.ovec_count = 0;
+  gm->ms.ovec_pairs = 0;
   gm->src = s + init;
   gm->p = p;
   gm->lastmatch = NULL;
@@ -1179,31 +1193,64 @@ static int pcre2_gmatch (lua_State *L) {
 
 /* -- gsub -- */
 
+/* PCRE2 正则：gsub 替换字符串处理（同时支持 $ 和 % 转义） */
 static void pcre2_add_s (MatchState *ms, luaL_Buffer *b, const char *s,
                     const char *e) {
   size_t l;
   lua_State *L = ms->L;
   const char *news = lua_tolstring(L, 3, &l);
-  const char *p;
-  while ((p = (char *)memchr(news, '$', l)) != NULL) {
-    luaL_addlstring(b, news, ct_diff2sz(p - news));
-    p++;
-    if (*p == '$')
-      luaL_addchar(b, '$');
-    else if (*p == '0' || *p == '&')
-      luaL_addlstring(b, s, ct_diff2sz(e - s));
-    else if (isdigit(cast_uchar(*p))) {
-      const char *cap;
-      ptrdiff_t resl = pcre2_get_onecapture(ms, *p - '0', s, e, &cap);
-      if (resl == CAP_POSITION)
-        luaL_addvalue(b);
-      else if (cap)
-        luaL_addlstring(b, cap, cast_sizet(resl));
-      else
-        luaL_addstring(b, "");
+  while (l > 0) {
+    const char *dol = (const char *)memchr(news, '$', l);
+    const char *pct = (const char *)memchr(news, L_ESC, l);
+    const char *p;
+    if (dol == NULL && pct == NULL) {
+      luaL_addlstring(b, news, l);
+      return;
     }
-    else
-      luaL_error(L, "invalid use of '$' in replacement string");
+    if (dol == NULL) p = pct;
+    else if (pct == NULL) p = dol;
+    else p = (dol < pct) ? dol : pct;
+    luaL_addlstring(b, news, ct_diff2sz(p - news));
+    char esc = *p;
+    p++;
+    if (esc == '$') {
+      /* $ 转义：$0/$& 全匹配，$1-$9 捕获组 */
+      if (*p == '$')
+        luaL_addchar(b, '$');
+      else if (*p == '0' || *p == '&')
+        luaL_addlstring(b, s, ct_diff2sz(e - s));
+      else if (isdigit(cast_uchar(*p))) {
+        const char *cap;
+        ptrdiff_t resl = pcre2_get_onecapture(ms, *p - '0', s, e, &cap);
+        if (resl == CAP_POSITION)
+          luaL_addvalue(b);
+        else if (cap)
+          luaL_addlstring(b, cap, cast_sizet(resl));
+        else
+          luaL_addstring(b, "");
+      }
+      else
+        luaL_error(L, "invalid use of '$' in replacement string");
+    }
+    else {
+      /* % 转义（Lua 兼容）：%0 全匹配，%1-%9 捕获组 */
+      if (*p == L_ESC)
+        luaL_addchar(b, *p);
+      else if (*p == '0')
+        luaL_addlstring(b, s, ct_diff2sz(e - s));
+      else if (isdigit(cast_uchar(*p))) {
+        const char *cap;
+        ptrdiff_t resl = pcre2_get_onecapture(ms, *p - '0', s, e, &cap);
+        if (resl == CAP_POSITION)
+          luaL_addvalue(b);
+        else if (cap)
+          luaL_addlstring(b, cap, cast_sizet(resl));
+        else
+          luaL_addstring(b, "");
+      }
+      else
+        luaL_error(L, "invalid use of '%c' in replacement string", L_ESC);
+    }
     l -= ct_diff2sz(p + 1 - news);
     news = p + 1;
   }
@@ -1823,34 +1870,63 @@ static int lua_gmatch (lua_State *L) {
   return 1;
 }
 
-/* 原始 Lua 正则：gsub 辅助函数 */
+/* 原始 Lua 正则：gsub 辅助函数（同时支持 % 和 $ 转义） */
 static void lua_add_s (MatchState *ms, luaL_Buffer *b, const char *s,
                                                    const char *e) {
   size_t l;
   lua_State *L = ms->L;
   const char *news = lua_tolstring(L, 3, &l);
-  const char *p;
-  while ((p = (char *)memchr(news, L_ESC, l)) != NULL) {
-    luaL_addlstring(b, news, ct_diff2sz(p - news));
-    p++;
-    if (*p == L_ESC)
-      luaL_addchar(b, *p);
-    else if (*p == '0')
-        luaL_addlstring(b, s, ct_diff2sz(e - s));
-    else if (isdigit(cast_uchar(*p))) {
-      const char *cap;
-      ptrdiff_t resl = lua_get_onecapture(ms, *p - '1', s, e, &cap);
-      if (resl == CAP_POSITION)
-        luaL_addvalue(b);
-      else
-        luaL_addlstring(b, cap, cast_sizet(resl));
+  while (l > 0) {
+    const char *pct = (const char *)memchr(news, L_ESC, l);
+    const char *dol = (const char *)memchr(news, '$', l);
+    const char *p;
+    if (pct == NULL && dol == NULL) {
+      luaL_addlstring(b, news, l);
+      break;
     }
-    else
-      luaL_error(L, "invalid use of '%c' in replacement string", L_ESC);
+    if (pct == NULL) p = dol;
+    else if (dol == NULL) p = pct;
+    else p = (pct < dol) ? pct : dol;
+    luaL_addlstring(b, news, ct_diff2sz(p - news));
+    char esc = *p;
+    p++;
+    if (esc == L_ESC) {
+      /* % 转义：%0 全匹配，%1-%9 捕获组 */
+      if (*p == L_ESC)
+        luaL_addchar(b, *p);
+      else if (*p == '0')
+        luaL_addlstring(b, s, ct_diff2sz(e - s));
+      else if (isdigit(cast_uchar(*p))) {
+        const char *cap;
+        ptrdiff_t resl = lua_get_onecapture(ms, *p - '1', s, e, &cap);
+        if (resl == CAP_POSITION)
+          luaL_addvalue(b);
+        else
+          luaL_addlstring(b, cap, cast_sizet(resl));
+      }
+      else
+        luaL_error(L, "invalid use of '%c' in replacement string", L_ESC);
+    }
+    else {
+      /* $ 转义（PCRE2 兼容）：$0/$& 全匹配，$1-$9 捕获组 */
+      if (*p == '$')
+        luaL_addchar(b, '$');
+      else if (*p == '0' || *p == '&')
+        luaL_addlstring(b, s, ct_diff2sz(e - s));
+      else if (isdigit(cast_uchar(*p))) {
+        const char *cap;
+        ptrdiff_t resl = lua_get_onecapture(ms, *p - '1', s, e, &cap);
+        if (resl == CAP_POSITION)
+          luaL_addvalue(b);
+        else
+          luaL_addlstring(b, cap, cast_sizet(resl));
+      }
+      else
+        luaL_addlstring(b, "$", 1);
+    }
     l -= ct_diff2sz(p + 1 - news);
     news = p + 1;
   }
-  luaL_addlstring(b, news, l);
 }
 
 static int lua_add_value (MatchState *ms, luaL_Buffer *b, const char *s,
