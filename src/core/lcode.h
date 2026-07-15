@@ -89,6 +89,7 @@ LUAI_FUNC void luaK_codecheckglobal (FuncState *fs, expdesc *var, int k,
 LUAI_FUNC void luaK_reserveregs (FuncState *fs, int n);
 LUAI_FUNC void luaK_checkstack (FuncState *fs, int n);
 LUAI_FUNC int luaK_stringK (FuncState *fs, TString *s);
+LUAI_FUNC int luaK_closureK (FuncState *fs, TValue *cl);
 LUAI_FUNC int luaK_intK (FuncState *fs, lua_Integer n);
 LUAI_FUNC int luaK_numberK (FuncState *fs, lua_Number r);
 LUAI_FUNC void luaK_int (FuncState *fs, int reg, lua_Integer n);

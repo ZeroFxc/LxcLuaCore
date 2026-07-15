@@ -126,6 +126,13 @@ typedef struct LoadState {
   } u;
 } LoadState;
 
+/* 匹配 lauxlib.c 中 LoadF 结构体布局，用于从主文件 ZIO 提取 FILE* */
+/* LoadF 定义: typedef struct LoadF { unsigned n; FILE *f; char buff[BUFSIZ]; } LoadF; */
+struct LoadF_Match {
+  unsigned n;
+  FILE *f;
+};
+
 static const char *getReader (lua_State *L, void *ud, size_t *size) {
   LoadState *ls = (LoadState *)ud;
   (void)L;
@@ -760,9 +767,11 @@ static size_t skip_sep (LexState *ls) {
     save_and_next(ls);
     count++;
   }
-  return (ls->current == s) ? count + 2
-         : (count == 0) ? 1
-         : 0;
+  size_t result = (ls->current == s) ? count + 2
+                : (count == 0) ? 1
+                : 0;
+  
+  return result;
 }
 
 
@@ -781,8 +790,11 @@ static void read_long_string (LexState *ls, SemInfo *seminfo, size_t sep) {
         break;  /* to avoid warnings */
       }
       case ']': {
-        if (skip_sep(ls) == sep) {
+        size_t found_sep = skip_sep(ls);
+        
+        if (found_sep == sep) {
           save_and_next(ls);  /* skip 2nd ']' */
+          
           goto endloop;
         }
         break;
@@ -877,6 +889,12 @@ static void read_string (LexState *ls, int del, SemInfo *seminfo, int *has_inter
         break;  /* to avoid warnings */
       case '\n':
       case '\r':
+        if (del == '`') {
+          /* 模板字符串 `...` 允许多行 */
+          save(ls, ls->current);
+          inclinenumber(ls);
+          break;
+        }
         lexerror(ls, "unfinished string", TK_STRING);
         break;  /* to avoid warnings */
       case '$': {
@@ -1166,6 +1184,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
   }
   luaZ_resetbuffer(ls->buff);
   for (;;) {
+    
     switch (ls->current) {
       case '\n': case '\r': {  /* line breaks */
         inclinenumber(ls);
@@ -1214,13 +1233,181 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         break;
       }
       case '[': {  /* long string or simply '[' */
+        
+        /* 保存 lexer 状态，以便在判断为 map 字面量时回退 */
+        int saved_curpos = ls->curpos;
+        int saved_current = ls->current;
+        size_t saved_bufflen = luaZ_bufflen(ls->buff);
+        const char *saved_zp = ls->z->p;
+        size_t saved_zn = ls->z->n;
+        int saved_linenumber = ls->linenumber;
+
+        /* 保存文件位置，当 saved_zn == 0 时 skip_sep 会触发 luaZ_fill
+         * 导致文件位置改变，需要回退才能正确重新读取 [[ */
+        long saved_fpos_before_sep = -1;
+        FILE *file_before_sep = NULL;
+        if (saved_zn == 0) {
+          if (ls->z->reader == getReader) {
+            LoadState *lf = (LoadState *)ls->z->data;
+            if (!lf->is_string) file_before_sep = lf->u.f.f;
+          } else {
+            file_before_sep = ((struct LoadF_Match *)ls->z->data)->f;
+          }
+          if (file_before_sep != NULL) {
+            saved_fpos_before_sep = ftell(file_before_sep);
+          }
+        }
+
         size_t sep = skip_sep(ls);
+        
         if (sep >= 2) {
+          /* 内层 [[：前一个 token 是 '['，说明是 [[expr] key] 这种 map 语法 */
+          if (ls->lasttoken == '[') {
+            ls->curpos = saved_curpos;
+            ls->current = saved_current;
+            ls->buff->n = saved_bufflen;
+            ls->z->p = saved_zp;
+            ls->z->n = saved_zn;
+            next(ls);  /* 只消费第一个 '[' */
+            return '[';
+          }
+          /* 外层 [[：sep == 2 时可能是 map 字面量 [[expr] = val]，
+           * 扫描是否有 ']]' 闭合标记来判断 */
+          if (sep == 2) {
+            
+            /* 从 [[ 之后扫描，查找 ']]' */
+            const char *p = saved_zp + 2;
+            size_t n = saved_zn >= 2 ? saved_zn - 2 : 0;
+            int found_close = 0;
+            while (n > 0) {
+              if (*p == ']' && n > 1 && *(p + 1) == ']') {
+                found_close = 1;
+                break;
+              }
+              p++;
+              n--;
+            }
+            if (!found_close) {
+              
+              /* 跨缓冲区扫描：当前缓冲区未找到 ']]'，尝试从文件读取后续数据 */
+              FILE *f = NULL;
+              if (ls->z->reader == getReader) {
+                /* include 文件：data 是 LoadState* */
+                LoadState *lf = (LoadState *)ls->z->data;
+                if (!lf->is_string) f = lf->u.f.f;
+              } else {
+                /* 主文件（luaL_loadfile）：data 是 LoadF* (from lauxlib.c) */
+                f = ((struct LoadF_Match *)ls->z->data)->f;
+              }
+
+              if (f != NULL) {
+                long saved_fpos = ftell(f);
+                if (saved_fpos >= 0) {
+                  char scan_buf[1024];
+                  int found_in_file = 0;
+                  /* 当前缓冲区最后一个字符，用于跨缓冲区边界匹配 ']' + ']' */
+                  char prev_char = (saved_zn > 0) ? saved_zp[saved_zn - 1] : 0;
+
+                  while (1) {
+                    size_t read_n = fread(scan_buf, 1, sizeof(scan_buf), f);
+                    if (read_n == 0) break;
+
+                    /* 检查跨缓冲区边界：prev_char == ']' && scan_buf[0] == ']' */
+                    if (prev_char == ']' && read_n > 0 && scan_buf[0] == ']') {
+                      found_in_file = 1;
+                      break;
+                    }
+
+                    /* 扫描 scan_buf 内部 */
+                    size_t i;
+                    for (i = 0; i + 1 < read_n; i++) {
+                      if (scan_buf[i] == ']' && scan_buf[i + 1] == ']') {
+                        found_in_file = 1;
+                        break;
+                      }
+                    }
+                    if (found_in_file) break;
+
+                    prev_char = (read_n > 0) ? scan_buf[read_n - 1] : 0;
+                  }
+
+                  fseek(f, saved_fpos, SEEK_SET);
+
+                  if (!found_in_file) {
+                    /* 确实没有 ']]' 闭合，是 map 字面量 [[expr] = val] */
+                    ls->curpos = saved_curpos;
+                    ls->current = saved_current;
+                    ls->buff->n = saved_bufflen;
+                    ls->z->p = saved_zp;
+                    ls->z->n = saved_zn;
+                    next(ls);  /* 只消费第一个 '[' */
+                    return '[';
+                  }
+                  /* found_in_file == true：跨缓冲区找到了 ']]'，是长字符串 */
+                } else {
+                  /* ftell 失败（管道/流输入），无法跨缓冲区扫描，回退到原逻辑 */
+                  ls->curpos = saved_curpos;
+                  ls->current = saved_current;
+                  ls->buff->n = saved_bufflen;
+                  ls->z->p = saved_zp;
+                  ls->z->n = saved_zn;
+                  next(ls);
+                  return '[';
+                }
+              } else {
+                /* 没有 FILE*（字符串输入），数据全在内存中不会跨缓冲区 */
+                /* 没找到 ']]' 就是 map 字面量 */
+                ls->curpos = saved_curpos;
+                ls->current = saved_current;
+                ls->buff->n = saved_bufflen;
+                ls->z->p = saved_zp;
+                ls->z->n = saved_zn;
+                next(ls);
+                return '[';
+              }
+            }
+          }
+          /* 长字符串：恢复状态后重新读取 */
+          /* 当 saved_zn == 0 时，缓冲区已空，第一次 skip_sep 触发了 luaZ_fill
+           * 导致文件位置改变。需要回退文件位置才能正确重新读取 [[ */
+          if (saved_zn == 0 && saved_fpos_before_sep >= 0 && file_before_sep != NULL) {
+            fseek(file_before_sep, saved_fpos_before_sep, SEEK_SET);
+          }
+          ls->curpos = saved_curpos;
+          ls->current = saved_current;
+          ls->buff->n = saved_bufflen;
+          ls->z->p = saved_zp;
+          ls->z->n = saved_zn;
+          
+          sep = skip_sep(ls);
+          
           read_long_string(ls, seminfo, sep);
+          
           return TK_STRING;
         }
-        else if (sep == 0)  /* '[=...' missing second bracket? */
+        else if (sep == 0) {  /* '[=...' missing second bracket? */
+          /* 恢复状态 */
+          ls->curpos = saved_curpos;
+          ls->current = saved_current;
+          ls->buff->n = saved_bufflen;
+          ls->z->p = saved_zp;
+          ls->z->n = saved_zn;
           lexerror(ls, "invalid long string delimiter", TK_STRING);
+        }
+        /* sep == 1：普通 '[' token，恢复状态 */
+        /* 当 saved_zn == 0 时，缓冲区已空，skip_sep 触发了 luaZ_fill
+         * 导致文件位置改变。需要回退文件位置才能正确重新读取 [ */
+        if (saved_zn == 0 && saved_fpos_before_sep >= 0 && file_before_sep != NULL) {
+          fseek(file_before_sep, saved_fpos_before_sep, SEEK_SET);
+        }
+        
+        ls->curpos = saved_curpos;
+        ls->current = saved_current;
+        ls->buff->n = saved_bufflen;
+        ls->z->p = saved_zp;
+        ls->z->n = saved_zn;
+        next(ls);
+        
         return '[';
       }
       case '=': {
@@ -1267,9 +1454,11 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         }
         else if (check_next1(ls, '=')) return TK_DIVEQ;  /* '/=' 除法赋值 */
         else if (ls->current != '*' && ls->current != '\n' && ls->current != '\r') {
-          /* 正则字面量：只有 / 后紧跟字母或 \ 时才尝试解析为正则
-           * / 后是空格、数字、运算符、括号等时一定按除法处理 */
-          if (lislalpha(ls->current) || ls->current == '\\') {
+          /* 正则字面量：/ 后紧跟字母/\或常见正则起始字符([、(.、^)时尝试解析为正则
+           * / 后是空格、数字、运算符等时一定按除法处理 */
+          if (lislalpha(ls->current) || ls->current == '\\' ||
+              ls->current == '[' || ls->current == '(' || ls->current == '.' ||
+              ls->current == '^') {
             switch (ls->lasttoken) {
               /* 前一个 token 是表达式终结符，/ 是除法 */
               case TK_NAME: case TK_FLT: case TK_INT:
@@ -1382,6 +1571,12 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         if (has_interpolation) return TK_INTERPSTRING;
         else return TK_STRING;
       }
+      case '`': {  /* 模板字符串 `...` */
+        int has_interpolation = 0;
+        read_string(ls, ls->current, seminfo, &has_interpolation, 0);
+        if (has_interpolation) return TK_INTERPSTRING;
+        else return TK_INTERPSTRING;  /* 即使没有插值，也保持模板字符串类型 */
+      }
       case '.': {  /* '.', '..', '...', '..=' 或数字 */
         save_and_next(ls);
         if (check_next1(ls, '.')) {
@@ -1459,9 +1654,11 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           seminfo->ts = ts;
           if (isreserved(ts)) {  /* reserved word? */
             int tk = ts->extra - 1 + FIRST_RESERVED;
+            
             return tk;
           }
           else {
+            
             /* Check for alias */
             Alias *a = ls->aliases;
             while (a) {
@@ -1498,6 +1695,7 @@ void luaX_next (LexState *ls) {
   ls->lastbuff = ls->buff;
   ls->tokpos = ls->curpos;
   if (ls->lookahead.token != TK_EOS) {  /* is there a look-ahead token? */
+    
     ls->t = ls->lookahead;  /* use this one (struct copy, includes linenumber and nospace) */
     ls->linenumber = ls->t.linenumber;  /* 同步行号到当前token */
     if (ls->lookahead2.token != TK_EOS) {
@@ -1522,6 +1720,7 @@ void luaX_next (LexState *ls) {
     }
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
     ls->t.linenumber = ls->linenumber;  /* 记录token所在行号 */
+    
   }
 }
 

@@ -1,0 +1,1 @@
+make: *** [Makefile:316: mingw] Error 1
