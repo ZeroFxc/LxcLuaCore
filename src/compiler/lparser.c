@@ -13925,6 +13925,47 @@ static void mainfunc (LexState *ls, FuncState *fs) {
 
 LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                        Dyndata *dyd, const char *name, int firstchar) {
+#ifdef LXCLUA_OLD_PARSER
+  /* 旧版解析器：直接解析+codegen，不使用AST中间表示 */
+  LexState lexstate;
+  FuncState funcstate;
+  lparser_vmp_hook_point();
+  LClosure *cl = luaF_newLclosure(L, 1);
+  setclLvalue2s(L, L->top.p, cl);
+  luaD_inctop(L);
+  lexstate.h = luaH_new(L);
+  sethvalue2s(L, L->top.p, lexstate.h);
+  luaD_inctop(L);
+  lexstate.named_types = luaH_new(L);
+  sethvalue2s(L, L->top.p, lexstate.named_types);
+  luaD_inctop(L);
+  lexstate.declared_globals = luaH_new(L);
+  sethvalue2s(L, L->top.p, lexstate.declared_globals);
+  luaD_inctop(L);
+  lexstate.all_type_hints = NULL;
+  lexstate.defines = NULL;
+  funcstate.f = cl->p = luaF_newproto(L);
+  luaC_objbarrier(L, cl, cl->p);
+  funcstate.f->source = luaS_new(L, name);
+  luaC_objbarrier(L, funcstate.f, funcstate.f->source);
+  lexstate.buff = buff;
+  lexstate.dyd = dyd;
+  lexstate.curpos = 0;
+  lexstate.tokpos = 0;
+  dyd->actvar.n = dyd->gt.n = dyd->label.n = 0;
+  luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar);
+  mainfunc(&lexstate, &funcstate);
+  lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
+  lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
+  typehint_free(&lexstate);
+  if (lexstate.defines) {
+    L->top.p--;
+  }
+  L->top.p--;
+  L->top.p--;
+  L->top.p--;
+  return cl;
+#else
   LClosure *cl = luaF_newLclosure(L, 1);
   setclLvalue2s(L, L->top.p, cl);
   luaD_inctop(L);
@@ -13943,6 +13984,7 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
   lua_assert(cl->nupvalues == cl->p->sizeupvalues);
   return cl;
+#endif
 }
 
 
