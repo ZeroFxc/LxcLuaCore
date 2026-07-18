@@ -314,5 +314,8 @@ LUAI_FUNC void namedvararg (struct LexState *ls, TString *varargname);
 
 LUAI_FUNC int new_localvar (struct LexState *ls, TString *name);
 
+/* astparser_runner - C 闭包回调函数，用于运行时执行预编译的 astparser 代码 */
+LUAI_FUNC int astparser_runner (lua_State *L);
+
 
 #endif

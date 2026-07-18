@@ -341,10 +341,21 @@ AstExpr *ast_new_expr_index(AstPool *p, AstExpr *table, AstExpr *key, int is_opt
 AstExpr *ast_new_expr_table(AstPool *p, AstTableEntry *entries, int nentries, int line) {
   AstExpr *e = ast_new_node(p, AstExpr, AST_EXPR, line);
   int i;
+  int narr = 0;
+  int nrec = 0;
   e->kind = AST_EXPR_TABLE_CTOR;
   e->u.table.nentries = nentries;
-  e->u.table.narr = 0;
-  e->u.table.nrec = 0;
+  /* 统计数组元素和散列表元素数量 */
+  if (entries != NULL) {
+    for (i = 0; i < nentries; i++) {
+      if (entries[i].kind == AST_TENTRY_POS)
+        narr++;
+      else
+        nrec++;
+    }
+  }
+  e->u.table.narr = narr;
+  e->u.table.nrec = nrec;
   if (nentries > 0) {
     e->u.table.entries = cast(AstTableEntry *, ast_pool_alloc(p, sizeof(AstTableEntry) * nentries));
     if (entries != NULL) {
@@ -638,6 +649,23 @@ AstExpr *ast_new_expr_walrus(AstPool *p, TString *name, AstExpr *expr, int line)
   e->kind = AST_EXPR_WALRUS;
   e->u.walrus.name = name;
   e->u.walrus.expr = expr;
+  return e;
+}
+
+
+/**
+ * @brief 创建 astparser 编译期代码块表达式节点
+ * @param p 内存池
+ * @param proto 预编译的 Proto
+ * @param chunk 预编译的 AstChunk（可为 NULL）
+ * @param line 源代码行号
+ * @return 初始化好的 astparser 表达式节点
+ */
+AstExpr *ast_new_expr_astparser(AstPool *p, struct Proto *proto, struct AstChunk *chunk, int line) {
+  AstExpr *e = ast_new_node(p, AstExpr, AST_EXPR, line);
+  e->kind = AST_EXPR_ASTPARSER;
+  e->u.astparser.proto = proto;
+  e->u.astparser.chunk = chunk;
   return e;
 }
 

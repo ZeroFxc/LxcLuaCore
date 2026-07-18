@@ -867,14 +867,42 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 
 ## 详细文档
 
+### 入门指南
+- [自述文件](README_CN.md) -- 项目概述、功能特性与语法扩展
+- [新手教程](TUTORIAL.md) -- 快速入门与基础使用指南
+- [构建说明](BUILD.md) -- 编译与构建指南
+
+### 架构设计
+- [项目架构总览](ARCHITECTURE.md) -- 整体架构设计与模块关系
+- [模块详细说明](MODULES.md) -- 各模块功能与实现详解
+
+### 参考手册
 - [语法参考手册](SYNTAX_REFERENCE.md) -- 基于源码的完整语法特性说明，涵盖所有扩展语法及其编译方式
+- [Lua API 参考](LUA_API.md) -- Lua API 完整参考
 - [API 参考手册](API_REFERENCE.md) -- 所有标准库和扩展库的完整函数 API 列表
+- [编译配置差异](luaconf.diff) -- luaconf.h 配置变更说明
+
+### 子系统
+- [JIT 编译管线](JIT_PIPELINE.md) -- 即时编译流程与实现细节
+- [AST 抽象语法树系统](AST_SYSTEM.md) -- AST 结构与操作说明
+- [LSP 语言服务器](LSP_SERVER.md) -- 语言服务器协议实现
+- [WASM 运行时](WASM_RUNTIME.md) -- WebAssembly 运行时集成
+
+### 编译系统
+- [编译系统文档](BUILD_SYSTEM.md) -- 编译系统架构与工作流
+
+### 异步编程
 - [异步编程指南](NATIVE_ASYNC_AWAIT.md) -- async/await 原生支持详解
 - [异步语法糖说明](ASYNC_AWAIT_SUGAR.md) -- 异步语法糖脱糖规则
-- [内联汇编教程](ASM_TUTORIAL_CN.md) -- 内联汇编使用指南
-- [开发计划](PLAN.md) -- 项目现状与未来规划
+
+### 其他
+- [内联汇编教程（中文）](ASM_TUTORIAL_CN.md) -- 内联汇编使用指南
+- [内联汇编教程（英文）](ASM_TUTORIAL.md) -- 内联汇编使用指南
+- [自定义操作码](vmcustom_usage.md) -- 自定义操作码扩展系统使用说明
 - [安全说明](SECURITY.md) -- 安全特性与注意事项
+- [GC 分析报告](REPORT_GC_ANALYSIS.md) -- 垃圾回收器性能分析
 - [贡献指南](CONTRIBUTING.md) -- 参与贡献的方式
+- [开发计划](PLAN.md) -- 项目现状与未来规划
 
 ## 许可证
 

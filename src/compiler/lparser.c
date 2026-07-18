@@ -16,6 +16,7 @@
 
 #include "lua.h"
 
+#include "lapi.h"
 #include "lauxlib.h"
 #include "lcode.h"
 #include "lclass.h"
@@ -36,6 +37,7 @@
 #include "lobfuscate.h"
 #include "last.h"
 #include "last_parse.h"
+#include "last_serialize.h"
 #include "lcodegen.h"
 
 __attribute__((noinline))
@@ -65,6 +67,8 @@ static int explist (LexState *ls, expdesc *v);
 static void fixforjump (FuncState *fs, int pc, int dest, int back);
 static void parse_test_value (LexState *ls, expdesc *v, int line, int allow_or);
 static void simpleexp (LexState *ls, expdesc *v);
+
+static int astparserstat (LexState *ls, int line);  /* astparser 块解析 */
 
 void retstat (LexState *ls);
 static TypeHint *gettypehint (LexState *ls);
@@ -1591,6 +1595,7 @@ static void fieldsel (LexState *ls, expdesc *v) {
       /* Reserved words that can be used as field names */
       case TK_AND: ts = luaS_newliteral(ls->L, "and"); break;
       case TK_ASM: ts = luaS_newliteral(ls->L, "asm"); break;
+      case TK_ASTPARSER: ts = luaS_newliteral(ls->L, "astparser"); break;
       case TK_ASYNC: ts = luaS_newliteral(ls->L, "async"); break;
       case TK_AWAIT: ts = luaS_newliteral(ls->L, "await"); break;
       case TK_BREAK: ts = luaS_newliteral(ls->L, "break"); break;
@@ -3736,6 +3741,12 @@ static void primaryexp (LexState *ls, expdesc *v) {
       new_fs.f->lastlinedefined = ls->linenumber;
       codeclosure(ls, v);
       close_func(ls);
+      return;
+    }
+    case TK_ASTPARSER: {
+      /* astparser 作为表达式使用：解析 AST 并返回 callable 闭包 */
+      int reg = astparserstat(ls, ls->linenumber);
+      init_exp(v, VNONRELOC, reg);
       return;
     }
     default: {
@@ -9446,6 +9457,103 @@ static void asm_emit_jmp (LexState *ls, FuncState *fs, AsmContext *ctx, TString 
 
 static void asm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int line);
 
+/*
+** astparser 语法块：块内使用 AST 解析器解析正常 Lua 代码
+** 语法: astparser( Lua代码 )
+*/
+
+
+/*
+** astparser_runner - C 闭包回调函数
+** 
+** 当 astparser 创建的 callable 闭包被调用时执行。
+** 从 upvalue 获取 Proto* 和 AstChunk*，创建 Lua 闭包并执行。
+** 
+** 参数：
+**   L - Lua 状态，参数由调用者传入
+** 返回值：
+**   返回 Lua 闭包执行的结果数量
+*/
+int astparser_runner (lua_State *L) {
+  Proto *p = (Proto *)lua_touserdata(L, lua_upvalueindex(1));
+  AstChunk *chunk = (AstChunk *)lua_touserdata(L, lua_upvalueindex(2));
+  StkId func = L->ci->func.p;
+  int nargs = cast_int(L->top.p - (func + 1));
+  
+  /* 检测 {ast=true} 选项 */
+  if (nargs >= 1 && lua_istable(L, 1)) {
+    lua_getfield(L, 1, "ast");
+    if (lua_toboolean(L, -1)) {
+      lua_pop(L, 1);
+      /* 序列化 AST 并返回 */
+      ast_serialize_to_lua(L, chunk);
+      /* 释放 AST 内存 */
+      ast_pool_free(chunk->pool);
+      luaM_free(L, chunk->pool);
+      return 1;
+    }
+    lua_pop(L, 1);
+  }
+  
+  /* 检测 {inputmode="ast"} 选项 */
+  int inputmode_ast = 0;
+  if (nargs >= 1 && lua_istable(L, 1)) {
+    lua_getfield(L, 1, "inputmode");
+    if (lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), "ast") == 0) {
+      inputmode_ast = 1;
+    }
+    lua_pop(L, 1);
+  }
+  
+  /* 创建 Lua 闭包 */
+  LClosure *cl = luaF_newLclosure(L, p->sizeupvalues);
+  cl->p = p;
+  luaF_initupvals(L, cl);
+  
+  /* 设置 _ENV upvalue 为全局表 */
+  if (cl->nupvalues > 0) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
+    setobj(L, cl->upvals[0]->v.p, s2v(L->top.p - 1));
+    L->top.p--;
+  }
+  
+  /* 将 Lua 闭包推入栈顶 */
+  setclLvalue(L, s2v(L->top.p), cl);
+  api_incr_top(L);
+  
+  /* 将 Lua 闭包移到 func 位置（替换 C 闭包），参数保持在 func+1 之后 */
+  {
+    /* 直接将 Lua 闭包从栈顶移到 func 位置，参数无需移动 */
+    setobj2s(L, func, s2v(L->top.p - 1));
+    L->top.p--;  /* 弹出栈顶的 Lua 闭包 */
+  }
+  
+  /* {inputmode="ast"} 模式：执行 inner 闭包获取 AST table，反序列化并编译 */
+  if (inputmode_ast) {
+    luaD_call(L, func, 1);  /* 期望返回 1 个结果（AST table） */
+    if (!lua_istable(L, -1)) {
+      luaG_runerror(L, "astparser: inputmode='ast' expects inner function to return an AST table");
+    }
+    AstChunk *new_chunk = ast_deserialize_from_lua(L, -1);
+    /* 编译：需要临时 Dyndata */
+    Dyndata temp_dyd;
+    memset(&temp_dyd, 0, sizeof(temp_dyd));
+    Proto *new_p = luaY_codegen_chunk(L, new_chunk, &temp_dyd);
+    /* 释放反序列化的 AST */
+    ast_pool_free(new_chunk->pool);
+    luaM_free(L, new_chunk->pool);
+    /* 创建新的 C 闭包 */
+    lua_pushlightuserdata(L, new_p);
+    lua_pushlightuserdata(L, NULL);  /* chunk=NULL 表示无 AST */
+    lua_pushcclosure(L, astparser_runner, 2);
+    return 1;
+  }
+  
+  /* 调用 Lua 闭包（现在在 func 位置） */
+  luaD_call(L, func, LUA_MULTRET);
+  return cast_int(L->top.p - func);
+}
+
 
 /*
 ** 内联汇编语句解析（内部版本，支持嵌套）
@@ -9498,6 +9606,304 @@ static void asmstat_ex (LexState *ls, int line, AsmContext *parent_ctx);
 */
 static void asmstat (LexState *ls, int line) {
   asmstat_ex(ls, line, NULL);
+}
+
+
+/*
+** astparser 语法块：块内使用 AST 解析器解析正常 Lua 代码
+** 语法: astparser( Lua代码 )
+** 
+** 从 ZIO 读取原始源码，跟踪嵌套括号，解析后创建 callable C 闭包
+** C 闭包内部持有 Proto* 和 AstChunk* 作为 upvalue，
+** 被调用时创建 Lua 闭包并执行。
+** 参数：
+**   ls - 词法状态
+**   line - 起始行号
+*/
+static int astparserstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  lua_State *L = ls->L;
+  Proto *f = fs->f;
+  ZIO *z = ls->z;
+  expdesc v;
+  int c;
+  (void)line;
+  
+  luaX_next(ls);  /* 跳过 'astparser' */
+  checknext(ls, '(');  /* 消费 '(' */
+  
+  /* 从 ZIO 读取原始源码，跟踪嵌套括号，跳过字符串和注释 */
+  size_t buf_len = 0, buf_cap = 256;
+  char *buf = luaM_newvector(L, buf_cap, char);
+  
+  int depth = 1;  /* 已经消费了 '('，深度为 1 */
+  c = ls->current;  /* 块内第一个字符 */
+  
+  while (depth > 0) {
+    if (c == EOZ) {
+      luaM_free(L, buf);
+      luaX_syntaxerror(ls, "unfinished astparser block");
+    }
+    
+    /* 处理字符串：单引号和双引号 */
+    if (c == '\'' || c == '"') {
+      int quote = c;
+      if (buf_len >= buf_cap) {
+        size_t old = buf_cap; buf_cap *= 2;
+        buf = luaM_reallocvchar(L, buf, old, buf_cap);
+      }
+      buf[buf_len++] = (char)c;
+      while ((c = zgetc(z)) != EOZ) {
+        if (buf_len >= buf_cap) {
+          size_t old = buf_cap; buf_cap *= 2;
+          buf = luaM_reallocvchar(L, buf, old, buf_cap);
+        }
+        buf[buf_len++] = (char)c;
+        if (c == '\\') {  /* 转义字符 */
+          c = zgetc(z);
+          if (c != EOZ) {
+            if (buf_len >= buf_cap) {
+              size_t old = buf_cap; buf_cap *= 2;
+              buf = luaM_reallocvchar(L, buf, old, buf_cap);
+            }
+            buf[buf_len++] = (char)c;
+          }
+          continue;
+        }
+        if (c == quote) break;
+      }
+      c = zgetc(z);
+      continue;
+    }
+    
+    /* 处理长括号 [[ 或 [=...[ */
+    if (c == '[') {
+      int c2 = zgetc(z);
+      if (c2 == '[' || c2 == '=') {
+        int eq = 0;
+        while (c2 == '=') { eq++; c2 = zgetc(z); }
+        if (c2 == '[') {
+          /* 确认是长括号，写入原始字符 */
+          if (buf_len + 2 + eq >= buf_cap) {
+            size_t old = buf_cap;
+            buf_cap = (buf_len + 2 + eq) * 2;
+            buf = luaM_reallocvchar(L, buf, old, buf_cap);
+          }
+          buf[buf_len++] = '[';
+          {
+            int i;
+            for (i = 0; i < eq; i++) buf[buf_len++] = '=';
+          }
+          buf[buf_len++] = '[';
+          
+          /* 读取直到匹配的 ]=...=] */
+          while ((c = zgetc(z)) != EOZ) {
+            if (buf_len >= buf_cap) {
+              size_t old = buf_cap; buf_cap *= 2;
+              buf = luaM_reallocvchar(L, buf, old, buf_cap);
+            }
+            buf[buf_len++] = (char)c;
+            if (c == ']') {
+              int match = 1;
+              int i;
+              for (i = 0; i < eq; i++) {
+                c = zgetc(z);
+                if (c != '=') { match = 0; break; }
+                if (buf_len >= buf_cap) {
+                  size_t old = buf_cap; buf_cap *= 2;
+                  buf = luaM_reallocvchar(L, buf, old, buf_cap);
+                }
+                buf[buf_len++] = (char)c;
+              }
+              if (match) {
+                c = zgetc(z);
+                if (c == ']') {
+                  if (buf_len >= buf_cap) {
+                    size_t old = buf_cap; buf_cap *= 2;
+                    buf = luaM_reallocvchar(L, buf, old, buf_cap);
+                  }
+                  buf[buf_len++] = ']';
+                  break;
+                }
+                if (buf_len >= buf_cap) {
+                  size_t old = buf_cap; buf_cap *= 2;
+                  buf = luaM_reallocvchar(L, buf, old, buf_cap);
+                }
+                buf[buf_len++] = (char)c;
+              }
+            }
+          }
+          c = zgetc(z);
+          continue;
+        }
+      }
+      /* 不是长括号，普通 '[' */
+      zungetc(z);
+      depth++;
+      if (buf_len >= buf_cap) {
+        size_t old = buf_cap; buf_cap *= 2;
+        buf = luaM_reallocvchar(L, buf, old, buf_cap);
+      }
+      buf[buf_len++] = '[';
+      c = zgetc(z);
+      continue;
+    }
+    
+    /* 处理注释 -- */
+    if (c == '-') {
+      int c2 = zgetc(z);
+      if (c2 == '-') {
+        /* 注释开始 */
+        int c3 = zgetc(z);
+        if (c3 == '[') {
+          /* 可能是块注释 --[[ */
+          int c4 = zgetc(z);
+          if (c4 == '[' || c4 == '=') {
+            /* 块注释，跳过直到 ]] */
+            if (c4 == '[') {
+              while ((c = zgetc(z)) != EOZ) {
+                if (c == ']') {
+                  c = zgetc(z);
+                  if (c == ']') break;
+                }
+              }
+            } else {
+              int eq = 0;
+              while (c4 == '=') { eq++; c4 = zgetc(z); }
+              while ((c = zgetc(z)) != EOZ) {
+                if (c == ']') {
+                  int match = 1;
+                  int i;
+                  for (i = 0; i < eq; i++) {
+                    c = zgetc(z);
+                    if (c != '=') { match = 0; break; }
+                  }
+                  if (match && (c = zgetc(z)) == ']') break;
+                }
+              }
+            }
+            c = zgetc(z);
+            continue;
+          } else {
+            /* 行注释，跳过直到行尾 */
+            zungetc(z);
+            while ((c = zgetc(z)) != EOZ && c != '\n' && c != '\r') {}
+            if (c == '\r') {
+              c = zgetc(z);
+              if (c != '\n') { zungetc(z); c = '\n'; }
+            }
+            c = zgetc(z);
+            continue;
+          }
+        } else {
+          /* 行注释，跳过直到行尾 */
+          zungetc(z);
+          while ((c = zgetc(z)) != EOZ && c != '\n' && c != '\r') {}
+          if (c == '\r') {
+            c = zgetc(z);
+            if (c != '\n') { zungetc(z); c = '\n'; }
+          }
+          c = zgetc(z);
+          continue;
+        }
+      } else {
+        /* 普通 '-' */
+        zungetc(z);
+        if (buf_len >= buf_cap) {
+          size_t old = buf_cap; buf_cap *= 2;
+          buf = luaM_reallocvchar(L, buf, old, buf_cap);
+        }
+        buf[buf_len++] = '-';
+        c = zgetc(z);
+        continue;
+      }
+    }
+    
+    /* 跟踪括号嵌套 */
+    if (c == '(') depth++;
+    else if (c == ')') depth--;
+    
+    if (depth > 0) {
+      if (buf_len >= buf_cap) {
+        size_t old = buf_cap; buf_cap *= 2;
+        buf = luaM_reallocvchar(L, buf, old, buf_cap);
+      }
+      buf[buf_len++] = (char)c;
+    }
+    
+    c = zgetc(z);
+  }
+  
+  /* 更新 ls->current 为 ')' 之后的下一个字符 */
+  ls->current = c;
+  
+  /* NUL 终止 */
+  if (buf_len >= buf_cap) {
+    size_t old = buf_cap;
+    buf_cap = buf_len + 1;
+    buf = luaM_reallocvchar(L, buf, old, buf_cap);
+  }
+  buf[buf_len] = '\0';
+  
+  /* 创建 ZIO 用于 AST 解析 */
+  ZIO ast_z;
+  memset(&ast_z, 0, sizeof(ast_z));
+  ast_z.L = L;
+  ast_z.p = buf;
+  ast_z.n = buf_len;
+  
+  /* AST 解析用的 Mbuffer */
+  Mbuffer ast_buff;
+  luaZ_initbuffer(L, &ast_buff);
+  
+  /* 创建 Dyndata */
+  Dyndata ast_dyd;
+  memset(&ast_dyd, 0, sizeof(ast_dyd));
+  
+  /* 暂停 GC */
+  int old_gc = lua_gc(L, LUA_GCISRUNNING, 0);
+  lua_gc(L, LUA_GCSTOP, 0);
+  
+  /* AST 解析 + 代码生成 */
+  AstChunk *chunk = luaY_parse_ast(L, &ast_z, &ast_buff, &ast_dyd, "astparser",
+    buf_len > 0 ? (unsigned char)buf[0] : '\n');
+  chunk->main_func->is_vararg = 1;
+  Proto *p = luaY_codegen_chunk(L, chunk, &ast_dyd);
+  
+  /* 恢复 GC */
+  if (old_gc) lua_gc(L, LUA_GCRESTART, 0);
+  
+  /* 不释放 AST 内存池 - 保留给后续 {ast=true} 选项 */
+  /* 将 Proto 添加到当前函数的子函数列表 */
+  if (fs->np >= f->sizep) {
+    int oldsize = f->sizep;
+    luaM_growvector(L, f->p, fs->np, f->sizep, Proto *, MAXARG_Bx, "functions");
+    while (oldsize < f->sizep) f->p[oldsize++] = NULL;
+  }
+  f->p[fs->np++] = p;
+  luaC_objbarrier(L, f, p);
+  
+  /* 在 Lua 栈上创建 C 闭包：upvalue 1=Proto*, upvalue 2=AstChunk* */
+  lua_pushlightuserdata(L, p);
+  lua_pushlightuserdata(L, chunk);
+  lua_pushcclosure(L, astparser_runner, 2);
+  
+  /* 将栈顶的 C 闭包添加到常量表，获取常量索引 */
+  {
+    int kidx = luaK_closureK(fs, s2v(L->top.p - 1));
+    L->top.p--;  /* 弹出 C 闭包（常量表已持有引用） */
+    
+    /* 生成 OP_LOADK 将 C 闭包加载到寄存器 */
+    int pc = luaK_codeABx(fs, OP_LOADK, 0, kidx);
+    init_exp(&v, VRELOC, pc);
+    luaK_exp2nextreg(fs, &v);
+  }
+  
+  /* 释放源码缓冲区 */
+  luaZ_freebuffer(L, &ast_buff);
+  luaM_free(L, buf);
+  
+  return v.u.info;  /* 返回结果寄存器编号 */
 }
 
 
@@ -13588,6 +13994,10 @@ void statement (LexState *ls) {
     }
     case TK_ASM: {  /* stat -> asmstat */
       asmstat(ls, line);
+      break;
+    }
+    case TK_ASTPARSER: {  /* stat -> astparserstat */
+      astparserstat(ls, line);
       break;
     }
     case TK_ASYNC: {  /* stat -> async function */

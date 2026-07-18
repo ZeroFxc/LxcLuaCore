@@ -736,6 +736,47 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 
 ---
 
+## Detailed Documentation
+
+### Getting Started
+- [README](README.md) -- Project overview, features, and syntax extensions
+- [Tutorial](TUTORIAL.md) -- Quick start and basic usage guide
+- [Build Guide](BUILD.md) -- Compilation and build instructions
+
+### Architecture
+- [Architecture Overview](ARCHITECTURE.md) -- Overall architecture design and module relationships
+- [Module Details](MODULES.md) -- Detailed description of each module
+
+### Reference
+- [Syntax Reference](SYNTAX_REFERENCE.md) -- Complete syntax feature reference based on source code
+- [Lua API Reference](LUA_API.md) -- Complete Lua API reference
+- [API Reference](API_REFERENCE.md) -- Full function API listing for all standard and extension libraries
+- [Build Config Diff](luaconf.diff) -- luaconf.h configuration changes
+
+### Subsystems
+- [JIT Pipeline](JIT_PIPELINE.md) -- JIT compilation flow and implementation details
+- [AST System](AST_SYSTEM.md) -- AST structure and operations
+- [LSP Server](LSP_SERVER.md) -- Language Server Protocol implementation
+- [WASM Runtime](WASM_RUNTIME.md) -- WebAssembly runtime integration
+
+### Build System
+- [Build System](BUILD_SYSTEM.md) -- Build system architecture and workflow
+
+### Async Programming
+- [Async Programming Guide](NATIVE_ASYNC_AWAIT.md) -- Native async/await support
+- [Async Syntax Sugar](ASYNC_AWAIT_SUGAR.md) -- Async/await desugaring rules
+
+### Other
+- [Inline ASM Tutorial (English)](ASM_TUTORIAL.md) -- Inline assembly usage guide
+- [Inline ASM Tutorial (Chinese)](ASM_TUTORIAL_CN.md) -- Inline assembly usage guide
+- [Custom Opcodes](vmcustom_usage.md) -- Custom opcode extension system usage
+- [Security](SECURITY.md) -- Security features and considerations
+- [GC Analysis Report](REPORT_GC_ANALYSIS.md) -- Garbage collector performance analysis
+- [Contributing](CONTRIBUTING.md) -- How to contribute
+- [Roadmap](PLAN.md) -- Project status and future plans
+
+---
+
 ## License
 
 LXCLUA-NCore is licensed under the [MIT License](../LICENSE).

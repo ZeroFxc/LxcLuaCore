@@ -1143,163 +1143,255 @@ static void db_pushresult(lua_State *L, DumpBuffer *db) {
   if (db->b) free(db->b);
 }
 
-static void format_table(lua_State *L, int idx, DumpBuffer *buffer, int indent, int depth, VisitedTables *visited, const char *current_path) {
-  int i;
-  
-  /* 将相对索引转换为绝对索引 */
-  idx = lua_absindex(L, idx);
-  
-  /* 检查元表是否有__tostring方法 */
-  if (lua_getmetatable(L, idx)) {
-    lua_getfield(L, -1, "__tostring");
-    if (lua_isfunction(L, -1)) {
-      lua_pushvalue(L, idx);
-      if (lua_pcall(L, 1, 1, 0) == 0) {
-        const char *str = lua_tostring(L, -1);
-        if (str != NULL) {
-          db_addstring(L, buffer, str);
-          lua_pop(L, 2);  /* pop result and metatable */
-          return;
-        }
-      }
-      lua_pop(L, 1);
-    } else {
-      lua_pop(L, 1);
-    }
-    lua_pop(L, 1);
+/* 迭代式遍历栈帧，用于模拟递归遍历表 */
+#define DUMP_MAX_DEPTH 100
+#define DUMP_MAX_FRAMES 256
+
+typedef struct {
+  int table_idx;        /* 表在栈上的绝对索引 */
+  int state;            /* 0=START(输出{), 1=ITERATE(遍历键值), 2=WAIT_POP(子表处理完需pop) */
+  int first;            /* 是否还未输出第一个元素 */
+  int indent;           /* 缩进级别 */
+  int depth;            /* 当前嵌套深度 */
+  char current_path[256]; /* 当前路径，用于循环引用检测 */
+} DumpFrame;
+
+typedef struct {
+  DumpFrame frames[DUMP_MAX_FRAMES];
+  int top;
+} FrameStack;
+
+static void fs_push(FrameStack *fs, int table_idx, int indent, int depth, const char *path) {
+  DumpFrame *f = &fs->frames[fs->top++];
+  f->table_idx = table_idx;
+  f->state = 0;
+  f->first = 1;
+  f->indent = indent;
+  f->depth = depth;
+  if (path) {
+    strncpy(f->current_path, path, sizeof(f->current_path) - 1);
+    f->current_path[sizeof(f->current_path) - 1] = '\0';
+  } else {
+    f->current_path[0] = '\0';
   }
-  
-  db_addstring(L, buffer, "{");
-  
-  /* 限制递归深度 */
-  if (depth > 20) {
-    db_addstring(L, buffer, "...}");
+}
+
+static DumpFrame* fs_peek(FrameStack *fs) {
+  return &fs->frames[fs->top - 1];
+}
+
+static void fs_pop(FrameStack *fs) {
+  fs->top--;
+}
+
+static int fs_empty(FrameStack *fs) {
+  return fs->top == 0;
+}
+
+/* 迭代式格式化表为字符串 */
+static void format_table(lua_State *L, int idx, DumpBuffer *buffer, int indent, int depth, VisitedTables *visited, const char *current_path, int compact) {
+  FrameStack *fstack = (FrameStack *)malloc(sizeof(FrameStack));
+  if (!fstack) {
+    db_addstring(L, buffer, "{<memory error>}");
     return;
   }
-  
-  int first = 1;
-  lua_pushnil(L);
-  while (lua_next(L, idx) != 0) {
-    /* 栈: ... key value */
-    int value_idx = lua_absindex(L, -1);
-    int key_idx = lua_absindex(L, -2);
-    
-    /* 检查值是否是_G */
-    if (lua_istable(L, value_idx) && is_value_equal_G(L, value_idx)) {
-      /* 值是_G，输出 key = _G */
-      if (!first) db_addstring(L, buffer, ",");
-      first = 0;
-      db_addstring(L, buffer, "\n");
-      for (i = 0; i < indent + 2; i++) db_addchar(L, buffer, ' ');
-      
-      /* 输出键 */
-      lua_pushvalue(L, key_idx);
-      if (lua_type(L, -1) == LUA_TSTRING) {
-        db_addstring(L, buffer, "[\"");
-        db_addstring(L, buffer, lua_tostring(L, -1));
-        db_addstring(L, buffer, "\"]");
-      } else {
-        lua_pushfstring(L, "[%d]", (int)lua_tointeger(L, -1));
-        db_addvalue(L, buffer);
+  fstack->top = 0;
+
+  idx = lua_absindex(L, idx);
+  fs_push(fstack, idx, indent, depth, current_path);
+
+  while (!fs_empty(fstack)) {
+    DumpFrame *frame = fs_peek(fstack);
+
+    switch (frame->state) {
+    case 0: { /* START: 输出 "{" 并开始遍历 */
+      int has_tostring = 0;
+      /* 检查元表是否有__tostring方法 */
+      if (lua_getmetatable(L, frame->table_idx)) {
+        lua_getfield(L, -1, "__tostring");
+        if (lua_isfunction(L, -1)) {
+          lua_pushvalue(L, frame->table_idx);
+          if (lua_pcall(L, 1, 1, 0) == 0) {
+            const char *str = lua_tostring(L, -1);
+            if (str != NULL) {
+              db_addstring(L, buffer, str);
+              has_tostring = 1;
+            }
+          }
+          lua_pop(L, 1); /* pop result or error */
+        } else {
+          lua_pop(L, 1); /* pop non-function __tostring */
+        }
+        lua_pop(L, 1); /* pop metatable */
       }
+      if (has_tostring) {
+        fs_pop(fstack);
+        if (!fs_empty(fstack))
+          fs_peek(fstack)->state = 2; /* 父帧需要pop value */
+        break;
+      }
+
+      db_addstring(L, buffer, "{");
+
+      /* 深度限制检查 */
+      if (frame->depth > DUMP_MAX_DEPTH) {
+        db_addstring(L, buffer, "...}");
+        fs_pop(fstack);
+        if (!fs_empty(fstack))
+          fs_peek(fstack)->state = 2;
+        break;
+      }
+
+      lua_checkstack(L, 3); /* 确保有足够空间 push nil 和后续 lua_next */
+      lua_pushnil(L); /* 初始 key，用于 lua_next */
+      frame->state = 1; /* -> ITERATE */
+      break;
+    }
+
+    case 1: { /* ITERATE: 遍历键值对 */
+      /* 确保栈空间充足，lua_next 需要 2 个额外槽位 */
+      lua_checkstack(L, 2);
+      /* 尝试获取下一个键值对 */
+      if (lua_next(L, frame->table_idx) == 0) {
+        /* 遍历结束，输出 "}" */
+        if (!frame->first && !compact) {
+          db_addstring(L, buffer, "\n");
+          { int i; for (i = 0; i < frame->indent; i++) db_addchar(L, buffer, ' '); }
+        }
+        db_addstring(L, buffer, "}");
+        fs_pop(fstack);
+        if (!fs_empty(fstack))
+          fs_peek(fstack)->state = 2; /* 父帧需要pop子表value */
+        break;
+      }
+
+      /* 栈: ... key value */
+      {
+        int value_idx = lua_absindex(L, -1);
+        int key_idx = lua_absindex(L, -2);
+
+        /* 检查值是否是_G */
+        if (lua_istable(L, value_idx) && is_value_equal_G(L, value_idx)) {
+          if (!frame->first) db_addstring(L, buffer, ",");
+          frame->first = 0;
+          if (!compact) {
+            db_addstring(L, buffer, "\n");
+            { int i; for (i = 0; i < frame->indent + 2; i++) db_addchar(L, buffer, ' '); }
+          }
+          lua_pushvalue(L, key_idx);
+          if (lua_type(L, -1) == LUA_TSTRING) {
+            db_addstring(L, buffer, "[\"");
+            db_addstring(L, buffer, lua_tostring(L, -1));
+            db_addstring(L, buffer, "\"]");
+          } else {
+            lua_pushfstring(L, "[%d]", (int)lua_tointeger(L, -1));
+            db_addvalue(L, buffer);
+          }
+          lua_pop(L, 1);
+          db_addstring(L, buffer, " = _G");
+          lua_pop(L, 1); /* pop value, keep key for next iteration */
+          break;
+        }
+
+        /* 检查值是否是package.loaded，如果是则跳过 */
+        if (lua_istable(L, value_idx) && is_value_equal_package_loaded(L, value_idx)) {
+          lua_pop(L, 1); /* pop value, keep key */
+          break;
+        }
+
+        /* 输出分隔符和缩进 */
+        if (!frame->first) db_addstring(L, buffer, ",");
+        frame->first = 0;
+        if (!compact) {
+          db_addstring(L, buffer, "\n");
+          { int i; for (i = 0; i < frame->indent + 2; i++) db_addchar(L, buffer, ' '); }
+        }
+
+        /* 构建键的字符串表示，用于路径 */
+        char key_str[64] = "";
+        lua_pushvalue(L, key_idx);
+        if (lua_type(L, -1) == LUA_TSTRING) {
+          snprintf(key_str, sizeof(key_str), "%s", lua_tostring(L, -1));
+          db_addstring(L, buffer, "[\"");
+          db_addstring(L, buffer, key_str);
+          db_addstring(L, buffer, "\"]");
+        } else if (lua_type(L, -1) == LUA_TNUMBER) {
+          snprintf(key_str, sizeof(key_str), "%d", (int)lua_tointeger(L, -1));
+          lua_pushfstring(L, "[%s]", key_str);
+          db_addvalue(L, buffer);
+        } else {
+          db_addstring(L, buffer, "[");
+          luaL_tolstring(L, -1, NULL);
+          db_addvalue(L, buffer);
+          db_addstring(L, buffer, "]");
+          snprintf(key_str, sizeof(key_str), "?");
+        }
+        lua_pop(L, 1);
+
+        db_addstring(L, buffer, " = ");
+
+        /* 格式化值 */
+        int vt = lua_type(L, value_idx);
+        if (vt == LUA_TNUMBER) {
+          lua_pushvalue(L, value_idx);
+          db_addstring(L, buffer, lua_tostring(L, -1));
+          lua_pop(L, 1);
+        } else if (vt == LUA_TSTRING) {
+          const char *s = lua_tostring(L, value_idx);
+          db_addstring(L, buffer, "\"");
+          if (s && strlen(s) > 100) {
+            char truncated[104];
+            strncpy(truncated, s, 100);
+            truncated[100] = '\0';
+            db_addstring(L, buffer, truncated);
+            db_addstring(L, buffer, "...");
+          } else {
+            db_addstring(L, buffer, s ? s : "");
+          }
+          db_addstring(L, buffer, "\"");
+        } else if (vt == LUA_TTABLE) {
+          /* 检查循环引用 */
+          const void *tbl_ptr = lua_topointer(L, value_idx);
+          char new_path[256];
+          snprintf(new_path, sizeof(new_path), "%s%s", frame->current_path, key_str);
+
+          const char *prev_path = check_and_add_visited(visited, tbl_ptr, new_path);
+          if (prev_path) {
+            /* 已访问过，输出路径引用 */
+            db_addstring(L, buffer, prev_path);
+          } else {
+            /* 推入子帧，注意：不pop value，由子帧处理完后 WAIT_POP 来pop */
+            fs_push(fstack, value_idx, frame->indent + 2, frame->depth + 1, new_path);
+            break; /* 不执行末尾的 lua_pop(L,1) */
+          }
+        } else if (vt == LUA_TBOOLEAN) {
+          db_addstring(L, buffer, lua_toboolean(L, value_idx) ? "true" : "false");
+        } else if (vt == LUA_TFUNCTION) {
+          db_addstring(L, buffer, "<function>");
+        } else if (vt == LUA_TUSERDATA) {
+          db_addstring(L, buffer, "<userdata>");
+        } else if (vt == LUA_TTHREAD) {
+          db_addstring(L, buffer, "<thread>");
+        } else if (vt == LUA_TLIGHTUSERDATA) {
+          db_addstring(L, buffer, "<lightuserdata>");
+        } else if (vt == LUA_TNIL) {
+          db_addstring(L, buffer, "nil");
+        } else {
+          db_addstring(L, buffer, "<unknown>");
+        }
+
+        lua_pop(L, 1); /* pop value, keep key for next iteration */
+      }
+      break;
+    }
+
+    case 2: /* WAIT_POP: 子表处理完成，pop 子表 value */
       lua_pop(L, 1);
-      
-      db_addstring(L, buffer, " = _G");
-      lua_pop(L, 1);  /* pop value, keep key for next iteration */
-      continue;
+      frame->state = 1; /* -> ITERATE，继续遍历父表 */
+      break;
     }
-    
-    /* 检查值是否是package.loaded，如果是则跳过 */
-    if (lua_istable(L, value_idx) && is_value_equal_package_loaded(L, value_idx)) {
-      lua_pop(L, 1);  /* pop value, keep key for next iteration */
-      continue;
-    }
-    
-    if (!first) db_addstring(L, buffer, ",");
-    first = 0;
-    db_addstring(L, buffer, "\n");
-    for (i = 0; i < indent + 2; i++) db_addchar(L, buffer, ' ');
-    
-    /* 构建键的字符串表示，用于路径 */
-    char key_str[64] = "";
-    lua_pushvalue(L, key_idx);
-    if (lua_type(L, -1) == LUA_TSTRING) {
-      snprintf(key_str, sizeof(key_str), "%s", lua_tostring(L, -1));
-      db_addstring(L, buffer, "[\"");
-      db_addstring(L, buffer, key_str);
-      db_addstring(L, buffer, "\"]");
-    } else if (lua_type(L, -1) == LUA_TNUMBER) {
-      snprintf(key_str, sizeof(key_str), "%d", (int)lua_tointeger(L, -1));
-      lua_pushfstring(L, "[%s]", key_str);
-      db_addvalue(L, buffer);
-    } else {
-      db_addstring(L, buffer, "[");
-      luaL_tolstring(L, -1, NULL);
-      db_addvalue(L, buffer);
-      db_addstring(L, buffer, "]");
-      snprintf(key_str, sizeof(key_str), "?");
-    }
-    lua_pop(L, 1);
-    
-    db_addstring(L, buffer, " = ");
-    
-    /* 格式化值 */
-    int vt = lua_type(L, value_idx);
-    if (vt == LUA_TNUMBER) {
-      lua_pushvalue(L, value_idx);
-      db_addstring(L, buffer, lua_tostring(L, -1));
-      lua_pop(L, 1);
-    } else if (vt == LUA_TSTRING) {
-      const char *s = lua_tostring(L, value_idx);
-      db_addstring(L, buffer, "\"");
-      if (s && strlen(s) > 100) {
-        char truncated[104];
-        strncpy(truncated, s, 100);
-        truncated[100] = '\0';
-        db_addstring(L, buffer, truncated);
-        db_addstring(L, buffer, "...");
-      } else {
-        db_addstring(L, buffer, s ? s : "");
-      }
-      db_addstring(L, buffer, "\"");
-    } else if (vt == LUA_TTABLE) {
-      /* 检查循环引用 */
-      const void *tbl_ptr = lua_topointer(L, value_idx);
-      char new_path[256];
-      snprintf(new_path, sizeof(new_path), "%s%s", current_path ? current_path : "", key_str);
-      
-      const char *prev_path = check_and_add_visited(visited, tbl_ptr, new_path);
-      if (prev_path) {
-        /* 已访问过，输出路径引用 */
-        db_addstring(L, buffer, prev_path);
-      } else {
-        /* 递归处理 */
-        format_table(L, value_idx, buffer, indent + 2, depth + 1, visited, new_path);
-      }
-    } else if (vt == LUA_TBOOLEAN) {
-      db_addstring(L, buffer, lua_toboolean(L, value_idx) ? "true" : "false");
-    } else if (vt == LUA_TFUNCTION) {
-      db_addstring(L, buffer, "<function>");
-    } else if (vt == LUA_TUSERDATA) {
-      db_addstring(L, buffer, "<userdata>");
-    } else if (vt == LUA_TTHREAD) {
-      db_addstring(L, buffer, "<thread>");
-    } else if (vt == LUA_TLIGHTUSERDATA) {
-      db_addstring(L, buffer, "<lightuserdata>");
-    } else if (vt == LUA_TNIL) {
-      db_addstring(L, buffer, "nil");
-    } else {
-      db_addstring(L, buffer, "<unknown>");
-    }
-    
-    lua_pop(L, 1);  /* pop value, keep key for next iteration */
   }
-  
-  if (!first) {
-    db_addstring(L, buffer, "\n");
-    for (i = 0; i < indent; i++) db_addchar(L, buffer, ' ');
-  }
-  db_addstring(L, buffer, "}");
+  free(fstack);
 }
 
 /* base64解码 */
@@ -1426,6 +1518,14 @@ static int luaB_dump (lua_State *L) {
   // 处理单个参数的情况
   switch (t) {
     case LUA_TTABLE: {
+      /* 解析 options 表（第二个参数） */
+      int compact = 0;
+      if (lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TTABLE) {
+        lua_getfield(L, 2, "compact");
+        compact = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+      }
+
       // 把表格式化转字符串
       DumpBuffer buffer;
       db_init(&buffer);
@@ -1437,7 +1537,7 @@ static int luaB_dump (lua_State *L) {
       visited.paths = NULL;
       
       /* 格式化表 */
-      format_table(L, 1, &buffer, 0, 0, &visited, "");
+      format_table(L, 1, &buffer, 0, 0, &visited, "", compact);
       
       /* 清理已访问表记录 */
       reset_visited_tables(&visited);

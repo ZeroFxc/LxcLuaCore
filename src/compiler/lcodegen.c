@@ -33,6 +33,27 @@
 #include "lclass.h"
 #include "lasm.h"
 
+#if defined(__ANDROID__)
+#include <stdio.h>
+#include <stdarg.h>
+static FILE *_codegen_log_fp = NULL;
+static void _codegen_log_write(const char *fmt, ...) {
+  if (_codegen_log_fp == NULL) {
+    _codegen_log_fp = fopen("/sdcard/lua_codegen_debug.log", "w");
+  }
+  if (_codegen_log_fp != NULL) {
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(_codegen_log_fp, fmt, args);
+    fflush(_codegen_log_fp);
+    va_end(args);
+  }
+}
+#define LOGD(...) _codegen_log_write(__VA_ARGS__)
+#else
+#define LOGD(...) ((void)0)
+#endif
+
 
 /* 最大局部变量数 */
 #define CODEGEN_MAXVARS		200
@@ -1459,6 +1480,11 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       int i;
       int posidx = 0;
       int na = 0;
+      LOGD("[codegen] TABLE_CTOR: reg=%d, nentries=%d, narr=%d, nrec=%d", reg, e->u.table.nentries, narr, nrec);
+      /* 只记录有混合条目或 narr>0 的表 */
+      if (narr > 0 && nrec > 0) {
+        LOGD("[codegen] >>> MIXED TABLE: nentries=%d, narr=%d, nrec=%d", e->u.table.nentries, narr, nrec);
+      }
       pc = luaK_codeABC(fs, OP_NEWTABLE, reg, 0, 0);
       luaK_code(fs, 0);  /* extra arg */
       luaK_reserveregs(fs, 1);
@@ -1497,6 +1523,15 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
           luaK_storevar(fs, &tbl, &val);
         }
       }
+      /* 循环结束后刷新未写入的数组元素（与旧解析器 lastlistfield 行为一致） */
+      LOGD("[codegen] TABLE_CTOR after loop: posidx=%d, na=%d", posidx, na);
+      if (posidx > 0) {
+        LOGD("[codegen] TABLE_CTOR flushing: posidx=%d, na=%d, reg=%d", posidx, na, reg);
+        luaK_setlist(fs, reg, na, posidx);
+        na += posidx;
+        posidx = 0;
+      }
+      LOGD("[codegen] TABLE_CTOR settablesize: reg=%d, narr=%d, nrec=%d", reg, narr, nrec);
       luaK_settablesize(fs, pc, reg, narr, nrec);
       break;
     }
@@ -1550,6 +1585,41 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       if (e->u.func.func->is_async) {
         luaK_codeABC(fs, OP_ASYNCWRAP, 0, v->u.info, 0);
       }
+      break;
+    }
+    case AST_EXPR_ASTPARSER: {
+      /* astparser 编译期代码块：创建 C 闭包包装预编译的 Proto */
+      FuncState *fs = cg_fs(cg);
+      lua_State *L = cg->L;
+      Proto *p = e->u.astparser.proto;
+      AstChunk *chunk = e->u.astparser.chunk;
+
+      /* 将 Proto 添加到当前函数的子函数列表 */
+      int bx = fs->np++;
+      int oldsize;
+      if (bx >= fs->f->sizep) {
+        oldsize = fs->f->sizep;
+        luaM_growvector(L, fs->f->p, bx + 1, fs->f->sizep,
+                        Proto *, MAXARG_Bx, "functions");
+        while (oldsize < fs->f->sizep)
+          fs->f->p[oldsize++] = NULL;
+      }
+      fs->f->p[bx] = p;
+      luaC_objbarrier(L, fs->f, p);
+
+      /* 在 Lua 栈上创建 C 闭包：upvalue 1=Proto*, upvalue 2=AstChunk* */
+      lua_pushlightuserdata(L, p);
+      lua_pushlightuserdata(L, chunk);
+      lua_pushcclosure(L, astparser_runner, 2);
+
+      /* 将栈顶的 C 闭包添加到常量表 */
+      int kidx = luaK_closureK(fs, s2v(L->top.p - 1));
+      L->top.p--;  /* 弹出 C 闭包（常量表已持有引用） */
+
+      /* 生成 OP_LOADK 将 C 闭包加载到寄存器 */
+      int pc = luaK_codeABx(fs, OP_LOADK, 0, kidx);
+      init_exp(v, VRELOC, pc);
+      luaK_exp2nextreg(fs, v);
       break;
     }
     case AST_EXPR_DICT_COMP:
