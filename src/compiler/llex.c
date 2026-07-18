@@ -13,6 +13,28 @@
 #include <locale.h>
 #include <string.h>
 #include <stdio.h>
+
+/* Android 调试日志 - 写入文件避免 logcat 截断 */
+#if defined(__ANDROID__)
+#include <stdio.h>
+#include <stdarg.h>
+static FILE *_lex_log_fp = NULL;
+static void _lex_log_write(const char *fmt, ...) {
+  if (_lex_log_fp == NULL) {
+    _lex_log_fp = fopen("/sdcard/lua_lex_debug.log", "w");
+  }
+  if (_lex_log_fp != NULL) {
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(_lex_log_fp, fmt, args);
+    fflush(_lex_log_fp);
+    va_end(args);
+  }
+}
+#define LOGD(...) _lex_log_write(__VA_ARGS__)
+#else
+#define LOGD(...) ((void)0)
+#endif
 #include <stdlib.h>
 
 #include "lua.h"
@@ -301,7 +323,7 @@ static const char* const luaX_warnNames[] = {
 };
 
 static const char *const luaX_tokens [] = {
-    "and", "asm", "async", "await", "bool", "break", "case", "catch", "char", "command", "concept", "const", "continue", "default", "defer", "delete", "do", "double", "else", "elseif",
+    "and", "asm", "astparser", "async", "await", "bool", "break", "case", "catch", "char", "command", "concept", "const", "continue", "default", "defer", "delete", "do", "double", "else", "elseif",
     "end", "enum", "export", "false", "finally", "float", "for", "function", "global", "guard", "goto", "if", "in", "int", "is", "instanceof", "keyword", "lambda", "local", "long", "namespace", "nil", "not", "operator", "or",
     "repeat", "requires",
     "return", "struct", "superstruct", "switch", "take", "then", "true", "try", "until", "using", "void", "when", "while", "with", "let",
@@ -1741,6 +1763,11 @@ int luaX_lookahead (LexState *ls) {
                                c == '\n' || c == '\r');
   }
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
+  {
+    const char *s = (ls->lookahead.token == TK_NAME || ls->lookahead.token == TK_STRING)
+                    ? getstr(ls->lookahead.seminfo.ts) : "?";
+    LOGD("[lex] LOOKAHEAD lexed: token=%d, str='%s'\n", ls->lookahead.token, s);
+  }
   ls->lookahead.linenumber = ls->linenumber;  /* 记录lookahead token所在行号 */
   ls->linenumber = saved_linenumber;  /* 恢复当前行号 */
   ls->lasttoken = saved_lasttoken;  /* 恢复 lasttoken */
@@ -1776,6 +1803,11 @@ int luaX_lookahead2 (LexState *ls) {
   /* 更新 lasttoken 为第一个 lookahead token，确保 / 能正确判断除法/正则 */
   ls->lasttoken = ls->lookahead.token;
   ls->lookahead2.token = llex(ls, &ls->lookahead2.seminfo);
+  {
+    const char *s = (ls->lookahead2.token == TK_NAME || ls->lookahead2.token == TK_STRING)
+                    ? getstr(ls->lookahead2.seminfo.ts) : "?";
+    LOGD("[lex] LOOKAHEAD2 lexed: token=%d, str='%s'\n", ls->lookahead2.token, s);
+  }
   ls->lookahead2.linenumber = ls->linenumber;  /* 记录token所在行号 */
   ls->linenumber = saved_linenumber;
   ls->lasttoken = saved_lasttoken;

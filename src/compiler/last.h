@@ -236,7 +236,8 @@ typedef enum {
   AST_EXPR_DICT_COMP,  /* 字典推导式: {for k,v in expr do/yield k_expr, v_expr if cond} */
   AST_EXPR_LIST_COMP,  /* 列表推导式: [for x in expr do/yield expr if cond] */
   AST_EXPR_SPREAD,     /* 展开运算符: ...expr 转换为 table.unpack(expr) */
-  AST_EXPR_WALRUS      /* 海象操作符: (name := expr) 赋值并返回值 */
+  AST_EXPR_WALRUS,     /* 海象操作符: (name := expr) 赋值并返回值 */
+  AST_EXPR_ASTPARSER   /* astparser 编译期代码块：预编译的 Proto + AstChunk */
 } AstExprKind;
 
 
@@ -337,6 +338,7 @@ struct AstExpr {
     struct { AstExpr *table; AstExpr *start; AstExpr *end; AstExpr *step; } slice;  /* AST_EXPR_SLICE */
     struct { AstExpr *expr; } spread;      /* AST_EXPR_SPREAD：展开运算符 ...expr */
     struct { TString *name; AstExpr *expr; } walrus;  /* AST_EXPR_WALRUS：海象操作符 (name := expr) */
+    struct { struct Proto *proto; struct AstChunk *chunk; } astparser;  /* AST_EXPR_ASTPARSER：预编译的 Proto */
   } u;
 };
 
@@ -917,6 +919,7 @@ LUAI_FUNC AstExpr *ast_new_expr_new(AstPool *p, AstExpr *class_expr, AstExpr **a
 LUAI_FUNC AstExpr *ast_new_expr_match(AstPool *p, struct AstStmt *stmt, int line);
 LUAI_FUNC AstExpr *ast_new_expr_super(AstPool *p, int line);
 LUAI_FUNC AstExpr *ast_new_expr_walrus(AstPool *p, TString *name, AstExpr *expr, int line);
+LUAI_FUNC AstExpr *ast_new_expr_astparser(AstPool *p, struct Proto *proto, struct AstChunk *chunk, int line);
 
 /** 创建类成员节点 */
 LUAI_FUNC AstClassMember *ast_new_class_member(AstPool *p, AstMemberKind kind, AstAccessLevel access,
