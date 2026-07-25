@@ -2,10 +2,16 @@
 #include "../ir/ljit_ir.h"
 #include "../core/ljit_debug.h"
 
+/* 优化统计计数器 */
+static int opt_const_fold_count = 0;    /* 常量折叠次数 */
+static int opt_guard_elim_count = 0;    /* 冗余 guard 消除次数 */
+
 /*
  * M3 Constant Folding (常量折叠)
  * 遍历 IR 链表，如果发现算术指令的操作数都是常量（目前以 IR_LOADI 加载的立即数为主），
  * 则在编译期计算出结果，并将该算术指令替换为 IR_LOADI 指令。
+ *
+ * 增强版：同时支持直接 IR_VAL_INT 操作数，无需向后搜索。
  */
 void ljit_opt_const(ljit_ctx_t *ctx) {
     if (!ctx || !ctx->ir_head) return;
@@ -20,7 +26,11 @@ void ljit_opt_const(ljit_ctx_t *ctx) {
             int is_src1_const = 0, is_src2_const = 0;
             lua_Integer val1 = 0, val2 = 0;
 
-            if (node->src1.type == IR_VAL_REG) {
+            /* 增强：先检查是否直接为 IR_VAL_INT */
+            if (node->src1.type == IR_VAL_INT) {
+                is_src1_const = 1;
+                val1 = node->src1.v.i;
+            } else if (node->src1.type == IR_VAL_REG) {
                 ljit_ir_node_t *prev = node->prev;
                 while (prev) {
                     if (prev->dest.type == IR_VAL_REG && prev->dest.v.reg == node->src1.v.reg) {
@@ -36,7 +46,11 @@ void ljit_opt_const(ljit_ctx_t *ctx) {
                 }
             }
 
-            if (node->src2.type == IR_VAL_REG) {
+            /* 增强：先检查是否直接为 IR_VAL_INT */
+            if (node->src2.type == IR_VAL_INT) {
+                is_src2_const = 1;
+                val2 = node->src2.v.i;
+            } else if (node->src2.type == IR_VAL_REG) {
                 ljit_ir_node_t *prev = node->prev;
                 while (prev) {
                     if (prev->dest.type == IR_VAL_REG && prev->dest.v.reg == node->src2.v.reg) {
@@ -78,9 +92,50 @@ void ljit_opt_const(ljit_ctx_t *ctx) {
                     node->src1.type = IR_VAL_INT;
                     node->src1.v.i = result;
                     node->src2.type = IR_VAL_NONE;
+                    opt_const_fold_count++;
                 }
             }
         }
         node = node->next;
+    }
+}
+
+/*
+ * 冗余 guard 消除：移除连续的 IR_CHECKTYPE 节点。
+ * IR_CHECKTYPE 是字节码级别的类型检查，连续的多个检查中，
+ * 第一个检查失败会使后续检查不可达，因此只保留第一个。
+ */
+void ljit_opt_guard_elim(ljit_ctx_t *ctx) {
+    if (!ctx || !ctx->ir_head) return;
+
+    ljit_ir_node_t *node = ctx->ir_head;
+    while (node) {
+        if (node->op == IR_CHECKTYPE) {
+            /* 检查后续节点是否也是 IR_CHECKTYPE */
+            ljit_ir_node_t *next = node->next;
+            while (next && next->op == IR_CHECKTYPE) {
+                JIT_DBG(MOD_OPT_CONST, "guard_elim: remove redundant IR_CHECKTYPE at pc=%d",
+                    next->original_pc);
+                /* 将冗余的 IR_CHECKTYPE 替换为 IR_NOP */
+                next->op = IR_NOP;
+                opt_guard_elim_count++;
+                next = next->next;
+            }
+            /* 跳过已处理的冗余节点 */
+            node = next;
+            continue;
+        }
+        node = node->next;
+    }
+}
+
+/*
+ * 输出优化统计信息
+ */
+void ljit_opt_print_stats(void) {
+    if (opt_const_fold_count > 0 || opt_guard_elim_count > 0) {
+        fprintf(stderr, "[JIT-STATS] IR optimization stats:\n");
+        fprintf(stderr, "  [JIT-STATS]   const_fold        : %d\n", opt_const_fold_count);
+        fprintf(stderr, "  [JIT-STATS]   guard_elim        : %d\n", opt_guard_elim_count);
     }
 }

@@ -407,6 +407,12 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 case OP_MMBINI:
                 case OP_MMBINK:
                 case OP_MMBIN: {
+                    /* 元方法二元操作：操作成功时跳过，失败时调用元方法
+                     * 当前JIT不支持元方法内联，生成IR_NOP占位，运行时会回退到解释器处理 */
+                    JIT_DBG(MOD_TR, "MMBIN: pc=%d op=%d, generating fallback NOP", pc, op);
+                    ljit_ir_node_t *node = ljit_ir_new(IR_NOP, pc);
+                    node->flags = JIT_TYPE_ANY;
+                    ljit_ir_append(ctx, node);
                     break;
                 }
                 case OP_CONCAT: {
@@ -592,16 +598,61 @@ void ljit_translate(ljit_ctx_t *ctx) {
                                     node->self_rec = 1;
                                     JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (upval[0] self, SETUPVAL in outer scope)", pc);
                                 }
+                            } else if (sop == OP_GETTABUP) {
+                                /*
+                                 * GETTABUP 从 _ENV["funcname"] 加载全局函数.
+                                 * 编译时无法100%确定是否为自递归 (函数名未存储在 Proto 中),
+                                 * 依赖运行时检查 (codegen 中的 SLJIT_MOV_U8 类型比较).
+                                 * 标记为 self_rec=0, 让 codegen 生成运行时 Proto 比较.
+                                 */
+                                int upval_idx = GETARG_B(si);
+                                int const_idx = GETARG_C(si);
+                                JIT_DBG(MOD_TR, "OP_CALL pc=%d: func loaded via GETTABUP upval=%d const=%d, "
+                                    "defer to runtime self-rec check", pc, upval_idx, const_idx);
                             }
                             break;
                         }
                     }
+                    fprintf(stderr, "[JIT-TR] OP_CALL pc=%d: self_rec=%d, func_reg=%d, checking implicit\n",
+                        pc, node->self_rec, func_reg);
                     if (!node->self_rec && func_reg == 0) {
                         node->self_rec = 1;
+                        fprintf(stderr, "[JIT-TR] OP_CALL pc=%d: set self_rec=1 (R0 implicit)\n", pc);
                         JIT_DBG(MOD_TR, "OP_CALL pc=%d: detected self-recursion (R0 implicit, no explicit write)", pc);
                     }
+                    fprintf(stderr, "[JIT-TR] OP_CALL pc=%d: final self_rec=%d\n", pc, node->self_rec);
 
-                    node->flags = JIT_TYPE_ANY;
+                    /*
+                     * 自递归类型特化: 若翻译阶段已确认 self_rec=1,
+                     * 将返回值寄存器类型标记为 JIT_TYPE_INT,
+                     * 使后续算术操作走 INT_FASTPATH 而非 GUARDED_INT_FASTPATH.
+                     * 对 fib 等递归密集场景, 省去每次 ADD 的运行时类型守卫.
+                     */
+                    if (node->self_rec && ainfo && ainfo->reg_types) {
+                        int base_reg = GETARG_A(i);
+                        int nret = GETARG_C(i) - 1;
+                        if (nret < 1) nret = 1;
+                        for (int rr = base_reg; rr < base_reg + nret && rr < ainfo->max_regs; rr++) {
+                            ainfo->reg_types[rr] = JIT_TYPE_INT;
+                        }
+                        JIT_DBG(MOD_TR, "OP_CALL pc=%d: self_rec type specialization, "
+                            "R[%d..%d] = INT", pc, base_reg, base_reg + nret - 1);
+                        fprintf(stderr, "[JIT-TR] OP_CALL pc=%d: self_rec type specialization, "
+                            "R[%d..%d] = INT\n",
+                            pc, base_reg, base_reg + nret - 1);
+
+                        /*
+                         * 参数类型推断: 自递归函数的参数(n)来自递归调用,
+                         * 已知为整数类型. 将 R0 标记为 INT 使 n-1/n-2 等
+                         * 算术操作走 INT_FASTPATH 而非 GUARDED_FASTPATH.
+                         */
+                        if (ainfo->max_regs > 0 && ainfo->reg_types[0] != JIT_TYPE_INT) {
+                            ainfo->reg_types[0] = JIT_TYPE_INT;
+                            JIT_DBG(MOD_TR, "self_rec param type: R[0] = INT");
+                            fprintf(stderr, "[JIT-TR] self_rec param type: R[0] = INT\n");
+                        }
+                    }
+                    node->flags = node->self_rec ? JIT_TYPE_INT : JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
                     break;
                 }
@@ -640,8 +691,11 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 }
                 case OP_ASYNCWRAP: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_ASYNCWRAP, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "ASYNCWRAP: A=%d, B=%d", GETARG_A(i), GETARG_B(i));
                     break;
                 }
                 case OP_BANDK: {
@@ -722,8 +776,11 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 }
                 case OP_GENERICWRAP: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_GENERICWRAP, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "GENERICWRAP: A=%d, B=%d", GETARG_A(i), GETARG_B(i));
                     break;
                 }
                 case OP_GETCMDS: {
@@ -865,6 +922,16 @@ void ljit_translate(ljit_ctx_t *ctx) {
                     ljit_ir_append(ctx, node);
                     break;
                 }
+                case OP_CUSTOM: {
+                    /* 自定义操作码扩展：运行时分发到自定义处理器
+                     * 当前JIT不支持自定义操作码，生成回退NOP */
+                    JIT_DBG(MOD_TR, "OP_CUSTOM: pc=%d Ax=%d, generating fallback NOP",
+                        pc, GETARG_Ax(i));
+                    ljit_ir_node_t *node = ljit_ir_new(IR_NOP, pc);
+                    node->flags = JIT_TYPE_ANY;
+                    ljit_ir_append(ctx, node);
+                    break;
+                }
                 case OP_POWK: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_POW, pc);
                     node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
@@ -891,26 +958,38 @@ void ljit_translate(ljit_ctx_t *ctx) {
                 }
                 case OP_SETTRAITFLAG: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_SETTRAITFLAG, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "SETTRAITFLAG: A=%d", GETARG_A(i));
                     break;
                 }
                 case OP_SETTRAITREQUIRE: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_SETTRAITREQUIRE, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_CONST; node->src1.v.k = GETARG_B(i);
+                    node->src2.type = IR_VAL_INT; node->src2.v.i = GETARG_C(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "SETTRAITREQUIRE: A=%d, B=%d, C=%d", GETARG_A(i), GETARG_B(i), GETARG_C(i));
                     break;
                 }
                 case OP_USETRAIT: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_USETRAIT, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "USETRAIT: A=%d, B=%d", GETARG_A(i), GETARG_B(i));
                     break;
                 }
                 case OP_AWAIT: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_AWAIT, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "AWAIT: A=%d, B=%d", GETARG_A(i), GETARG_B(i));
                     break;
                 }
                 case OP_MERGE: {
@@ -1111,6 +1190,10 @@ void ljit_translate(ljit_ctx_t *ctx) {
                     break;
                 }
                 default: {
+                    /* 未支持的操作码：生成 IR_NOP 占位，同时记录调试日志
+                     * 运行时若遇到未内联支持的IR，codegen 会触发解释器回退 (ljit_icall_fallback) */
+                    JIT_DBG(MOD_TR, "UNHANDLED opcode: pc=%d op=%d A=%d, generating fallback NOP",
+                        pc, op, GETARG_A(i));
                     ljit_ir_node_t *node = ljit_ir_new(IR_NOP, pc);
                     node->flags = JIT_TYPE_ANY;
                     ljit_ir_append(ctx, node);

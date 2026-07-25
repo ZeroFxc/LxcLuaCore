@@ -1,0 +1,1 @@
+make: *** [Makefile:313: mingw] Error 2

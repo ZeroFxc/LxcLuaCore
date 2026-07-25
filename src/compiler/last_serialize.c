@@ -225,6 +225,8 @@ static const char *stmt_kind_name(AstStmtKind kind) {
 static void ast_serialize_expr(lua_State *L, AstExpr *e);
 static void ast_serialize_stmt(lua_State *L, AstStmt *s);
 static void ast_serialize_block(lua_State *L, AstBlock *blk);
+static void ast_serialize_match_pat(lua_State *L, AstMatchPat *pat);
+static AstMatchPat *ast_deserialize_match_pat(lua_State *L, AstPool *pool, int idx);
 
 /* 创建占位节点 */
 static void push_placeholder(lua_State *L, int line) {
@@ -439,6 +441,31 @@ static void ast_serialize_expr(lua_State *L, AstExpr *e) {
     case AST_EXPR_SWITCH_EXPR:
       ast_serialize_expr(L, e->u.switchx.cond);
       lua_setfield(L, -2, "cond");
+      /* 序列化 arms 数组 */
+      {
+        lua_newtable(L);
+        for (int i = 0; i < e->u.switchx.narms; i++) {
+          AstCaseArm *arm = &e->u.switchx.arms[i];
+          push_table(L);
+          /* 序列化多值模式 */
+          lua_newtable(L);
+          for (int p = 0; p < arm->npatterns; p++) {
+            ast_serialize_expr(L, arm->patterns[p]);
+            setarrayelem(L, p + 1);
+          }
+          lua_setfield(L, -2, "patterns");
+          /* 序列化 body */
+          ast_serialize_expr(L, arm->body);
+          lua_setfield(L, -2, "body");
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "arms");
+      }
+      /* 序列化 default */
+      if (e->u.switchx.def) {
+        ast_serialize_expr(L, e->u.switchx.def);
+        lua_setfield(L, -2, "def");
+      }
       break;
 
     case AST_EXPR_SELECT_CASE:
@@ -460,8 +487,13 @@ static void ast_serialize_expr(lua_State *L, AstExpr *e) {
       lua_setfield(L, -2, "class_expr");
       break;
 
-    case AST_EXPR_MATCH:
+    case AST_EXPR_MATCH: {
+      /* 委托给 match 语句序列化 */
+      AstStmt *stmt = e->u.match.stmt;
+      stmt->u.matchstmt.is_expr = 1;
+      ast_serialize_stmt(L, stmt);
       break;
+    }
 
     case AST_EXPR_TEST_TYPE:
       if (e->u.test_type.operand) {
@@ -726,10 +758,13 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
           if (c->is_default) continue; /* default 分支单独序列化 */
           push_table(L);
           setstrfield(L, "kind", "case");
-          if (c->pattern) {
-            ast_serialize_expr(L, c->pattern);
-            lua_setfield(L, -2, "cond");
+          /* 序列化多值模式 */
+          lua_newtable(L);
+          for (int p = 0; p < c->npatterns; p++) {
+            ast_serialize_expr(L, c->patterns[p]);
+            setarrayelem(L, p + 1);
           }
+          lua_setfield(L, -2, "patterns");
           ast_serialize_block(L, &c->body);
           lua_setfield(L, -2, "body");
           setarrayelem(L, i + 1);
@@ -809,6 +844,38 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
       break;
     }
 
+    case AST_STMT_MATCH: {
+      ast_serialize_expr(L, s->u.matchstmt.control);
+      lua_setfield(L, -2, "control");
+      setintfield(L, "is_expr", s->u.matchstmt.is_expr);
+      /* 序列化 arms 数组 */
+      lua_newtable(L);
+      for (int i = 0; i < s->u.matchstmt.narms; i++) {
+        AstMatchArm *arm = &s->u.matchstmt.arms[i];
+        push_table(L);
+        /* 序列化 pattern */
+        ast_serialize_match_pat(L, arm->pattern);
+        lua_setfield(L, -2, "pattern");
+        /* 序列化 guard */
+        if (arm->guard) {
+          ast_serialize_expr(L, arm->guard);
+          lua_setfield(L, -2, "guard");
+        }
+        /* 序列化 body */
+        setintfield(L, "is_arrow", arm->is_arrow);
+        if (arm->is_arrow) {
+          ast_serialize_expr(L, arm->body_expr);
+          lua_setfield(L, -2, "body_expr");
+        } else {
+          ast_serialize_block(L, &arm->body_block);
+          lua_setfield(L, -2, "body_block");
+        }
+        setarrayelem(L, i + 1);
+      }
+      lua_setfield(L, -2, "arms");
+      break;
+    }
+
     /* 以下复杂类型创建占位节点 */
     case AST_STMT_CATCH:
     case AST_STMT_FINALLY:
@@ -820,7 +887,6 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
     case AST_STMT_CLASS:
     case AST_STMT_TRAIT:
     case AST_STMT_INTERFACE:
-    case AST_STMT_MATCH:
     case AST_STMT_WITH:
     case AST_STMT_ASM:
     case AST_STMT_CONCEPT:
@@ -833,6 +899,56 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
     case AST_STMT_EMPTY:
     case AST_STMT_CONSTEXPR:
     default:
+      break;
+  }
+}
+
+/* 序列化匹配模式 */
+static void ast_serialize_match_pat(lua_State *L, AstMatchPat *pat) {
+  push_table(L);
+  switch (pat->kind) {
+    case AST_PAT_WILDCARD:
+      setstrfield(L, "kind", "wildcard");
+      break;
+    case AST_PAT_VARIABLE:
+      setstrfield(L, "kind", "variable");
+      lua_pushstring(L, getstr(pat->u.var_name));
+      lua_setfield(L, -2, "name");
+      break;
+    case AST_PAT_LITERAL:
+      setstrfield(L, "kind", "literal");
+      ast_serialize_expr(L, pat->u.literal);
+      lua_setfield(L, -2, "value");
+      break;
+    case AST_PAT_RANGE:
+      setstrfield(L, "kind", "range");
+      ast_serialize_expr(L, pat->u.range.low);
+      lua_setfield(L, -2, "low");
+      ast_serialize_expr(L, pat->u.range.high);
+      lua_setfield(L, -2, "high");
+      break;
+    case AST_PAT_TYPE:
+      setstrfield(L, "kind", "type");
+      lua_pushstring(L, getstr(pat->u.type_name));
+      lua_setfield(L, -2, "type_name");
+      break;
+    case AST_PAT_OR:
+      setstrfield(L, "kind", "or");
+      lua_newtable(L);
+      for (int i = 0; i < pat->u.or_pat.npat; i++) {
+        ast_serialize_match_pat(L, pat->u.or_pat.pats[i]);
+        setarrayelem(L, i + 1);
+      }
+      lua_setfield(L, -2, "pats");
+      break;
+    case AST_PAT_TABLE:
+      setstrfield(L, "kind", "table");
+      lua_newtable(L);
+      for (int i = 0; i < pat->u.table_pat.nfields; i++) {
+        ast_serialize_match_pat(L, pat->u.table_pat.fields[i]);
+        setarrayelem(L, i + 1);
+      }
+      lua_setfield(L, -2, "fields");
       break;
   }
 }
@@ -934,6 +1050,71 @@ static AstUnOp str_to_unop(const char *s) {
 static AstExpr *ast_deserialize_expr(lua_State *L, AstPool *pool, int idx);
 static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx);
 static void ast_deserialize_block(lua_State *L, AstPool *pool, AstBlock *blk, int idx);
+
+/* 反序列化匹配模式 */
+static AstMatchPat *ast_deserialize_match_pat(lua_State *L, AstPool *pool, int idx) {
+  if (!lua_istable(L, idx)) return NULL;
+  const char *kind = get_field_str(L, idx, "kind");
+  int line = 0;
+
+  if (kind == NULL) return NULL;
+
+  if (strcmp(kind, "wildcard") == 0) {
+    return ast_new_pat_wildcard(pool, line);
+  }
+  if (strcmp(kind, "variable") == 0) {
+    lua_getfield(L, idx, "name");
+    TString *name = luaS_new(L, lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return ast_new_pat_variable(pool, name, line);
+  }
+  if (strcmp(kind, "literal") == 0) {
+    lua_getfield(L, idx, "value");
+    AstExpr *e = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_pat_literal(pool, e, line);
+  }
+  if (strcmp(kind, "range") == 0) {
+    lua_getfield(L, idx, "low");
+    AstExpr *low = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "high");
+    AstExpr *high = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_pat_range(pool, low, high, line);
+  }
+  if (strcmp(kind, "type") == 0) {
+    lua_getfield(L, idx, "type_name");
+    TString *name = luaS_new(L, lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return ast_new_pat_type(pool, name, line);
+  }
+  if (strcmp(kind, "or") == 0) {
+    lua_getfield(L, idx, "pats");
+    int npat = (int)luaL_len(L, -1);
+    AstMatchPat **pats = ast_pool_alloc(pool, sizeof(AstMatchPat *) * npat);
+    for (int i = 0; i < npat; i++) {
+      lua_rawgeti(L, -1, i + 1);
+      pats[i] = ast_deserialize_match_pat(L, pool, lua_gettop(L));
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return ast_new_pat_or(pool, pats, npat, line);
+  }
+  if (strcmp(kind, "table") == 0) {
+    lua_getfield(L, idx, "fields");
+    int nfields = (int)luaL_len(L, -1);
+    AstMatchPat **fields = ast_pool_alloc(pool, sizeof(AstMatchPat *) * nfields);
+    for (int i = 0; i < nfields; i++) {
+      lua_rawgeti(L, -1, i + 1);
+      fields[i] = ast_deserialize_match_pat(L, pool, lua_gettop(L));
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return ast_new_pat_table(pool, fields, nfields, line);
+  }
+  return NULL;
+}
 
 /* 反序列化表达式 */
 static AstExpr *ast_deserialize_expr(lua_State *L, AstPool *pool, int idx) {
@@ -1113,6 +1294,56 @@ static AstExpr *ast_deserialize_expr(lua_State *L, AstPool *pool, int idx) {
     AstExpr *e = ast_deserialize_expr(L, pool, lua_gettop(L));
     lua_pop(L, 1);
     return ast_new_expr_paren(pool, e, line);
+  }
+
+  if (strcmp(kind, "switch") == 0) {
+    /* 反序列化 switch 表达式 */
+    AstExpr *e = ast_new_node(pool, AstExpr, AST_EXPR, line);
+    e->kind = AST_EXPR_SWITCH_EXPR;
+    lua_getfield(L, idx, "cond");
+    e->u.switchx.cond = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "arms");
+    if (!lua_isnil(L, -1)) {
+      int narms = (int)luaL_len(L, -1);
+      e->u.switchx.narms = narms;
+      e->u.switchx.arms = ast_pool_alloc(pool, sizeof(AstCaseArm) * narms);
+      for (int i = 0; i < narms; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        AstCaseArm *arm = &e->u.switchx.arms[i];
+        memset(arm, 0, sizeof(AstCaseArm));
+        lua_getfield(L, -1, "patterns");
+        if (!lua_isnil(L, -1)) {
+          int npat = (int)luaL_len(L, -1);
+          arm->npatterns = npat;
+          arm->patterns = ast_pool_alloc(pool, sizeof(AstExpr *) * npat);
+          for (int p = 0; p < npat; p++) {
+            lua_rawgeti(L, -1, p + 1);
+            arm->patterns[p] = ast_deserialize_expr(L, pool, lua_gettop(L));
+            lua_pop(L, 1);
+          }
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "body");
+        arm->body = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "def");
+    if (!lua_isnil(L, -1)) {
+      e->u.switchx.def = ast_deserialize_expr(L, pool, lua_gettop(L));
+    }
+    lua_pop(L, 1);
+    return e;
+  }
+
+  if (strcmp(kind, "match") == 0) {
+    /* 反序列化 match 表达式 */
+    AstStmt *stmt = ast_deserialize_stmt(L, pool, idx);
+    stmt->u.matchstmt.is_expr = 1;
+    return ast_new_expr_match(pool, stmt, line);
   }
 
   /* 未知类型，返回 nil */
@@ -1446,9 +1677,17 @@ static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx) {
           lua_rawgeti(L, -1, i + 1);
           AstSwitchCase *c = &s->u.switchstmt.cases[i];
           memset(c, 0, sizeof(AstSwitchCase));
-          lua_getfield(L, -1, "cond");
+          /* 反序列化 patterns 数组 */
+          lua_getfield(L, -1, "patterns");
           if (!lua_isnil(L, -1)) {
-            c->pattern = ast_deserialize_expr(L, pool, lua_gettop(L));
+            int npat = (int)luaL_len(L, -1);
+            c->npatterns = npat;
+            c->patterns = ast_pool_alloc(pool, sizeof(AstExpr *) * npat);
+            for (int p = 0; p < npat; p++) {
+              lua_rawgeti(L, -1, p + 1);
+              c->patterns[p] = ast_deserialize_expr(L, pool, lua_gettop(L));
+              lua_pop(L, 1);
+            }
           }
           lua_pop(L, 1);
           lua_getfield(L, -1, "body");
@@ -1464,6 +1703,48 @@ static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx) {
     if (!lua_isnil(L, -1)) {
       s->u.switchstmt.has_default = 1;
       ast_deserialize_block(L, pool, &s->u.switchstmt.default_body, lua_gettop(L));
+    }
+    lua_pop(L, 1);
+    return s;
+  }
+
+  if (strcmp(kind, "match") == 0) {
+    /* 反序列化 match 语句 */
+    AstStmt *s = ast_new_node(pool, AstStmt, AST_STMT, line);
+    s->kind = AST_STMT_MATCH;
+    lua_getfield(L, idx, "control");
+    s->u.matchstmt.control = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    s->u.matchstmt.is_expr = (int)get_field_int(L, idx, "is_expr");
+    lua_getfield(L, idx, "arms");
+    if (!lua_isnil(L, -1)) {
+      int narms = (int)luaL_len(L, -1);
+      s->u.matchstmt.narms = narms;
+      s->u.matchstmt.arms = ast_pool_alloc(pool, sizeof(AstMatchArm) * narms);
+      for (int i = 0; i < narms; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        AstMatchArm *arm = &s->u.matchstmt.arms[i];
+        memset(arm, 0, sizeof(AstMatchArm));
+        lua_getfield(L, -1, "pattern");
+        arm->pattern = ast_deserialize_match_pat(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "guard");
+        if (!lua_isnil(L, -1)) {
+          arm->guard = ast_deserialize_expr(L, pool, lua_gettop(L));
+        }
+        lua_pop(L, 1);
+        arm->is_arrow = (int)get_field_int(L, -1, "is_arrow");
+        if (arm->is_arrow) {
+          lua_getfield(L, -1, "body_expr");
+          arm->body_expr = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+        } else {
+          lua_getfield(L, -1, "body_block");
+          ast_deserialize_block(L, pool, &arm->body_block, lua_gettop(L));
+          lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+      }
     }
     lua_pop(L, 1);
     return s;

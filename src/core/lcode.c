@@ -484,8 +484,6 @@ void luaK_checkstack (FuncState *fs, int n) {
   int newstack = fs->freereg + n;
   if (newstack > fs->f->maxstacksize) {
     if (newstack >= MAXREGS) {
-      fprintf(stderr, "[DEBUG] luaK_checkstack: freereg=%d, n=%d, newstack=%d, MAXREGS=%d, maxstacksize=%d\n",
-              fs->freereg, n, newstack, MAXREGS, fs->f->maxstacksize);
       luaX_syntaxerror(fs->ls,
         "function or expression needs too many registers");
     }
@@ -1377,8 +1375,9 @@ static int isSCnumber (expdesc *e, int *pi, int *isfloat) {
     *pi = int2sC(cast_int(i));
     return 1;
   }
-  else
+  else {
     return 0;
+  }
 }
 
 
@@ -2149,8 +2148,6 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
   /* 在 dischange 前判断 e1 是否为链式管道（前一次管道的结果） */
   int e1_is_chain = (e1->k == VCALL);
-  fprintf(stderr, "[DEBUG luaK_pipe] e1->k=%d e1->u.info=%d e2->k=%d e2->u.info=%d is_self=%d is_chain=%d freereg=%d\n",
-          e1->k, e1->u.info, e2->k, e2->u.info, is_self, e1_is_chain, fs->freereg);
 
   if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
 
@@ -2247,8 +2244,6 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
    *   C = 返回值数量+1（2表示1个返回值）
    */
   e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
-  fprintf(stderr, "[DEBUG luaK_pipe] OP_CALL func_reg=%d nargs+1=%d freereg=%d\n",
-          func_reg, nargs + 1, fs->freereg);
   e1->k = VCALL;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;

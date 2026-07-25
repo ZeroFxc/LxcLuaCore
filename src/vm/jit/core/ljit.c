@@ -110,7 +110,9 @@ static int ljit_status (lua_State *L) {
 
 static int ljit_stats (lua_State *L) {
     extern int ljit_self_call_count;
-    lua_createtable(L, 0, 5);
+    extern volatile int ljit_ci_extend_count;
+    extern volatile int ljit_ci_reuse_count;
+    lua_createtable(L, 0, 7);
     lua_pushinteger(L, jit_compile_ok);
     lua_setfield(L, -2, "compiled");
     lua_pushinteger(L, jit_compile_fail);
@@ -121,6 +123,10 @@ static int ljit_stats (lua_State *L) {
     lua_setfield(L, -2, "self_calls");
     lua_pushinteger(L, XCLUA_JIT_HOTCOUNT);
     lua_setfield(L, -2, "hotcount");
+    lua_pushinteger(L, ljit_ci_extend_count);
+    lua_setfield(L, -2, "ci_extend");
+    lua_pushinteger(L, ljit_ci_reuse_count);
+    lua_setfield(L, -2, "ci_reuse");
     return 1;
 }
 

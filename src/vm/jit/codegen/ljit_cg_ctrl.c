@@ -7,6 +7,9 @@
 #include "../../../core/lobject.h"
 #include "../../../core/lopcodes.h"
 
+/* 比较内联计数器 (定义在 ljit_cg_arith.c) */
+extern int ljit_stat_cmp_inline;
+
 void ljit_cg_emit_jmp(void *node_ptr, void *ctx_ptr) {
     ljit_ir_node_t *node = (ljit_ir_node_t *)node_ptr;
     ljit_ctx_t *ctx = (ljit_ctx_t *)ctx_ptr;
@@ -27,8 +30,35 @@ void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
     struct sljit_compiler *compiler = (struct sljit_compiler *)ctx->compiler;
     if (!node || !ctx || !compiler) return;
 
-    int need_semantic = (node->src1.type == IR_VAL_CONST || node->src2.type == IR_VAL_CONST ||
-                         node->src1.type == IR_VAL_NUM || node->src2.type == IR_VAL_NUM);
+    /* 检查是否需要语义比较 (不可内联的类型) */
+    int need_semantic = 0;
+
+    /* IR_VAL_NUM 始终需要语义比较 */
+    if (node->src1.type == IR_VAL_NUM || node->src2.type == IR_VAL_NUM) {
+        need_semantic = 1;
+    }
+    /* IR_VAL_CONST: 检查是否为整数常量，若是则可内联 */
+    else if (node->src2.type == IR_VAL_CONST) {
+        TValue *kval = &ctx->proto->k[node->src2.v.k];
+        if (ttisinteger(kval)) {
+            /* 整数常量: 可以内联比较 */
+            need_semantic = 0;
+        } else {
+            need_semantic = 1;
+        }
+    }
+    else if (node->src1.type == IR_VAL_CONST) {
+        TValue *kval = &ctx->proto->k[node->src1.v.k];
+        if (ttisinteger(kval)) {
+            /* 整数常量: 可以内联比较 */
+            need_semantic = 0;
+        } else {
+            need_semantic = 1;
+        }
+    }
+    else {
+        need_semantic = 0;
+    }
 
     if (need_semantic) {
         /* Get TValue address of src1 */
@@ -59,9 +89,33 @@ void ljit_cg_emit_cmp(void *node_ptr, void *ctx_ptr) {
             ctx->jump_targets[idx] = node->original_pc + 2;
         }
     } else {
+        /* 内联路径: 直接比较原始值 (支持 INT/REG/整数CONST) */
         sljit_s32 k = node->dest.v.i;
-        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
-        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+
+        /* 加载 src1 */
+        if (node->src1.type == IR_VAL_CONST) {
+            /* src1 是整数常量: 加载 ivalue */
+            lua_Integer cval = ivalue(&ctx->proto->k[node->src1.v.k]);
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)cval);
+            fprintf(stderr, "[JIT-CG-CTRL] CMP pc=%d: inline const int comparison, src1=%lld\n",
+                node->original_pc, (long long)cval);
+        } else {
+            ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        }
+
+        /* 加载 src2 */
+        if (node->src2.type == IR_VAL_CONST) {
+            /* src2 是整数常量: 加载 ivalue */
+            lua_Integer cval = ivalue(&ctx->proto->k[node->src2.v.k]);
+            sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)cval);
+            fprintf(stderr, "[JIT-CG-CTRL] CMP pc=%d: inline const int comparison, src2=%lld\n",
+                node->original_pc, (long long)cval);
+        } else {
+            ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        }
+
+        ljit_stat_cmp_inline++;
+
         sljit_s32 cond;
         switch (node->op) {
             case IR_CMP_EQ: cond = (k ? SLJIT_NOT_EQUAL : SLJIT_EQUAL); break;

@@ -33,26 +33,9 @@
 #include "lclass.h"
 #include "lasm.h"
 
-#if defined(__ANDROID__)
-#include <stdio.h>
-#include <stdarg.h>
-static FILE *_codegen_log_fp = NULL;
-static void _codegen_log_write(const char *fmt, ...) {
-  if (_codegen_log_fp == NULL) {
-    _codegen_log_fp = fopen("/sdcard/lua_codegen_debug.log", "w");
-  }
-  if (_codegen_log_fp != NULL) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(_codegen_log_fp, fmt, args);
-    fflush(_codegen_log_fp);
-    va_end(args);
-  }
-}
-#define LOGD(...) _codegen_log_write(__VA_ARGS__)
-#else
+
 #define LOGD(...) ((void)0)
-#endif
+
 
 
 /* 最大局部变量数 */
@@ -950,15 +933,6 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
                 int closure_kidx = luaK_closureK(fs, &closure_val);
                 L->top.p--;  /* 弹出闭包 */
 
-                fprintf(stderr, "[DEBUG INTERP] code_str='%s', nused=%d, closure_kidx=%d, fs->nk=%d\n",
-                        code_str, nused, closure_kidx, fs->nk);
-                /* 验证常量表 */
-                if (closure_kidx < fs->f->sizek) {
-                  int tt = ttypetag(&fs->f->k[closure_kidx]);
-                  fprintf(stderr, "[DEBUG INTERP] const[%d] type=%d (LUA_VLCL=%d, LUA_VCCL=%d)\n",
-                          closure_kidx, tt, LUA_VLCL, LUA_VCCL);
-                }
-
                 luaM_freearray(L, code_str, total_len + 1);
 
                 /* 运行时：加载预编译闭包常量，推入参数，调用 */
@@ -966,11 +940,6 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
                 init_exp(&closure_exp, VK, closure_kidx);
                 luaK_exp2nextreg(fs, &closure_exp);
                 int closure_reg = fs->freereg - 1;
-
-                fprintf(stderr, "[DEBUG INTERP] closure_reg=%d, base_reg=%d, part_count=%d, fs->freereg=%d\n",
-                        closure_reg, base_reg, part_count, fs->freereg);
-                fprintf(stderr, "[DEBUG INTERP] OP_LOADK at pc=%d: load const[%d] into reg[%d]\n",
-                        fs->pc - 1, closure_kidx, closure_reg);
 
                 for (int k = 0; k < nused; k++) {
                   expdesc var_exp;
@@ -990,19 +959,13 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
                   }
                   luaK_exp2nextreg(fs, &var_exp);
                 }
-                int call_pc = luaK_codeABC(fs, OP_CALL, closure_reg, nused + 1, 2);
+                luaK_codeABC(fs, OP_CALL, closure_reg, nused + 1, 2);
                 fs->freereg = closure_reg + 1;
-                fprintf(stderr, "[DEBUG INTERP] OP_CALL at pc=%d: call reg[%d], nargs=%d, nresults=1\n",
-                        call_pc, closure_reg, nused);
 
                 /* 移动结果 */
                 if (closure_reg != base_reg + part_count) {
-                  int move_pc = luaK_codeABC(fs, OP_MOVE, base_reg + part_count, closure_reg, 0);
+                  luaK_codeABC(fs, OP_MOVE, base_reg + part_count, closure_reg, 0);
                   fs->freereg = base_reg + part_count + 1;
-                  fprintf(stderr, "[DEBUG INTERP] OP_MOVE at pc=%d: reg[%d] = reg[%d]\n",
-                          move_pc, base_reg + part_count, closure_reg);
-                } else {
-                  fprintf(stderr, "[DEBUG INTERP] no MOVE needed (closure_reg == base_reg + part_count)\n");
                 }
 
                 part_count++;
@@ -1079,13 +1042,10 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       if (part_count == 1) {
         /* 只有一个片段，直接返回 */
         init_exp(v, VNONRELOC, base_reg);
-        fprintf(stderr, "[DEBUG INTERP] single part, base_reg=%d\n", base_reg);
       } else {
         /* 使用 OP_CONCAT 连接所有片段 */
-        int concat_pc = luaK_codeABC(fs, OP_CONCAT, base_reg, part_count, 0);
+        luaK_codeABC(fs, OP_CONCAT, base_reg, part_count, 0);
         fs->freereg = base_reg + 1;
-        fprintf(stderr, "[DEBUG INTERP] OP_CONCAT at pc=%d: base_reg=%d, part_count=%d\n",
-                concat_pc, base_reg, part_count);
         init_exp(v, VNONRELOC, base_reg);
         v->t = NO_JUMP;
         v->f = NO_JUMP;
@@ -1255,6 +1215,27 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       luaK_infix(fs, op, v);
       codegen_expr(cg, e->u.binop.rhs, &rhs);
       luaK_posfix(fs, op, v, &rhs, line);
+      break;
+    }
+    /* 范围表达式：1..5 生成 range(1, 5) 表 */
+    case AST_EXPR_RANGE: {
+      /* 提取起始值：支持 AST_EXPR_INT 和 AST_EXPR_UNOP(AST_UN_MINUS, AST_EXPR_INT) */
+      lua_Integer start = 0, end = 0;
+      AstExpr *s = e->u.range.start;
+      AstExpr *ed = e->u.range.end;
+      if (s->kind == AST_EXPR_INT) {
+        start = s->u.ival;
+      } else if (s->kind == AST_EXPR_UNOP && s->u.unop.op == AST_UN_MINUS
+                 && s->u.unop.operand->kind == AST_EXPR_INT) {
+        start = -s->u.unop.operand->u.ival;
+      }
+      if (ed->kind == AST_EXPR_INT) {
+        end = ed->u.ival;
+      } else if (ed->kind == AST_EXPR_UNOP && ed->u.unop.op == AST_UN_MINUS
+                 && ed->u.unop.operand->kind == AST_EXPR_INT) {
+        end = -ed->u.unop.operand->u.ival;
+      }
+      luaK_range(fs, v, start, end, line);
       break;
     }
     case AST_EXPR_UNOP: {
@@ -1722,26 +1703,32 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
 
       int i;
       for (i = 0; i < narms; i++) {
+        AstCaseArm *arm = &arms[i];
         int next_check_jump = NO_JUMP;
         int success_jump = NO_JUMP;
 
         /* 修补上一个检查跳转 */
         luaK_patchtohere(fs, jump_to_check);
 
-        /* 生成相等比较: 控制值 == arm 模式 */
-        expdesc val, cmp;
-        codegen_expr(cg, arms[i].pattern, &val);
-        init_exp(&cmp, VNONRELOC, ctrl_reg);
-        luaK_infix(fs, OPR_EQ, &cmp);
-        luaK_posfix(fs, OPR_EQ, &cmp, &val, 0);
-        luaK_goiftrue(fs, &cmp);
-        success_jump = luaK_jump(fs);   /* 匹配成功，跳转到 body */
-        next_check_jump = cmp.f;        /* 不匹配，继续下一个检查 */
+        /* 对每个模式值生成相等比较: 控制值 == arm 模式值 */
+        for (int p = 0; p < arm->npatterns; p++) {
+          expdesc val, cmp;
+          codegen_expr(cg, arm->patterns[p], &val);
+          init_exp(&cmp, VNONRELOC, ctrl_reg);
+          luaK_infix(fs, OPR_EQ, &cmp);
+          luaK_posfix(fs, OPR_EQ, &cmp, &val, 0);
+          luaK_goiftrue(fs, &cmp);
+          luaK_concat(fs, &success_jump, luaK_jump(fs));  /* 匹配成功，跳转到 body */
+          /* 不匹配时修补到下一个检查位置 */
+          luaK_patchtohere(fs, cmp.f);
+        }
+        /* 所有模式都不匹配时跳到下一个 case */
+        next_check_jump = luaK_jump(fs);
 
         /* 修补成功跳转，生成 body 表达式到结果寄存器 */
         luaK_patchtohere(fs, success_jump);
         expdesc body_val;
-        codegen_expr(cg, arms[i].body, &body_val);
+        codegen_expr(cg, arm->body, &body_val);
         luaK_exp2reg(fs, &body_val, result_reg);
 
         /* 跳转到 switch 结束 */
@@ -2422,8 +2409,6 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
     }
     case AST_STMT_GUARD: {
       /* guard 语句：guard cond else { ... } 或 guard let name = expr else { ... } */
-      fprintf(stderr, "[CODEGEN] guard: let_var=%p cond=%p\n", (void*)s->u.guard.let_var, (void*)s->u.guard.cond);
-      fflush(stderr);
       if (s->u.guard.let_var != NULL) {
         /* guard let name = expr else { ... } */
         expdesc v;
@@ -4443,15 +4428,20 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
         /* 修补上一个检查跳转 */
         luaK_patchtohere(fs, jump_to_check);
 
-        /* 生成相等比较: 控制值 == case 模式 */
-        expdesc val, cmp;
-        codegen_expr(cg, ac->pattern, &val);
-        init_exp(&cmp, VNONRELOC, ctrl_reg);
-        luaK_infix(fs, OPR_EQ, &cmp);
-        luaK_posfix(fs, OPR_EQ, &cmp, &val, 0);
-        luaK_goiftrue(fs, &cmp);
-        success_jump = luaK_jump(fs);   /* 匹配成功，跳转到 body */
-        next_check_jump = cmp.f;        /* 不匹配，继续下一个检查 */
+        /* 对每个模式值生成相等比较: 控制值 == case 模式值 */
+        for (int p = 0; p < ac->npatterns; p++) {
+          expdesc val, cmp;
+          codegen_expr(cg, ac->patterns[p], &val);
+          init_exp(&cmp, VNONRELOC, ctrl_reg);
+          luaK_infix(fs, OPR_EQ, &cmp);
+          luaK_posfix(fs, OPR_EQ, &cmp, &val, 0);
+          luaK_goiftrue(fs, &cmp);
+          luaK_concat(fs, &success_jump, luaK_jump(fs));  /* 匹配成功，跳转到 body */
+          /* 不匹配时修补到下一个检查位置 */
+          luaK_patchtohere(fs, cmp.f);
+        }
+        /* 所有模式都不匹配时跳到下一个 case */
+        next_check_jump = luaK_jump(fs);
 
         /* 修补成功跳转，生成 body 代码 */
         luaK_patchtohere(fs, success_jump);
