@@ -1921,8 +1921,11 @@ static void lua_add_s (MatchState *ms, luaL_Buffer *b, const char *s,
         else
           luaL_addlstring(b, cap, cast_sizet(resl));
       }
-      else
+      else {
+        /* $ 后不是有效转义字符，输出字面 $，p 回退以正确计数 */
         luaL_addlstring(b, "$", 1);
+        p--;
+      }
     }
     l -= ct_diff2sz(p + 1 - news);
     news = p + 1;

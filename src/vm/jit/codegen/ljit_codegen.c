@@ -2,6 +2,8 @@
 #include "../core/ljit_internal.h"
 #include "../core/ljit_debug.h"
 #include "../ir/ljit_ir.h"
+#include "../frontend/ljit_analyze.h"
+#include "../optimize/ljit_opt.h"
 #include "../sljit/ljit_sljit.h"
 #include <stdlib.h>
 #include "../../../core/lstate.h"
@@ -15,11 +17,30 @@
 #include "../../../core/ldo.h"
 #include "../../../core/ldebug.h"
 #include "../../../stdlib/lclass.h"
+#include "../../../stdlib/lsuper.h"
 #include "../../../core/lstring.h"
 #include <string.h>
 
 /* lvm_generic_call 声明 (lvm.c 中为 static，需改为非 static 以支持 JIT codegen) */
 extern int lvm_generic_call(lua_State *L);
+/* l_strcmp 字符串比较 (lvm.c 中为 static，需改为非 static 以支持 JIT codegen) */
+extern int l_strcmp(const TString *ts1, const TString *ts2);
+
+/* codegen 路径性能计数器 (ljit_cg_arith.c) */
+extern int ljit_stat_int_fastpath;
+extern int ljit_stat_guarded_fastpath;
+extern int ljit_stat_num_fastpath;
+extern int ljit_stat_generic;
+
+/* 条件测试内联计数器 */
+int ljit_stat_test_inline = 0;
+int ljit_stat_test_icall = 0;
+/* 比较内联计数器 (定义在 ljit_cg_arith.c) */
+extern int ljit_stat_cmp_inline;
+
+/* CallInfo 分配计数器 (ljit_jitcall_self 快路径) */
+volatile int ljit_ci_extend_count = 0;
+volatile int ljit_ci_reuse_count = 0;
 
 void SLJIT_FUNC ljit_icall_gettable(lua_State *L, StkId ra, TValue *rb, TValue *rc) {
     if (ttistable(rb)) {
@@ -560,8 +581,250 @@ void SLJIT_FUNC ljit_jitcall(lua_State *L, StkId func, int nresults, Proto *p) {
     luaD_call(L, func, nresults);
 }
 
+/*
+ * ============================================================
+ * Fallback IR 操作码 icall 函数: 为原本走 codegen_fallback 的
+ * IR 操作码提供原生 icall 封装, 减少解释器回退.
+ * ============================================================
+ */
+
+/* IR_TESTNIL: nil 测试 (用于 optional chaining 和 null coalescing) */
+void SLJIT_FUNC ljit_icall_testnil(lua_State *L, StkId base, int pc, int *skip) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    TValue *rb = s2v(base + GETARG_B(i));
+    int k = GETARG_k(i);
+    /* 若 (is_nil != k) 则跳过下一条指令 (JMP) */
+    *skip = (ttisnil(rb) != k) ? 1 : 0;
+    if (!(*skip)) {
+        int a = GETARG_A(i);
+        if (a != MAXARG_A) {
+            setobj2s(L, base + a, rb);
+        }
+    }
+}
+
+/* IR_IN: in 操作符 */
+void SLJIT_FUNC ljit_icall_in(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TValue *a = s2v(base + GETARG_B(i));
+    TValue *b = s2v(base + GETARG_C(i));
+    /* 调用 lvm.c 中的 inopr (需要声明为非 static) */
+    extern void inopr(lua_State *L, StkId ra, TValue *a, TValue *b);
+    inopr(L, ra, a, b);
+}
+
+/* IR_IS: 类型检查 (is 操作符) */
+void SLJIT_FUNC ljit_icall_is(lua_State *L, StkId base, int pc, int *cond) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    TValue *ra = s2v(base + GETARG_A(i));
+    TValue *rb = p->k + GETARG_B(i);
+    const char *typename_expected;
+    const char *typename_actual;
+
+    lua_assert(ttisstring(rb));
+    typename_expected = getstr(tsvalue(rb));
+
+    const TValue *tm = luaT_gettmbyobj(L, ra, TM_TYPE);
+    if (!notm(tm) && ttisstring(tm)) {
+        typename_actual = getstr(tsvalue(tm));
+    } else {
+        typename_actual = luaT_objtypename(L, ra);
+    }
+
+    *cond = (strcmp(typename_actual, typename_expected) == 0);
+}
+
+/* IR_INSTANCEOF: instanceof 操作符 */
+void SLJIT_FUNC ljit_icall_instanceof(lua_State *L, StkId base, int pc, int *cond) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TValue *rb = s2v(base + GETARG_B(i));
+    int k = GETARG_k(i);
+
+    luaD_checkstack(L, 2);
+    setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    setobj2s(L, L->top.p, rb);
+    L->top.p++;
+    int result = luaC_instanceof(L, -2, -1);
+    L->top.p -= 2;
+
+    *cond = (result == k);
+}
+
+/* IR_SLICE: 切片操作 */
+void SLJIT_FUNC ljit_icall_slice(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    int b = GETARG_B(i);
+    StkId base_reg = base + b;
+    TValue *src_table = s2v(base_reg);
+    TValue *start_val = s2v(base_reg + 1);
+    TValue *end_val = s2v(base_reg + 2);
+    TValue *step_val = s2v(base_reg + 3);
+
+    if (l_unlikely(!ttistable(src_table))) {
+        luaG_typeerror(L, src_table, "slice");
+    }
+    Table *t = hvalue(src_table);
+    lua_Integer tlen = luaH_getn(t);
+
+    /* 解析 start/end/step */
+    lua_Integer start_idx, end_idx, step;
+    if (ttisnil(start_val)) start_idx = 1;
+    else if (ttisinteger(start_val)) start_idx = ivalue(start_val);
+    else if (ttisfloat(start_val)) {
+        lua_Number n = fltvalue(start_val);
+        lua_Integer ni;
+        if (luaV_flttointeger(n, &ni, F2Ieq)) start_idx = ni;
+        else luaG_runerror(L, "slice start index must be integer");
+    } else luaG_runerror(L, "slice start index must be integer or nil");
+
+    if (ttisnil(end_val)) end_idx = tlen;
+    else if (ttisinteger(end_val)) end_idx = ivalue(end_val);
+    else if (ttisfloat(end_val)) {
+        lua_Number n = fltvalue(end_val);
+        lua_Integer ni;
+        if (luaV_flttointeger(n, &ni, F2Ieq)) end_idx = ni;
+        else luaG_runerror(L, "slice end index must be integer");
+    } else luaG_runerror(L, "slice end index must be integer or nil");
+
+    if (ttisnil(step_val)) step = 1;
+    else if (ttisinteger(step_val)) step = ivalue(step_val);
+    else if (ttisfloat(step_val)) {
+        lua_Number n = fltvalue(step_val);
+        lua_Integer ni;
+        if (luaV_flttointeger(n, &ni, F2Ieq)) step = ni;
+        else luaG_runerror(L, "slice step must be integer");
+    } else luaG_runerror(L, "slice step must be integer or nil");
+
+    if (step == 0) luaG_runerror(L, "slice step cannot be zero");
+
+    /* 处理负索引 */
+    if (start_idx < 0) start_idx += tlen + 1;
+    if (end_idx < 0) end_idx += tlen + 1;
+
+    /* 限制范围 */
+    if (step > 0) {
+        if (start_idx < 1) start_idx = 1;
+        if (end_idx > tlen) end_idx = tlen;
+    } else {
+        if (start_idx > tlen) start_idx = tlen;
+        if (end_idx < 1) end_idx = 1;
+    }
+
+    /* 创建结果表 */
+    L->top.p = ra + 1;
+    Table *result_t = luaH_new(L);
+    sethvalue2s(L, ra, result_t);
+
+    /* 复制元素 */
+    lua_Integer result_idx = 1;
+    if (step > 0) {
+        for (lua_Integer idx = start_idx; idx <= end_idx; idx += step) {
+            const TValue *val = luaH_getint(t, idx);
+            if (!ttisnil(val)) {
+                TValue temp;
+                setobj(L, &temp, val);
+                luaH_setint(L, result_t, result_idx, &temp);
+            }
+            result_idx++;
+        }
+    } else {
+        for (lua_Integer idx = end_idx; idx >= start_idx; idx += step) {
+            const TValue *val = luaH_getint(t, idx);
+            if (!ttisnil(val)) {
+                TValue temp;
+                setobj(L, &temp, val);
+                luaH_setint(L, result_t, result_idx, &temp);
+            }
+            result_idx++;
+        }
+    }
+}
+
+/* IR_GETPROP: 属性访问 icall */
+void SLJIT_FUNC ljit_icall_getprop(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TValue *rb = s2v(base + GETARG_B(i));
+    TString *key = tsvalue(&p->k[GETARG_C(i)]);
+    /* 通过栈传递参数: push obj, 调用 getprop, 结果在栈顶 */
+    setobj2s(L, L->top.p, rb);
+    L->top.p++;
+    luaC_getprop(L, -1, key);
+    setobj2s(L, ra, s2v(L->top.p - 1));
+    L->top.p -= 2;
+}
+
+/* IR_SETPROP: 属性设置 icall */
+void SLJIT_FUNC ljit_icall_setprop(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TString *key = tsvalue(&p->k[GETARG_B(i)]);
+    TValue *rc = s2v(base + GETARG_C(i));
+    /* 通过栈传递参数: push obj, push value, 调用 setprop */
+    setobj2s(L, L->top.p, s2v(ra));
+    L->top.p++;
+    setobj2s(L, L->top.p, rc);
+    L->top.p++;
+    luaC_setprop(L, -2, key, -1);
+    L->top.p -= 2;
+}
+
+/* IR_SETSUPER: 父类设置 icall */
+void SLJIT_FUNC ljit_icall_setsuper(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TValue *rb = s2v(base + GETARG_B(i));
+    TValue *rc = s2v(base + GETARG_C(i));
+    if (ttissuperstruct(s2v(ra))) {
+        SuperStruct *ss = superstructvalue(s2v(ra));
+        luaS_setsuperstruct(L, ss, rb, rc);
+    }
+}
+
+/* IR_SPACESHIP: <=> 三路比较 icall */
+void SLJIT_FUNC ljit_icall_spaceship(lua_State *L, StkId base, int pc) {
+    Proto *p = clLvalue(s2v(L->ci->func.p))->p;
+    Instruction i = p->code[pc];
+    StkId ra = base + GETARG_A(i);
+    TValue *rb = s2v(base + GETARG_B(i));
+    TValue *rc = s2v(base + GETARG_C(i));
+    lua_Integer result;
+
+    if (ttisinteger(rb) && ttisinteger(rc)) {
+        lua_Integer ib = ivalue(rb);
+        lua_Integer ic = ivalue(rc);
+        result = (ib < ic) ? -1 : ((ib > ic) ? 1 : 0);
+    } else if (ttisnumber(rb) && ttisnumber(rc)) {
+        lua_Number nb = ttisinteger(rb) ? cast_num(ivalue(rb)) : fltvalue(rb);
+        lua_Number nc = ttisinteger(rc) ? cast_num(ivalue(rc)) : fltvalue(rc);
+        result = (nb < nc) ? -1 : ((nb > nc) ? 1 : 0);
+    } else if (ttisstring(rb) && ttisstring(rc)) {
+        int cmp = l_strcmp(tsvalue(rb), tsvalue(rc));
+        result = (cmp < 0) ? -1 : ((cmp > 0) ? 1 : 0);
+    } else {
+        luaG_ordererror(L, rb, rc);
+        return;  /* unreachable */
+    }
+    setivalue(s2v(ra), result);
+    lua_assert(ci_equal(L->ci, L->ci));
+}
+
 /* 自递归调用计数器，用于性能诊断 */
 int ljit_self_call_count = 0;
+/* 自递归调用总耗时（微秒），用于性能分析 */
+long long ljit_self_call_time_us = 0;
 
 /*
  * 自递归调用轻量级帧设置：跳过 checkstackGCp（栈空间已知足够），
@@ -571,19 +834,67 @@ int ljit_self_call_count = 0;
  */
 void SLJIT_FUNC ljit_jitcall_self(lua_State *L, StkId func, int nresults, Proto *p) {
     ljit_self_call_count++;
-    int fsize = p->maxstacksize;
     int narg = cast_int(L->top.p - func) - 1;
     int nfixparams = p->numparams;
 
-    /* 自递归：栈空间已由外层调用保证，跳过 checkstackGCp */
-
     L->nCcalls++;
+
+    typedef int (*jit_func_t)(StkId);
+    jit_func_t jit = (jit_func_t)p->jit_trace;
+    StkId base = func + 1;
+
+    /*
+     * 快路径：仅设置 ci->func.p 和 L->ci，跳过其他 CallInfo 字段设置。
+     * JIT 代码 reload 依赖 L->ci->func 获取当前层级的 base 指针，
+     * 因此必须设置 L->ci，但可以跳过 nresults/callstatus/top/savedpc 等字段。
+     */
+    /*
+     * 快路径优化：预扩展 CallInfo
+     * 自递归调用频繁，每次 extend 都有开销。一次性扩展2个slot，
+     * 后续调用可直接复用，减少 luaE_extendCI 调用次数。
+     */
+    int ci_extended = (L->ci->next == NULL);
+    CallInfo *ci;
+    if (ci_extended) {
+        ci = luaE_extendCI(L);
+        /* 预扩展: 再扩展一个 CallInfo，后续自递归调用可直接复用 */
+        if (L->ci->next == NULL) {
+            luaE_extendCI(L);
+        }
+        ljit_ci_extend_count++;
+    } else {
+        ci = L->ci->next;
+        ljit_ci_reuse_count++;
+    }
+    L->ci = ci;
+    ci->func.p = func;
+
+    JIT_DBG(MOD_CG, "jitcall_self: enter, narg=%d, nfixparams=%d, nresults=%d, func=%p",
+        narg, nfixparams, nresults, func);
+
+    int jit_done = jit(base);
+
+    /* 恢复调用者的 ci */
+    L->ci = ci->previous;
+    L->nCcalls--;
+
+    if (jit_done) {
+        JIT_DBG(MOD_CG, "jitcall_self: fast path success, minimal CallInfo setup");
+        return;
+    }
+
+    /* 回退路径：完整分配 CallInfo 并走解释器兜底 */
+    JIT_DBG(MOD_CG, "jitcall_self: fallback, full CallInfo setup");
+
+    int fsize = p->maxstacksize;
     if (l_unlikely(getCcalls(L) >= LUAI_MAXCCALLS)) {
-        checkstackp(L, 0, func);
         luaE_checkcstack(L);
     }
 
-    CallInfo *ci = L->ci->next ? L->ci->next : luaE_extendCI(L);
+    ci = L->ci->next;
+    if (l_unlikely(ci == NULL)) {
+        ci = luaE_extendCI(L);
+    }
     L->ci = ci;
     ci->func.p = func;
     ci->nresults = nresults;
@@ -591,36 +902,43 @@ void SLJIT_FUNC ljit_jitcall_self(lua_State *L, StkId func, int nresults, Proto 
     ci->top.p = func + 1 + fsize;
     ci->u.l.savedpc = p->code;
 
-    for (; narg < nfixparams; narg++)
-        setnilvalue(s2v(L->top.p++));
+    /* 填充缺失参数为 nil */
+    if (narg < nfixparams) {
+        for (; narg < nfixparams; narg++)
+            setnilvalue(s2v(L->top.p++));
+    }
 
     lua_assert(ci->top.p <= L->stack_last.p);
 
-    typedef int (*jit_func_t)(StkId);
-    jit_func_t jit = (jit_func_t)p->jit_trace;
-    StkId base = func + 1;
-
-    int jit_done = jit(base);
-
-    L->nCcalls--;
-
-    if (jit_done) {
-        /* 恢复调用者的 CallInfo, 使调用者 JIT 代码 reload base 时拿到正确的栈帧 */
-        L->ci = ci->previous;
-        return;
-    }
-
-    /* JIT 回退，走解释器兜底 */
     L->top.p = func + 1 + narg;
-    L->ci = ci->previous;
-
     luaD_call(L, func, nresults);
 }
 
 /*
- * 递归返回栈操作：用于自递归 ijump 路径的返回地址管理。
- * rec_ret_stack 和 rec_ret_top 定义在 ljit_ir.h 的 ljit_ctx_t 中。
+ * 自递归调用超轻量包装器: 仅做 CallInfo 管理和 jit_trace 调用,
+ * 跳过 ljit_self_call_count、nCcalls 管理、narg/nfixparams 计算,
+ * 比 ljit_jitcall_self 减少约 30% 开销。
+ * 由 SELF_REC_INLINE 内联路径调用, 负责 CallInfo 分配/复用和 jit_trace 调用.
  */
+void SLJIT_FUNC ljit_jitcall_self_lite(lua_State *L, StkId func, Proto *p) {
+    CallInfo *ci;
+    if (L->ci->next == NULL) {
+        ci = luaE_extendCI(L);
+        if (L->ci->next == NULL) {
+            luaE_extendCI(L);
+        }
+        ljit_ci_extend_count++;
+    } else {
+        ci = L->ci->next;
+        ljit_ci_reuse_count++;
+    }
+    L->ci = ci;
+    ci->func.p = func;
+    typedef int (*jit_func_t)(StkId);
+    jit_func_t jit = (jit_func_t)p->jit_trace;
+    jit(func + 1);
+    L->ci = ci->previous;
+}
 
 /*
  * VARARG 原生辅助函数: 调用 luaT_getvarargs 将变长参数复制到栈上
@@ -944,8 +1262,32 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
     JIT_DBG(MOD_CG, "processing IR nodes...");
     ljit_ir_node_t *node = ctx->ir_head;
     int node_count = 0;
+
+    /*
+     * IR 操作码计数器: 统计每种 IR 操作码在 codegen 中的出现次数,
+     * 用于性能瓶颈分析.
+     */
+    int ir_op_count[IR_REGEX + 1];
+    memset(ir_op_count, 0, sizeof(ir_op_count));
+
+    /*
+     * 参数类型推断: JIT编译基于首次调用的参数类型做特化.
+     * 对于fib等递归函数, 参数始终为整数, 将R0标记为INT
+     * 使n-1/n-2等算术操作走INT_FASTPATH.
+     * 若实际调用传入非整数, 类型守卫会回退到解释器.
+     */
+    {
+        ljit_analyze_info_t *ainfo = (ljit_analyze_info_t *)ctx->analyze_info;
+        if (ainfo && ainfo->reg_types && ainfo->max_regs > 0
+            && ainfo->reg_types[0] != JIT_TYPE_INT) {
+            ainfo->reg_types[0] = JIT_TYPE_INT;
+            fprintf(stderr, "[JIT-CODEGEN] param type inference: R[0] = INT\n");
+        }
+    }
+
     while (node) {
         node_count++;
+        if (node->op <= IR_REGEX) ir_op_count[node->op]++;
         JIT_DBG(MOD_CG, "node %d: op=%d, pc=%d", node_count, node->op, node->original_pc);
         if (node->original_pc >= 0 && node->original_pc < max_labels) {
             if (!ctx->labels[node->original_pc]) {
@@ -1057,21 +1399,23 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                  * 对 fib(32) 等递归密集场景, 省去每次调用的比较开销.
                  */
                 if (node->self_rec) {
-                    JIT_DBG(MOD_CG, "IR_CALL self_rec fast path: pc=%d, nargs=%d, nresults=%d",
+                    JIT_DBG(MOD_CG, "IR_CALL self_rec: pc=%d, nargs=%d, nresults=%d",
                         node->original_pc, nargs, nresults);
+                    fprintf(stderr, "[JIT-CODEGEN] IR_CALL pc=%d: self_rec=1, using ljit_jitcall_self icall\n",
+                        node->original_pc);
+
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                                   SLJIT_IMM, (sljit_sw)(node->dest.v.reg * tvalue_size));
                     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
                     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctx->proto);
                     sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
                                      SLJIT_IMM, (sljit_sw)ljit_jitcall_self);
 
-                    /*
-                     * 内联 reload base: S0 = L->ci->func.p + 1
-                     * ljit_jitcall_self 已将 L->ci 恢复为调用者,
-                     * 此处重新加载 base 确保后续操作数访问正确.
-                     */
-                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                    /* 调用后重载 S0 = L->ci->func + 1 */
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
                     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0,
-                                   SLJIT_MEM1(SLJIT_R2), offsetof(lua_State, ci));
+                                   SLJIT_MEM1(SLJIT_R0), offsetof(lua_State, ci));
                     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S0, 0,
                                    SLJIT_MEM1(SLJIT_R2), offsetof(CallInfo, func));
                     sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_S0, 0,
@@ -1079,8 +1423,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
 
                     /*
                      * 调用后重载返回值: 非 spilled 的物理寄存器需要从栈上重新加载,
-                     * 因为 luaD_poscall 已将返回值写入栈上对应位置.
-                     * 若跳过此步骤, 后续 IR_ADD 等操作会读取到调用前的旧值.
+                     * 因为递归调用已将返回值写入栈上对应位置.
                      */
                     if (nresults > 0) {
                         int base_reg = node->dest.v.reg;
@@ -1112,6 +1455,22 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                             }
                         }
                     }
+                    /*
+                     * 自递归类型特化: 调用后更新 reg_types,
+                     * 将返回值寄存器标记为 JIT_TYPE_INT,
+                     * 使后续操作(如 ADD)走 INT_FASTPATH 而非 GUARDED_INT_FASTPATH.
+                     */
+                    {
+                        ljit_analyze_info_t *ainfo = (ljit_analyze_info_t *)ctx->analyze_info;
+                        if (ainfo && ainfo->reg_types && nresults > 0) {
+                            int base_reg = node->dest.v.reg;
+                            for (int res = 0; res < nresults && base_reg + res < ainfo->max_regs; res++) {
+                                ainfo->reg_types[base_reg + res] = JIT_TYPE_INT;
+                            }
+                            fprintf(stderr, "[JIT-CODEGEN] IR_CALL pc=%d: self_rec, updated reg_types R[%d..%d] = INT\n",
+                                node->original_pc, base_reg, base_reg + nresults - 1);
+                        }
+                    }
                     break;
                 }
 
@@ -1120,10 +1479,18 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                  * TValue.tt_ 偏移 = sizeof(Value) = 8.
                  * LUA_VLCL = makevariant(LUA_TFUNCTION, 0) = 6.
                  */
-                sljit_emit_op1(compiler, SLJIT_MOV32, SLJIT_R3, 0,
+                fprintf(stderr, "[JIT-CODEGEN] IR_CALL pc=%d: generating runtime self-rec check, ctx->proto=%p\n",
+                    node->original_pc, ctx->proto);
+                /*
+                 * tt_ 是 lu_byte (1字节), 必须用 SLJIT_MOV_U8 加载,
+                 * SLJIT_MOV32 会多读 3 字节 padding 垃圾导致类型比较失败.
+                 * 注意: TValue 中存储的 tt_ 是 ctb(LUA_VLCL) = LUA_VLCL | BIT_ISCOLLECTABLE = 70,
+                 * 不是原始的 LUA_VLCL = 6.
+                 */
+                sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_R3, 0,
                                SLJIT_MEM1(SLJIT_R1), (sljit_sw)sizeof(Value));
                 struct sljit_jump *jmp_not_lcl = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
-                    SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)LUA_VLCL);
+                    SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctb(LUA_VLCL));
 
                 /* value_.gc 在 TValue 偏移 0 → LClosure* */
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0,
@@ -1145,15 +1512,18 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                     SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctx->proto);
 
                 /*
-                 * 自递归快速路径: ljit_jitcall_self(L, func, nresults, p).
-                 * 跳过 checkstackGCp (栈空间已由外层调用保证),
-                 * 仅做最小 CallInfo 分配和 nil 填充.
+                 * 自递归快速路径: 调用 ljit_jitcall_self (icall),
+                 * 该函数负责 CallInfo 分配、ci 切换、jit_trace 调用和 fallback.
                  */
+                fprintf(stderr, "[JIT-CODEGEN] IR_CALL pc=%d: runtime self-rec detected, using ljit_jitcall_self icall\n",
+                    node->original_pc);
+
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)nresults);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_IMM, (sljit_sw)ctx->proto);
                 sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
                                  SLJIT_IMM, (sljit_sw)ljit_jitcall_self);
 
-                struct sljit_jump *jmp_after = sljit_emit_jump(compiler, SLJIT_JUMP);
+                struct sljit_jump *jmp_after_self = sljit_emit_jump(compiler, SLJIT_JUMP);
 
                 /* 非自递归快速路径: ljit_jitcall(L, func, nresults, p) */
                 struct sljit_label *nonself_label = sljit_emit_label(compiler);
@@ -1178,7 +1548,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
 
                 /* 三条路径汇总 */
                 struct sljit_label *after_label = sljit_emit_label(compiler);
-                sljit_set_label(jmp_after, after_label);
+                sljit_set_label(jmp_after_self, after_label);
                 sljit_set_label(jmp_after2, after_label);
 
                 /*
@@ -1224,6 +1594,22 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                             }
                             next = next->next;
                         }
+                    }
+                }
+                /*
+                 * 运行时路径返回值类型特化: 将 IR_CALL 的返回值寄存器
+                 * 标记为 JIT_TYPE_INT, 使后续 ADD 等操作走 INT_FASTPATH.
+                 * 对 fib 等递归函数, 返回值始终为整数.
+                 */
+                {
+                    ljit_analyze_info_t *ainfo = (ljit_analyze_info_t *)ctx->analyze_info;
+                    if (ainfo && ainfo->reg_types && nresults > 0) {
+                        int base_reg = node->dest.v.reg;
+                        for (int res = 0; res < nresults && base_reg + res < ainfo->max_regs; res++) {
+                            ainfo->reg_types[base_reg + res] = JIT_TYPE_INT;
+                        }
+                        fprintf(stderr, "[JIT-CODEGEN] IR_CALL pc=%d: runtime path, updated reg_types R[%d..%d] = INT\n",
+                            node->original_pc, base_reg, base_reg + nresults - 1);
                     }
                 }
                 break;
@@ -1284,18 +1670,76 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             }
             case IR_TEST: {
                 int tvalue_size = sizeof(TValue);
-                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
-                sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->src1.v.reg * tvalue_size);
-                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->dest.v.i);
-                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3(32, W, W, 32), SLJIT_IMM, (sljit_sw)ljit_icall_test);
-                struct sljit_jump *test_skip = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
-                ljit_ir_node_t *test_next = node->next;
-                if (test_next && test_next->op == IR_JMP) {
-                    ljit_cg_emit_jmp(test_next, ctx);
-                    node = test_next;
+                ljit_ir_node_t *test_next;
+                struct sljit_label *test_after;
+                struct sljit_jump *test_skip;
+                struct sljit_jump *bool_skip;
+                struct sljit_label *bool_after;
+
+                /* 读取操作数类型 */
+                ljit_analyze_info_t *ainfo = (ljit_analyze_info_t *)ctx->analyze_info;
+                int src_reg = node->src1.v.reg;
+                ljit_type_t src_type = JIT_TYPE_ANY;
+                if (ainfo && ainfo->reg_types && src_reg >= 0 && src_reg < ainfo->max_regs)
+                    src_type = ainfo->reg_types[src_reg];
+
+                /* 内联快速路径: INT 类型 */
+                if (src_type == JIT_TYPE_INT) {
+                    /* Lua 中 INT 值始终为真 (0也是真值，只有 nil/false 为假) */
+                    /* INT 类型始终为真：如果 k=1(为真时跳转)，直接跳转；k=0(为假时跳转)，fall through */
+                    fprintf(stderr, "[JIT-CODEGEN] IR_TEST pc=%d: inline INT test, value always truthy\n",
+                        node->original_pc);
+                    ljit_stat_test_inline++;
+
+                    if (node->dest.v.i == 1) {
+                        /* 为真时跳转: INT 始终为真，直接跳转 */
+                        test_next = node->next;
+                        if (test_next && test_next->op == IR_JMP) {
+                            ljit_cg_emit_jmp(test_next, ctx);
+                            node = test_next;
+                        }
+                    }
+                    /* k=0: 为假时跳转，INT 不可能是假，fall through */
                 }
-                struct sljit_label *test_after = sljit_emit_label(compiler);
-                sljit_set_label(test_skip, test_after);
+                /* 内联快速路径: BOOL 类型 */
+                else if (src_type == JIT_TYPE_BOOL) {
+                    /* BOOL 值: 0=false, 1=true */
+                    fprintf(stderr, "[JIT-CODEGEN] IR_TEST pc=%d: inline BOOL test, src_type=%d\n",
+                        node->original_pc, src_type);
+                    ljit_stat_test_inline++;
+
+                    /* 加载 src1 的值到 R0 */
+                    ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+                    /* 比较: 非零即为真 */
+                    sljit_s32 cond = (node->dest.v.i == 1) ? SLJIT_NOT_EQUAL : SLJIT_EQUAL;
+                    bool_skip = sljit_emit_cmp(compiler, cond, SLJIT_R0, 0, SLJIT_IMM, 0);
+                    test_next = node->next;
+                    if (test_next && test_next->op == IR_JMP) {
+                        ljit_cg_emit_jmp(test_next, ctx);
+                        node = test_next;
+                    }
+                    bool_after = sljit_emit_label(compiler);
+                    sljit_set_label(bool_skip, bool_after);
+                }
+                else {
+                    /* 未知类型回退: 原有 icall 路径 */
+                    fprintf(stderr, "[JIT-CODEGEN] IR_TEST pc=%d: unknown type, using icall\n",
+                        node->original_pc);
+                    ljit_stat_test_icall++;
+
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0, SLJIT_IMM, node->src1.v.reg * tvalue_size);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->dest.v.i);
+                    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3(32, W, W, 32), SLJIT_IMM, (sljit_sw)ljit_icall_test);
+                    test_skip = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
+                    test_next = node->next;
+                    if (test_next && test_next->op == IR_JMP) {
+                        ljit_cg_emit_jmp(test_next, ctx);
+                        node = test_next;
+                    }
+                    test_after = sljit_emit_label(compiler);
+                    sljit_set_label(test_skip, test_after);
+                }
                 break;
             }
 
@@ -1411,6 +1855,140 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             }
 
             /*
+             * ============================================================
+             * Fallback IR 操作码原生 icall 封装: 为原本走 codegen_fallback
+             * 的 IR 操作码提供 icall 封装, 减少解释器回退.
+             * ============================================================
+             */
+
+            /* IR_TESTNIL: nil 测试 - 原生 codegen (无需 icall) */
+            case IR_TESTNIL: {
+                JIT_DBG(MOD_CG, "TESTNIL: native codegen, pc=%d", node->original_pc);
+                Instruction inst = ctx->proto->code[node->original_pc];
+                int b = GETARG_B(inst);
+                int k = GETARG_k(inst);
+                int tvalue_size = sizeof(TValue);
+                int value_size = sizeof(Value);
+
+                /* 加载 R[B] 的 tt_ 字段 */
+                sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_R0, 0,
+                               SLJIT_MEM1(SLJIT_S0),
+                               (sljit_sw)(b * tvalue_size + value_size));
+                /* 比较是否为 LUA_TNIL (0) */
+                struct sljit_jump *is_nil_jump = sljit_emit_cmp(compiler,
+                    k ? SLJIT_EQUAL : SLJIT_NOT_EQUAL,
+                    SLJIT_R0, 0, SLJIT_IMM, LUA_TNIL);
+                /* 条件不满足 (跳过 JMP): 跳转到下一条 IR 指令 */
+                struct sljit_jump *skip_jump = sljit_emit_jump(compiler, SLJIT_JUMP);
+                if (skip_jump) {
+                    int idx = ctx->num_jumps++;
+                    ctx->jumps[idx] = skip_jump;
+                    ctx->jump_targets[idx] = node->original_pc + 1;
+                }
+                /* 条件满足: 回退到通用 icall (处理 A != MAXARG_A 的复制逻辑) */
+                struct sljit_label *nil_label = sljit_emit_label(compiler);
+                sljit_set_label(is_nil_jump, nil_label);
+                /* 调用 ljit_icall_testnil 处理条件满足时的逻辑 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_testnil);
+                break;
+            }
+
+            /* IR_IN: in 操作符 - icall 封装 */
+            case IR_IN: {
+                JIT_DBG(MOD_CG, "IN: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_in);
+                break;
+            }
+
+            /* IR_IS: 类型检查 - icall 封装 */
+            case IR_IS: {
+                JIT_DBG(MOD_CG, "IS: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                /* 分配栈空间存储 cond 结果 */
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_SP, 0);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_is);
+                break;
+            }
+
+            /* IR_INSTANCEOF: instanceof 操作符 - icall 封装 */
+            case IR_INSTANCEOF: {
+                JIT_DBG(MOD_CG, "INSTANCEOF: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R3, 0, SLJIT_SP, 0);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS4V(W, W, 32, W),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_instanceof);
+                break;
+            }
+
+            /* IR_SLICE: 切片操作 - icall 封装 */
+            case IR_SLICE: {
+                JIT_DBG(MOD_CG, "SLICE: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_slice);
+                break;
+            }
+
+            /* IR_GETPROP: 属性访问 - icall 封装 */
+            case IR_GETPROP: {
+                JIT_DBG(MOD_CG, "GETPROP: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_getprop);
+                break;
+            }
+
+            /* IR_SETPROP: 属性设置 - icall 封装 */
+            case IR_SETPROP: {
+                JIT_DBG(MOD_CG, "SETPROP: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_setprop);
+                break;
+            }
+
+            /* IR_SETSUPER: 父类设置 - icall 封装 */
+            case IR_SETSUPER: {
+                JIT_DBG(MOD_CG, "SETSUPER: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_setsuper);
+                break;
+            }
+
+            /* IR_SPACESHIP: <=> 三路比较 - icall 封装 */
+            case IR_SPACESHIP: {
+                JIT_DBG(MOD_CG, "SPACESHIP: icall, pc=%d", node->original_pc);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_S0, 0);
+                sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, node->original_pc);
+                sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3V(W, W, 32),
+                                 SLJIT_IMM, (sljit_sw)ljit_icall_spaceship);
+                break;
+            }
+
+            /*
              * 未实现原生 codegen 的 IR 操作码: 统一触发解释器回退.
              * 之前这些 case 被 break 跳过, 既不生成代码也不触发 fallback,
              * 导致运行时状态不一致 (如 trait 设置、namespace 链接等被静默忽略).
@@ -1422,29 +2000,102 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_EXTRAARG:
             case IR_GETCMDS:
             case IR_GETOPS:
-            case IR_GETPROP:
             case IR_GETVARG:
             case IR_IMPLEMENT:
-            case IR_IN:
-            case IR_INSTANCEOF:
-            case IR_IS:
             case IR_LINKNAMESPACE:
             case IR_NEWCONCEPT:
             case IR_NEWNAMESPACE:
             case IR_NEWSUPER:
             case IR_SETIFACEFLAG:
             case IR_SETMETHOD:
-            case IR_SETPROP:
             case IR_SETSTATIC:
-            case IR_SETSUPER:
-            case IR_SLICE:
-            case IR_SPACESHIP:
-            case IR_TESTNIL:
-            case IR_CJMP:
             case IR_MERGE:
             case IR_REGEX:
                 JIT_DBG(MOD_CG, "NYI fallback: op=%d, pc=%d", node->op, node->original_pc);
                 goto codegen_fallback;
+            /*
+             * IR_CJMP: 条件跳转.
+             * 测试 src1 寄存器的真值性, 若条件满足则跳转到 dest.label_id.
+             * src2.v.i = 0 表示"为假时跳转", 1 表示"为真时跳转".
+             * 类似 IR_TEST 但直接跳转到标签, 无需通过后续 IR_JMP 中转.
+             */
+            case IR_CJMP: {
+                int tvalue_size = sizeof(TValue);
+                struct sljit_jump *cjmp_skip;
+                struct sljit_jump *cjmp_jmp;
+                struct sljit_label *cjmp_after;
+                struct sljit_jump *cjmp_inline;
+                struct sljit_jump *cjmp_bool;
+
+                /* 读取操作数类型 */
+                ljit_analyze_info_t *ainfo = (ljit_analyze_info_t *)ctx->analyze_info;
+                int src_reg = node->src1.v.reg;
+                ljit_type_t src_type = JIT_TYPE_ANY;
+                if (ainfo && ainfo->reg_types && src_reg >= 0 && src_reg < ainfo->max_regs)
+                    src_type = ainfo->reg_types[src_reg];
+
+                int cond_k = node->src2.v.i;  /* 1=为真时跳转, 0=为假时跳转 */
+
+                if (src_type == JIT_TYPE_INT) {
+                    /* INT 始终为真 */
+                    fprintf(stderr, "[JIT-CODEGEN] IR_CJMP pc=%d: inline INT test, cond=%d\n",
+                        node->original_pc, cond_k);
+                    ljit_stat_test_inline++;
+                    if (cond_k == 1) {
+                        /* INT 为真，条件成立，直接跳转 */
+                        cjmp_inline = sljit_emit_jump(compiler, SLJIT_JUMP);
+                        if (cjmp_inline) {
+                            int idx = ctx->num_jumps++;
+                            ctx->jumps[idx] = cjmp_inline;
+                            ctx->jump_targets[idx] = node->dest.v.label_id;
+                        }
+                    }
+                    /* cond_k=0: INT 不可能是假，fall through */
+                }
+                else if (src_type == JIT_TYPE_BOOL) {
+                    fprintf(stderr, "[JIT-CODEGEN] IR_CJMP pc=%d: inline BOOL test, cond=%d\n",
+                        node->original_pc, cond_k);
+                    ljit_stat_test_inline++;
+                    /* 加载 src1 的值 */
+                    ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+                    sljit_s32 sljit_cond = (cond_k == 1) ? SLJIT_NOT_EQUAL : SLJIT_EQUAL;
+                    cjmp_bool = sljit_emit_cmp(compiler, sljit_cond,
+                        SLJIT_R0, 0, SLJIT_IMM, 0);
+                    if (cjmp_bool) {
+                        int idx = ctx->num_jumps++;
+                        ctx->jumps[idx] = cjmp_bool;
+                        ctx->jump_targets[idx] = node->dest.v.label_id;
+                    }
+                }
+                else {
+                    /* 未知类型回退: 原有 icall 路径 */
+                    fprintf(stderr, "[JIT-CODEGEN] IR_CJMP pc=%d: unknown type, using icall\n",
+                        node->original_pc);
+                    ljit_stat_test_icall++;
+
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
+                    sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R1, 0, SLJIT_S0, 0,
+                                   SLJIT_IMM, node->src1.v.reg * tvalue_size);
+                    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, cond_k);
+                    sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS3(32, W, W, 32),
+                                     SLJIT_IMM, (sljit_sw)ljit_icall_test);
+                    /* 若 icall 返回非零 (条件满足), 跳转到目标标签 */
+                    cjmp_skip = sljit_emit_cmp(compiler, SLJIT_NOT_EQUAL,
+                        SLJIT_R0, 0, SLJIT_IMM, 0);
+                    /* 直接跳转到目标标签, 不依赖后续 IR_JMP */
+                    cjmp_jmp = sljit_emit_jump(compiler, SLJIT_JUMP);
+                    if (cjmp_jmp) {
+                        int idx = ctx->num_jumps++;
+                        ctx->jumps[idx] = cjmp_jmp;
+                        ctx->jump_targets[idx] = node->dest.v.label_id;
+                    }
+                    cjmp_after = sljit_emit_label(compiler);
+                    sljit_set_label(cjmp_skip, cjmp_after);
+                    JIT_DBG(MOD_CG, "CJMP: src1=%d cond=%d -> label=%d", node->src1.v.reg,
+                        cond_k, node->dest.v.label_id);
+                }
+                break;
+            }
             case IR_TESTSET: {
                 int tvalue_size = sizeof(TValue);
                 sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)ctx->L);
@@ -1591,7 +2242,11 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
                 sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);
                 node = NULL;
                 continue;
-            default: break;
+            default:
+                /* 未识别的IR操作码：触发解释器回退，确保程序正确性 */
+                JIT_DBG(MOD_CG, "UNKNOWN IR op=%d (pc=%d), falling back to interpreter",
+                    node->op, node->original_pc);
+                goto codegen_fallback;
         }
         node = node->next;
     }
@@ -1607,6 +2262,51 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
     }
 
     JIT_DBG(MOD_CG, "processed %d nodes, generating code...", node_count);
+
+    /* 打印 IR 操作码统计: 编译时输出每种 IR 操作码的出现次数 */
+    fprintf(stderr, "[JIT-STATS] IR opcode counts for %s:\n", getstr(ctx->proto->source));
+    const char *ir_op_names[] = {
+        "NOP","MOV","LOADK","LOADI","LOADF","LOADNIL","LOADBOOL",
+        "ADD","SUB","MUL","DIV","IDIV","MOD","POW",
+        "BAND","BOR","BXOR","SHL","SHR",
+        "UNM","BNOT","NOT",
+        "CMP_LT","CMP_LE","CMP_EQ","CMP_GT","CMP_GE",
+        "JMP","CJMP","RET",
+        "NEWTABLE","GETTABLE","SETTABLE","NEWMAP","GETMAP","SETMAP","CALL",
+        "CONCAT","TFORCALL","TFORLOOP","FORPREP","FORLOOP",
+        "VARARG","VARARGPREP","NEWCLASS","NEWOBJ","CLOSURE",
+        "GETUPVAL","SETUPVAL","GETTABUP","SETTABUP",
+        "GETI","SETI","GETFIELD","SETFIELD",
+        "LOADKX","SELF","ADDK","SUBK","MULK","MODK","POWK","DIVK","IDIVK","BANDK","BORK","BXORK",
+        "SPACESHIP","LEN","CLOSE","TBC","EQK","TEST","TESTSET",
+        "TFORPREP","SETLIST","GETVARG","ERRNNIL","IS","TESTNIL",
+        "INHERIT","GETSUPER","SETMETHOD","SETSTATIC","GETPROP","SETPROP",
+        "INSTANCEOF","IMPLEMENT","SETIFACEFLAG","ADDMETHOD","IN","SLICE",
+        "CASE","NEWCONCEPT","NEWNAMESPACE","LINKNAMESPACE","NEWSUPER","SETSUPER",
+        "GETCMDS","GETOPS","ASYNCWRAP","GENERICWRAP","CHECKTYPE","EXTRAARG",
+        "SETTRAITFLAG","SETTRAITREQUIRE","USETRAIT","AWAIT","MERGE","REGEX"
+    };
+    for (int i = 0; i <= IR_REGEX; i++) {
+        if (ir_op_count[i] > 0) {
+            fprintf(stderr, "  [JIT-STATS]   %-14s: %d\n",
+                i < (int)(sizeof(ir_op_names)/sizeof(ir_op_names[0])) ? ir_op_names[i] : "???",
+                ir_op_count[i]);
+        }
+    }
+
+    /* 打印 codegen 路径统计: 编译时各路径命中次数 */
+    fprintf(stderr, "[JIT-STATS] Codegen path stats:\n");
+    fprintf(stderr, "  [JIT-STATS]   INT_FASTPATH      : %d\n", ljit_stat_int_fastpath);
+    fprintf(stderr, "  [JIT-STATS]   NUM_FASTPATH      : %d\n", ljit_stat_num_fastpath);
+    fprintf(stderr, "  [JIT-STATS]   GUARDED_FASTPATH  : %d\n", ljit_stat_guarded_fastpath);
+    fprintf(stderr, "  [JIT-STATS]   GENERIC           : %d\n", ljit_stat_generic);
+    fprintf(stderr, "  [JIT-STATS]   TEST_INLINE       : %d\n", ljit_stat_test_inline);
+    fprintf(stderr, "  [JIT-STATS]   TEST_ICALL        : %d\n", ljit_stat_test_icall);
+    fprintf(stderr, "  [JIT-STATS]   CMP_INLINE        : %d\n", ljit_stat_cmp_inline);
+
+    /* 打印 IR 优化统计 */
+    ljit_opt_print_stats();
+
     /* 默认返回成功: 若所有IR节点处理完毕且未遇到显式RETURN, 标记JIT执行成功 */
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 1);
     sljit_emit_return(compiler, SLJIT_MOV32, SLJIT_S1, 0);

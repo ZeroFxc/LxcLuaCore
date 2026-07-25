@@ -35,26 +35,9 @@ static const char *astparser_zreader (lua_State *L, void *data, size_t *size) {
   *size = 0;
   return NULL;
 }
-#if defined(__ANDROID__)
-#include <android/log.h>
-#include <stdio.h>
-static FILE *_parse_log_fp = NULL;
-static void _parse_log_write(const char *fmt, ...) {
-  if (_parse_log_fp == NULL) {
-    _parse_log_fp = fopen("/sdcard/lua_parse_debug.log", "w");
-  }
-  if (_parse_log_fp != NULL) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(_parse_log_fp, fmt, args);
-    fflush(_parse_log_fp);
-    va_end(args);
-  }
-}
-#define LOGD(...) _parse_log_write(__VA_ARGS__)
-#else
+
 #define LOGD(...) ((void)0)
-#endif
+
 
 /* 外部声明：$include 文件包含 */
 extern void luaX_pushincludefile(LexState *ls, const char *filename);
@@ -95,6 +78,7 @@ static AstExpr *parse_suffixedexpr(ParserState *ps, AstExpr *v);
 static AstFunc *parse_funcbody(ParserState *ps, int line, int is_arrow, int need_self, int is_async);
 static AstExpr **parse_exprlist(ParserState *ps, int *nret);
 static AstExpr *parse_switch_expr(ParserState *ps);
+static AstStmt *parse_switch_stat(ParserState *ps);
 static AstStmt *parse_guard_stat(ParserState *ps);
 static AstStmt *parse_try_stat(ParserState *ps);
 static AstStmt *parse_defer_stat(ParserState *ps);
@@ -938,7 +922,6 @@ static int get_binop(int op) {
     case TK_AND: return AST_BIN_AND;
     case TK_OR: return AST_BIN_OR;
     case TK_NULLCOAL: return AST_BIN_NULLCOAL;
-    case TK_MEAN: return AST_BIN_CASE;
     case TK_MERGE: return AST_BIN_MERGE;
     default: return -1;
   }
@@ -2404,6 +2387,14 @@ static AstExpr *parse_simpleexpr(ParserState *ps) {
     lp_next(ps);
     {
       AstExpr *operand = parse_subexpr(ps, UNARY_PRIORITY);
+      /* 负号作用在范围表达式上的特殊处理：-3..3 应解析为 RANGE(-3, 3) 而非 NEG(RANGE(3, 3)) */
+      if (uop == AST_UN_MINUS && operand->kind == AST_EXPR_RANGE) {
+        /* 对范围起始值取负，作为新的范围表达式 */
+        AstExpr *neg_start = ast_new_expr_unop(ps->pool, AST_UN_MINUS,
+                                                operand->u.range.start, line);
+        operand->u.range.start = neg_start;
+        return operand;
+      }
       return ast_new_expr_unop(ps->pool, (AstUnOp)uop, operand, line);
     }
   }
@@ -2431,10 +2422,38 @@ static AstExpr *parse_subexpr(ParserState *ps, int min_prec) {
     {
       int op_line = ls->linenumber;
       int prec_right = binop_priority[op].right;
+      int concat_nospace = (op == AST_BIN_CONCAT) ? ls->t.nospace : 0;
       lp_next(ps);
       {
         AstExpr *rhs = parse_subexpr(ps, prec_right);
-        v = ast_new_expr_binop(ps->pool, (AstBinOp)op, v, rhs, op_line);
+        /* 范围操作符检测：'..' 前无空格且两端为整数常量时生成范围表
+         * 注意：仅当 start <= end 时才是合法范围，否则回退到字符串拼接
+         * 负数字面量（如 -3）是 AST_EXPR_UNOP(AST_UN_MINUS, AST_EXPR_INT)，也需要识别 */
+        lua_Integer start_val = 0, end_val = 0;
+        int is_range = concat_nospace;
+        if (is_range && v->kind == AST_EXPR_INT) {
+          start_val = v->u.ival;
+        } else if (is_range && v->kind == AST_EXPR_UNOP
+                   && v->u.unop.op == AST_UN_MINUS
+                   && v->u.unop.operand->kind == AST_EXPR_INT) {
+          start_val = -v->u.unop.operand->u.ival;
+        } else {
+          is_range = 0;
+        }
+        if (is_range && rhs->kind == AST_EXPR_INT) {
+          end_val = rhs->u.ival;
+        } else if (is_range && rhs->kind == AST_EXPR_UNOP
+                   && rhs->u.unop.op == AST_UN_MINUS
+                   && rhs->u.unop.operand->kind == AST_EXPR_INT) {
+          end_val = -rhs->u.unop.operand->u.ival;
+        } else {
+          is_range = 0;
+        }
+        if (is_range && start_val <= end_val) {
+          v = ast_new_expr_range(ps->pool, v, rhs, op_line);
+        } else {
+          v = ast_new_expr_binop(ps->pool, (AstBinOp)op, v, rhs, op_line);
+        }
       }
     }
   }
@@ -4114,6 +4133,7 @@ static AstExpr *parse_if_expr(ParserState *ps) {
 
 /**
  * @brief 解析 switch 表达式: switch expr case pat -> expr end
+ * 支持多值模式: case 1, 2, 3 -> expr
  * @param ps 解析器状态
  * @return 表达式节点
  */
@@ -4133,12 +4153,25 @@ static AstExpr *parse_switch_expr(ParserState *ps) {
   arms = cast(AstCaseArm *, ast_pool_alloc(ps->pool, cap * sizeof(AstCaseArm)));
 
   while (lp_testnext(ps, TK_CASE)) {
-    AstExpr *pattern = parse_expr(ps);
-    /* 支持多模式: case 1, 2, 3 -> */
+    /* 收集所有逗号分隔的模式值 */
+    AstExpr **patterns = NULL;
+    int npatterns = 0;
+    int pat_cap = 2;
+
+    patterns = cast(AstExpr **, ast_pool_alloc(ps->pool, pat_cap * sizeof(AstExpr *)));
+    patterns[npatterns++] = parse_expr(ps);
+
     while (lp_testnext(ps, ',')) {
-      /* 跳过额外的模式，只保留第一个 */
-      parse_expr(ps);
+      if (npatterns >= pat_cap) {
+        pat_cap *= 2;
+        AstExpr **new_pats = cast(AstExpr **,
+          ast_pool_alloc(ps->pool, pat_cap * sizeof(AstExpr *)));
+        memcpy(new_pats, patterns, npatterns * sizeof(AstExpr *));
+        patterns = new_pats;
+      }
+      patterns[npatterns++] = parse_expr(ps);
     }
+
     lp_checknext(ps, TK_ARROW); /* -> */
     AstExpr *body = parse_expr(ps);
 
@@ -4149,7 +4182,8 @@ static AstExpr *parse_switch_expr(ParserState *ps) {
       memcpy(new_arms, arms, narms * sizeof(AstCaseArm));
       arms = new_arms;
     }
-    arms[narms].pattern = pattern;
+    arms[narms].patterns = patterns;
+    arms[narms].npatterns = npatterns;
     arms[narms].body = body;
     narms++;
   }
@@ -4170,6 +4204,140 @@ static AstExpr *parse_switch_expr(ParserState *ps) {
   e->u.switchx.narms = narms;
   e->u.switchx.def = def_body;
   return e;
+}
+
+
+/**
+ * @brief 解析 switch 语句: switch expr case pat -> body | case pat: body end
+ * 支持多值模式（case 1, 2, 3 ->）和块体形式（case val: stmts）
+ * @param ps 解析器状态
+ * @return 语句节点（AST_STMT_SWITCH）
+ */
+static AstStmt *parse_switch_stat(ParserState *ps) {
+  LexState *ls = ps->ls;
+  int line = ls->linenumber;
+  lp_next(ps); /* skip 'switch' */
+
+  AstExpr *cond = parse_expr(ps);
+
+  /* 跳过可选分隔符: do, then, :, { */
+  if (lp_testnext(ps, TK_DO) || lp_testnext(ps, TK_THEN) || lp_testnext(ps, ':')) {
+    /* 已消费 */
+  } else {
+    lp_testnext(ps, '{'); /* 尝试消费 { */
+  }
+
+  /* 解析 case 分支 */
+  int case_cap = 4;
+  int ncases = 0;
+  AstSwitchCase *cases = cast(AstSwitchCase *,
+    ast_pool_alloc(ps->pool, case_cap * sizeof(AstSwitchCase)));
+  int has_default = 0;
+  AstBlock default_body = {NULL, 0, 0};
+
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS && ls->t.token != '}') {
+    if (ls->t.token == TK_CASE) {
+      lp_next(ps); /* skip 'case' */
+
+      /* 收集所有逗号分隔的模式值 */
+      AstExpr **patterns = NULL;
+      int npatterns = 0;
+      int pat_cap = 2;
+      patterns = cast(AstExpr **, ast_pool_alloc(ps->pool, pat_cap * sizeof(AstExpr *)));
+      patterns[npatterns++] = parse_expr(ps);
+
+      while (lp_testnext(ps, ',')) {
+        if (npatterns >= pat_cap) {
+          pat_cap *= 2;
+          AstExpr **new_pats = cast(AstExpr **,
+            ast_pool_alloc(ps->pool, pat_cap * sizeof(AstExpr *)));
+          memcpy(new_pats, patterns, npatterns * sizeof(AstExpr *));
+          patterns = new_pats;
+        }
+        patterns[npatterns++] = parse_expr(ps);
+      }
+
+      /* 扩大 cases 数组 */
+      if (ncases >= case_cap) {
+        case_cap *= 2;
+        AstSwitchCase *new_cases = cast(AstSwitchCase *,
+          ast_pool_alloc(ps->pool, case_cap * sizeof(AstSwitchCase)));
+        memcpy(new_cases, cases, ncases * sizeof(AstSwitchCase));
+        cases = new_cases;
+      }
+
+      AstSwitchCase *c = &cases[ncases];
+      memset(c, 0, sizeof(AstSwitchCase));
+      c->patterns = patterns;
+      c->npatterns = npatterns;
+      c->is_default = 0;
+
+      /* 解析 case 体 */
+      if (lp_testnext(ps, TK_ARROW)) {
+        /* 箭头形式：解析表达式，包装为单语句块 */
+        AstExpr *body_expr = parse_expr(ps);
+        c->body = (AstBlock){NULL, 0, 0};
+        block_init(ps, &c->body);
+        ast_block_add_stmt(ps->pool, &c->body,
+          ast_new_stmt_expr(ps->pool, body_expr, ls->linenumber));
+      } else {
+        /* 块体形式：: do then { 可选分隔符 */
+        lp_testnext(ps, ':');
+        lp_testnext(ps, TK_DO);
+        lp_testnext(ps, TK_THEN);
+        c->body = (AstBlock){NULL, 0, 0};
+        block_init(ps, &c->body);
+        parse_block(ps, &c->body);
+      }
+
+      ncases++;
+    } else if (ls->t.token == TK_DEFAULT) {
+      if (has_default) {
+        luaX_syntaxerror(ls, "multiple default blocks in switch");
+      }
+      has_default = 1;
+      lp_next(ps); /* skip 'default' */
+
+      default_body = (AstBlock){NULL, 0, 0};
+      block_init(ps, &default_body);
+
+      if (lp_testnext(ps, TK_ARROW)) {
+        /* 箭头形式 */
+        AstExpr *body_expr = parse_expr(ps);
+        ast_block_add_stmt(ps->pool, &default_body,
+          ast_new_stmt_expr(ps->pool, body_expr, ls->linenumber));
+      } else {
+        /* 块体形式 */
+        lp_testnext(ps, ':');
+        lp_testnext(ps, TK_DO);
+        lp_testnext(ps, TK_THEN);
+        parse_block(ps, &default_body);
+      }
+    } else {
+      luaX_syntaxerror(ls, "expected 'case' or 'default' in switch block");
+    }
+  }
+
+  /* 消费结束符 */
+  if (ls->t.token == TK_END) {
+    lp_next(ps);
+  } else if (ls->t.token == '}') {
+    lp_next(ps);
+  } else {
+    luaX_syntaxerror(ls, "expected 'end' or '}' to close switch block");
+  }
+
+  /* 创建 switch 语句节点 */
+  AstStmt *s = ast_new_node(ps->pool, AstStmt, AST_STMT, line);
+  s->kind = AST_STMT_SWITCH;
+  s->u.switchstmt.cond = cond;
+  s->u.switchstmt.cases = cases;
+  s->u.switchstmt.ncases = ncases;
+  s->u.switchstmt.has_default = has_default;
+  if (has_default) {
+    s->u.switchstmt.default_body = default_body;
+  }
+  return s;
 }
 
 
@@ -6397,10 +6565,8 @@ static AstStmt *parse_stat(ParserState *ps) {
       return s;
     }
 
-    case TK_SWITCH: {  /* switch 表达式 */
-      /* 将 switch 表达式解析为表达式语句 */
-      AstExpr *e = parse_switch_expr(ps);
-      return ast_new_stmt_expr(ps->pool, e, line);
+    case TK_SWITCH: {  /* switch 语句 */
+      return parse_switch_stat(ps);
     }
 
     case TK_GUARD: {  /* guard 语句 */

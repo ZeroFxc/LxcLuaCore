@@ -10,5 +10,7 @@ void ljit_opt_cse(ljit_ctx_t *ctx);
 void ljit_opt_peep(ljit_ctx_t *ctx);
 void ljit_opt_dce(ljit_ctx_t *ctx);
 void ljit_opt_inline(ljit_ctx_t *ctx);
+void ljit_opt_guard_elim(ljit_ctx_t *ctx);
+void ljit_opt_print_stats(void);
 
 #endif

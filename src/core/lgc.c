@@ -677,17 +677,30 @@ static lu_mem traversetable (global_State *g, Table *h) {
   mode = gfasttm(g, h->metatable, TM_MODE);
   markobjectN(g, h->metatable);
   markobjectN(g, h->using_next);
-  if (mode && ttisshrstring(mode) &&  /* is there a weak mode? */
-      (cast_void(smode = tsvalue(mode)),
-       cast_void(weakkey = strchr(getshrstr(smode), 'k')),
-       cast_void(weakvalue = strchr(getshrstr(smode), 'v')),
-       (weakkey || weakvalue))) {  /* is really weak? */
-    if (!weakkey)  /* strong keys? */
-      traverseweakvalue(g, h);
-    else if (!weakvalue)  /* strong values? */
-      traverseephemeron(g, h, 0);
-    else  /* all weak */
-      linkgclist(h, g->allweak);  /* nothing to traverse now */
+  if (mode && ttisshrstring(mode)) {  /* is there a weak mode? */
+    smode = tsvalue(mode);
+    /* 手动扫描 __mode 字符串，避免 Android FORTIFY 对 strchr/memchr 的误判
+     * (TString::contents 声明为 char[1]，FORTIFY 认为缓冲区只有 1 字节) */
+    {
+      const char *ms = getshrstr(smode);
+      lu_byte len = smode->shrlen;
+      weakkey = NULL;
+      weakvalue = NULL;
+      if (len > 0 && ms[0] == 'k') weakkey = ms;
+      if (len > 0 && ms[0] == 'v') weakvalue = ms;
+      if (len > 1 && ms[1] == 'k') weakkey = ms + 1;
+      if (len > 1 && ms[1] == 'v') weakvalue = ms + 1;
+    }
+    if (weakkey || weakvalue) {  /* is really weak? */
+      if (!weakkey)  /* strong keys? */
+        traverseweakvalue(g, h);
+      else if (!weakvalue)  /* strong values? */
+        traverseephemeron(g, h, 0);
+      else  /* all weak */
+        linkgclist(h, g->allweak);  /* nothing to traverse now */
+    }
+    else  /* not weak */
+      traversestrongtable(g, h);
   }
   else  /* not weak */
     traversestrongtable(g, h);

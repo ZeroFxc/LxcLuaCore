@@ -191,8 +191,11 @@ AstVisitResult ast_walk_expr(AstVisitor *v, AstVisitorContext ctx, AstExpr *e) {
       r = ast_walk_expr(v, ctx, e->u.switchx.cond);
       CHECK_TERMINATE(r);
       for (i = 0; i < e->u.switchx.narms; i++) {
-        r = ast_walk_expr(v, ctx, e->u.switchx.arms[i].pattern);
-        CHECK_TERMINATE(r);
+        int j;
+        for (j = 0; j < e->u.switchx.arms[i].npatterns; j++) {
+          r = ast_walk_expr(v, ctx, e->u.switchx.arms[i].patterns[j]);
+          CHECK_TERMINATE(r);
+        }
         r = ast_walk_expr(v, ctx, e->u.switchx.arms[i].body);
         CHECK_TERMINATE(r);
       }
@@ -474,8 +477,11 @@ AstVisitResult ast_walk_stmt(AstVisitor *v, AstVisitorContext ctx, AstStmt *s) {
       r = ast_walk_expr(v, ctx, s->u.switchstmt.cond);
       CHECK_TERMINATE(r);
       for (i = 0; i < s->u.switchstmt.ncases; i++) {
-        r = ast_walk_expr(v, ctx, s->u.switchstmt.cases[i].pattern);
-        CHECK_TERMINATE(r);
+        int j;
+        for (j = 0; j < s->u.switchstmt.cases[i].npatterns; j++) {
+          r = ast_walk_expr(v, ctx, s->u.switchstmt.cases[i].patterns[j]);
+          CHECK_TERMINATE(r);
+        }
         r = ast_walk_block(v, ctx, &s->u.switchstmt.cases[i].body);
         CHECK_TERMINATE(r);
       }

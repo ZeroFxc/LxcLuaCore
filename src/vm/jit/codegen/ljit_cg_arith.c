@@ -7,6 +7,15 @@
 #include <math.h>
 
 /* ========================================================================
+ * 性能计数器: 统计各 codegen 路径命中次数
+ * ======================================================================== */
+int ljit_stat_int_fastpath = 0;       /* INT_FASTPATH: 编译时已知整数 */
+int ljit_stat_guarded_fastpath = 0;   /* GUARDED_INT/NUM_FASTPATH: 运行时守卫 */
+int ljit_stat_num_fastpath = 0;       /* NUM_FASTPATH: 编译时已知浮点 */
+int ljit_stat_generic = 0;            /* GENERIC: C回退 */
+int ljit_stat_cmp_inline = 0;        /* CMP_INLINE: 整数常量比较内联 */
+
+/* ========================================================================
  * C 辅助函数 (从 JIT 代码调用，处理无法内联的通用情况)
  * ======================================================================== */
 
@@ -492,7 +501,7 @@ void ljit_cg_emit_add(void *node_ptr, void *ctx_ptr) {
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
         /* INT 快速路径: 整数加法 */
-        JIT_DBG(MOD_CG_ARITH, "ADD: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "ADD: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
@@ -500,15 +509,67 @@ void ljit_cg_emit_add(void *node_ptr, void *ctx_ptr) {
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else if (t1 == JIT_TYPE_NUM && t2 == JIT_TYPE_NUM) {
         /* NUM 快速路径: 浮点加法 */
-        JIT_DBG(MOD_CG_ARITH, "ADD: NUM_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "ADD: NUM_FASTPATH"); ljit_stat_num_fastpath++;
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR1, &node->src2);
         sljit_emit_fop2(compiler, SLJIT_ADD_F64, SLJIT_FR0, 0, SLJIT_FR0, 0, SLJIT_FR1, 0);
         ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /*
+         * 运行时类型守卫整数快速路径.
+         * 编译时类型为 ANY (如函数参数), 运行时检查是否为整数.
+         * 若是整数则直接 SLJIT_ADD, 否则回退到通用 icall.
+         * src2 为 IR_VAL_INT 时不需要守卫 (编译时已知是整数).
+         */
+        JIT_DBG(MOD_CG_ARITH, "ADD: GUARDED_INT_FASTPATH (src2_is_int=%d)",
+            node->src2.type == IR_VAL_INT);
+        ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+
+        /* 守卫: 检查 src1 的 tt_ 是否为 LUA_VNUMINT */
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard1 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+
+        struct sljit_jump *guard2 = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            /* src2 是寄存器: 也需要运行时类型检查 */
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            guard2 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        }
+
+        /* 守卫通过: 加载整数值, 做加法, 存储结果 */
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_emit_op2(c, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+
+        /* 快速路径完成, 跳过通用路径 */
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+
+        /* 守卫失败: 回退到通用 icall */
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard1, generic_label);
+        if (guard2) sljit_set_label(guard2, generic_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_add);
+
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
         /* 通用 C 回退 */
-        JIT_DBG(MOD_CG_ARITH, "ADD: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "ADD: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_add);
     }
 }
@@ -531,21 +592,73 @@ void ljit_cg_emit_sub(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "SUB: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "SUB: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "SUB: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_SUB, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else if (t1 == JIT_TYPE_NUM && t2 == JIT_TYPE_NUM) {
-        JIT_DBG(MOD_CG_ARITH, "SUB: NUM_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "SUB: NUM_FASTPATH"); ljit_stat_num_fastpath++;
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR1, &node->src2);
         sljit_emit_fop2(compiler, SLJIT_SUB_F64, SLJIT_FR0, 0, SLJIT_FR0, 0, SLJIT_FR1, 0);
         ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /*
+         * 运行时类型守卫整数快速路径.
+         * 编译时类型为 ANY (如函数参数), 运行时检查是否为整数.
+         * 若是整数则直接 SLJIT_SUB, 否则回退到通用 icall.
+         * src2 为 IR_VAL_INT 时不需要守卫 (编译时已知是整数).
+         */
+        JIT_DBG(MOD_CG_ARITH, "SUB: GUARDED_INT_FASTPATH (src2_is_int=%d)",
+            node->src2.type == IR_VAL_INT);
+        ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+
+        /* 守卫: 检查 src1 的 tt_ 是否为 LUA_VNUMINT */
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard1 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+
+        struct sljit_jump *guard2 = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            /* src2 是寄存器: 也需要运行时类型检查 */
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            guard2 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        }
+
+        /* 守卫通过: 加载整数值, 做减法, 存储结果 */
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_emit_op2(c, SLJIT_SUB, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+
+        /* 快速路径完成, 跳过通用路径 */
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+
+        /* 守卫失败: 回退到通用 icall */
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard1, generic_label);
+        if (guard2) sljit_set_label(guard2, generic_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_sub);
+
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "SUB: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "SUB: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_sub);
     }
 }
@@ -568,21 +681,57 @@ void ljit_cg_emit_mul(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "MUL: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "MUL: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "MUL: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_MUL, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else if (t1 == JIT_TYPE_NUM && t2 == JIT_TYPE_NUM) {
-        JIT_DBG(MOD_CG_ARITH, "MUL: NUM_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "MUL: NUM_FASTPATH"); ljit_stat_num_fastpath++;
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR1, &node->src2);
         sljit_emit_fop2(compiler, SLJIT_MUL_F64, SLJIT_FR0, 0, SLJIT_FR0, 0, SLJIT_FR1, 0);
         ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /* 运行时类型守卫整数快速路径 */
+        JIT_DBG(MOD_CG_ARITH, "MUL: GUARDED_INT_FASTPATH (src2_is_int=%d)",
+            node->src2.type == IR_VAL_INT);
+        ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard1 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        struct sljit_jump *guard2 = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            guard2 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        }
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_emit_op2(c, SLJIT_MUL, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard1, generic_label);
+        if (guard2) sljit_set_label(guard2, generic_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_mul);
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "MUL: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "MUL: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_mul);
     }
 }
@@ -606,14 +755,79 @@ void ljit_cg_emit_div(void *node_ptr, void *ctx_ptr) {
 
     if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_NUM) && (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_NUM)) {
         /* 数值快速路径: int/int, int/num, num/int, num/num 均走浮点除法 */
-        JIT_DBG(MOD_CG_ARITH, "DIV: NUM_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "DIV: NUM_FASTPATH"); ljit_stat_num_fastpath++;
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR1, &node->src2);
         sljit_emit_fop2(compiler, SLJIT_DIV_F64, SLJIT_FR0, 0, SLJIT_FR0, 0, SLJIT_FR1, 0);
         ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+    } else if ((t1 == JIT_TYPE_ANY || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /* 运行时守卫: 检查操作数是否为数值类型 (INT 或 NUMFLT), 是则走浮点除法 */
+        JIT_DBG(MOD_CG_ARITH, "DIV: GUARDED_NUM_FASTPATH"); ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+
+        /* 守卫 src1: 检查 tt_ 是否为 LUA_VNUMINT 或 LUA_VNUMFLT */
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        /* 检查是否为整数 (LUA_VNUMINT) */
+        struct sljit_jump *guard1_int = sljit_emit_cmp(c, SLJIT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        /* 检查是否为浮点 (LUA_VNUMFLT) */
+        struct sljit_jump *guard1_float = sljit_emit_cmp(c, SLJIT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMFLT);
+        /* 都不是数值类型, 回退到 icall */
+        struct sljit_jump *guard1_fail = sljit_emit_jump(c, SLJIT_JUMP);
+
+        struct sljit_jump *guard2_fail = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            struct sljit_label *guard1_ok = sljit_emit_label(c);
+            sljit_set_label(guard1_int, guard1_ok);
+            sljit_set_label(guard1_float, guard1_ok);
+
+            /* 守卫 src2: 检查 tt_ 是否为数值类型 */
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            struct sljit_jump *guard2_int = sljit_emit_cmp(c, SLJIT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+            struct sljit_jump *guard2_float = sljit_emit_cmp(c, SLJIT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMFLT);
+            guard2_fail = sljit_emit_jump(c, SLJIT_JUMP);
+
+            struct sljit_label *guard2_ok = sljit_emit_label(c);
+            sljit_set_label(guard2_int, guard2_ok);
+            sljit_set_label(guard2_float, guard2_ok);
+        } else {
+            /* src2 是 IR_VAL_INT: 编译时已知是整数, 无需守卫 */
+            struct sljit_label *guard1_ok = sljit_emit_label(c);
+            sljit_set_label(guard1_int, guard1_ok);
+            sljit_set_label(guard1_float, guard1_ok);
+        }
+
+        /* 所有守卫通过: 加载为浮点数, 做浮点除法 */
+        ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
+        ljit_cg_emit_load_float_operand(ctx, SLJIT_FR1, &node->src2);
+        sljit_emit_fop2(c, SLJIT_DIV_F64, SLJIT_FR0, 0, SLJIT_FR0, 0, SLJIT_FR1, 0);
+        ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+
+        /* 守卫失败: 回退到通用 icall */
+        struct sljit_label *fallback_label = sljit_emit_label(c);
+        sljit_set_label(guard1_fail, fallback_label);
+        if (guard2_fail) sljit_set_label(guard2_fail, fallback_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_div);
+
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "DIV: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "DIV: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_div);
     }
 }
@@ -638,15 +852,51 @@ void ljit_cg_emit_idiv(void *node_ptr, void *ctx_ptr) {
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
         /* INT 快速路径: 整数除法，商在 R0 */
-        JIT_DBG(MOD_CG_ARITH, "IDIV: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "IDIV: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op0(compiler, SLJIT_DIVMOD_SW);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /* 运行时类型守卫整数快速路径 */
+        JIT_DBG(MOD_CG_ARITH, "IDIV: GUARDED_INT_FASTPATH (src2_is_int=%d)",
+            node->src2.type == IR_VAL_INT);
+        ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard1 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        struct sljit_jump *guard2 = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            guard2 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        }
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_emit_op0(c, SLJIT_DIVMOD_SW);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard1, generic_label);
+        if (guard2) sljit_set_label(guard2, generic_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_idiv);
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
         /* 通用 C 回退: 处理浮点/混合类型/除零/元方法 */
-        JIT_DBG(MOD_CG_ARITH, "IDIV: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "IDIV: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_idiv);
     }
 }
@@ -668,14 +918,50 @@ void ljit_cg_emit_mod(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "MOD: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "MOD: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "MOD: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op0(compiler, SLJIT_DIVMOD_SW);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R1);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               (t2 == JIT_TYPE_INT || t2 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG &&
+               (node->src2.type == IR_VAL_REG || node->src2.type == IR_VAL_INT)) {
+        /* 运行时类型守卫整数快速路径 */
+        JIT_DBG(MOD_CG_ARITH, "MOD: GUARDED_INT_FASTPATH (src2_is_int=%d)",
+            node->src2.type == IR_VAL_INT);
+        ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard1 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        struct sljit_jump *guard2 = NULL;
+        if (node->src2.type == IR_VAL_REG) {
+            sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                           SLJIT_MEM1(SLJIT_S0),
+                           (sljit_sw)(node->src2.v.reg * tvalue_size + value_size));
+            guard2 = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        }
+        ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
+        sljit_emit_op0(c, SLJIT_DIVMOD_SW);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R1);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard1, generic_label);
+        if (guard2) sljit_set_label(guard2, generic_label);
+        ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_mod);
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "MOD: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "MOD: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_mod);
     }
 }
@@ -701,20 +987,43 @@ void ljit_cg_emit_unm(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "UNM: pc=%d, t1=%d", node->original_pc, t1);
 
     if (t1 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "UNM: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "UNM: INT_FASTPATH"); ljit_stat_int_fastpath++;
         sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, 0);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src1);
         sljit_emit_op2(compiler, SLJIT_SUB, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else if (t1 == JIT_TYPE_NUM) {
-        JIT_DBG(MOD_CG_ARITH, "UNM: NUM_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "UNM: NUM_FASTPATH"); ljit_stat_num_fastpath++;
         ljit_cg_emit_load_float_operand(ctx, SLJIT_FR0, &node->src1);
         sljit_emit_fop1(compiler, SLJIT_NEG_F64, SLJIT_FR0, 0, SLJIT_FR0, 0);
         ljit_cg_emit_store_float_operand(ctx, &node->dest, SLJIT_FR0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_NUM);
+    } else if ((t1 == JIT_TYPE_INT || t1 == JIT_TYPE_ANY) &&
+               node->src1.type == IR_VAL_REG) {
+        /* 运行时类型守卫: 检查 src1 是否为整数，是则 0 - src1 */
+        JIT_DBG(MOD_CG_ARITH, "UNM: GUARDED_INT_FASTPATH"); ljit_stat_guarded_fastpath++;
+        struct sljit_compiler *c = compiler;
+        int tvalue_size = sizeof(TValue);
+        int value_size = sizeof(Value);
+        sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R2, 0,
+                       SLJIT_MEM1(SLJIT_S0),
+                       (sljit_sw)(node->src1.v.reg * tvalue_size + value_size));
+        struct sljit_jump *guard = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+            SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)LUA_VNUMINT);
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, 0);
+        ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src1);
+        sljit_emit_op2(c, SLJIT_SUB, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+        ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
+        ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
+        struct sljit_jump *done = sljit_emit_jump(c, SLJIT_JUMP);
+        struct sljit_label *generic_label = sljit_emit_label(c);
+        sljit_set_label(guard, generic_label);
+        ljit_cg_emit_generic_unary(ctx, node, (sljit_sw)ljit_icall_unm);
+        struct sljit_label *done_label = sljit_emit_label(c);
+        sljit_set_label(done, done_label);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "UNM: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "UNM: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_unary(ctx, node, (sljit_sw)ljit_icall_unm);
     }
 }
@@ -747,7 +1056,7 @@ void ljit_cg_emit_not(void *node_ptr, void *ctx_ptr) {
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_BOOL);
     } else {
         /* BOOL/ANY: 走C回退处理动态值 */
-        JIT_DBG(MOD_CG_ARITH, "NOT: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "NOT: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_unary(ctx, node, (sljit_sw)ljit_icall_not);
     }
 }
@@ -798,14 +1107,14 @@ void ljit_cg_emit_band(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "BAND: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "BAND: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "BAND: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_AND, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "BAND: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "BAND: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_band);
     }
 }
@@ -827,14 +1136,14 @@ void ljit_cg_emit_bor(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "BOR: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "BOR: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "BOR: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_OR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "BOR: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "BOR: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_bor);
     }
 }
@@ -856,14 +1165,14 @@ void ljit_cg_emit_bxor(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "BXOR: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "BXOR: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "BXOR: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_XOR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "BXOR: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "BXOR: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_bxor);
     }
 }
@@ -885,14 +1194,14 @@ void ljit_cg_emit_shl(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "SHL: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "SHL: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "SHL: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_SHL, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "SHL: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "SHL: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_shl);
     }
 }
@@ -914,14 +1223,14 @@ void ljit_cg_emit_shr(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "SHR: pc=%d, t1=%d, t2=%d", node->original_pc, t1, t2);
 
     if (t1 == JIT_TYPE_INT && t2 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "SHR: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "SHR: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         ljit_cg_emit_load_operand(ctx, SLJIT_R1, &node->src2);
         sljit_emit_op2(compiler, SLJIT_LSHR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "SHR: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "SHR: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_binary(ctx, node, (sljit_sw)ljit_icall_arith_shr);
     }
 }
@@ -942,14 +1251,14 @@ void ljit_cg_emit_bnot(void *node_ptr, void *ctx_ptr) {
     JIT_DBG(MOD_CG_ARITH, "BNOT: pc=%d, t1=%d", node->original_pc, t1);
 
     if (t1 == JIT_TYPE_INT) {
-        JIT_DBG(MOD_CG_ARITH, "BNOT: INT_FASTPATH");
+        JIT_DBG(MOD_CG_ARITH, "BNOT: INT_FASTPATH"); ljit_stat_int_fastpath++;
         ljit_cg_emit_load_operand(ctx, SLJIT_R0, &node->src1);
         sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, -1);
         sljit_emit_op2(compiler, SLJIT_XOR, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
         ljit_cg_emit_store_operand(ctx, &node->dest, SLJIT_R0);
         ljit_cg_update_reg_type(ctx, node->dest.v.reg, JIT_TYPE_INT);
     } else {
-        JIT_DBG(MOD_CG_ARITH, "BNOT: GENERIC");
+        JIT_DBG(MOD_CG_ARITH, "BNOT: GENERIC"); ljit_stat_generic++;
         ljit_cg_emit_generic_unary(ctx, node, (sljit_sw)ljit_icall_bnot);
     }
 }

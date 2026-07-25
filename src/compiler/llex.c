@@ -15,26 +15,9 @@
 #include <stdio.h>
 
 /* Android 调试日志 - 写入文件避免 logcat 截断 */
-#if defined(__ANDROID__)
-#include <stdio.h>
-#include <stdarg.h>
-static FILE *_lex_log_fp = NULL;
-static void _lex_log_write(const char *fmt, ...) {
-  if (_lex_log_fp == NULL) {
-    _lex_log_fp = fopen("/sdcard/lua_lex_debug.log", "w");
-  }
-  if (_lex_log_fp != NULL) {
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(_lex_log_fp, fmt, args);
-    fflush(_lex_log_fp);
-    va_end(args);
-  }
-}
-#define LOGD(...) _lex_log_write(__VA_ARGS__)
-#else
+
 #define LOGD(...) ((void)0)
-#endif
+
 #include <stdlib.h>
 
 #include "lua.h"

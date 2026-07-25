@@ -1355,7 +1355,7 @@ void luaV_finishset (lua_State *L, const TValue *t, TValue *key,
  * @param ts2 The second string.
  * @return An integer less-equal-greater than zero.
  */
-static int l_strcmp (const TString *ts1, const TString *ts2) {
+int l_strcmp (const TString *ts1, const TString *ts2) {
   const char *s1 = getstr(ts1);
   size_t rl1 = tsslen(ts1);  /* real length */
   const char *s2 = getstr(ts2);
@@ -1998,7 +1998,7 @@ void luaV_finishOp (lua_State *L) {
  * @param a The key.
  * @param b The table or string.
  */
-static void inopr (lua_State *L, StkId ra, TValue *a, TValue *b) {
+void inopr (lua_State *L, StkId ra, TValue *a, TValue *b) {
   if (ttisstring(a) && ttisstring(b)) {
     const char *s1 = getstr(tsvalue(a));
     const char *s2 = getstr(tsvalue(b));

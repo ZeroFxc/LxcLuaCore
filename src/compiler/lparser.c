@@ -6743,11 +6743,24 @@ static void parse_pattern(LexState *ls, expdesc *ctrl, int *next_check_jump, int
     else if (ls->t.token == TK_NAME && luaX_lookahead(ls) != '=') {
        TString *name = str_checkname(ls);
        int reg = luaY_nvarstack(fs);  /* actual register */
+       printf("[DBG] parse_pattern var_bind: name=%s nactvar=%d freereg=%d reg=%d ctrl->u.info=%d\n",
+              getstr(name), fs->nactvar, fs->freereg, reg, ctrl->u.info);
        /* 使用 insert_localvar 在 nactvar 位置插入变量，确保 actvar/nactvar 对齐 */
        int vidx = insert_localvar(ls, name, reg);
+       { FILE *dbg = fopen("E:/Soft/Proje/LXCLUA-NCore/lua/debug_match.log", "a");
+         fprintf(dbg, "[DEBUG parse_pattern] after insert_localvar: nactvar=%d freereg=%d\n",
+                fs->nactvar, fs->freereg);
+         fclose(dbg); }
        if (fs->freereg < fs->nactvar) fs->freereg = fs->nactvar;
        if (reg != ctrl->u.info) {
+          { FILE *dbg = fopen("E:/Soft/Proje/LXCLUA-NCore/lua/debug_match.log", "a");
+            fprintf(dbg, "[DEBUG parse_pattern] generating MOVE %d %d\n", reg, ctrl->u.info);
+            fclose(dbg); }
           luaK_codeABC(fs, OP_MOVE, reg, ctrl->u.info, 0);
+       } else {
+          { FILE *dbg = fopen("E:/Soft/Proje/LXCLUA-NCore/lua/debug_match.log", "a");
+            fprintf(dbg, "[DEBUG parse_pattern] no MOVE needed (reg == ctrl->u.info)\n");
+            fclose(dbg); }
        }
        /* 变量绑定总是匹配成功，跳转到分支体（如果提供了success_jump） */
        if (success_jump != NULL)
@@ -6909,6 +6922,9 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
   int result_reg = -1;
   int line = ls->linenumber;  /* 记录 match 关键字所在行号 */
 
+  printf("[DBG] match_body ENTER is_expr=%d nactvar=%d freereg=%d\n",
+         is_expr, fs->nactvar, fs->freereg);
+
   luaX_next(ls);  /* skip MATCH */
 
   enterblock(fs, &bl, 1); /* isloop=1 to support break */
@@ -6922,6 +6938,8 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
   if (is_expr) {
     result_reg = fs->freereg;
     luaK_reserveregs(fs, 1);
+    printf("[DBG] match_body result_reg=%d freereg=%d nactvar=%d\n",
+           result_reg, fs->freereg, fs->nactvar);
   }
 
   if(!testnext(ls, TK_DO)){
@@ -6955,8 +6973,10 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
 
       /* 可选守卫条件 */
       if (testnext(ls, TK_IF)) {
+         printf("[DBG] match_body guard condition: nactvar=%d freereg=%d\n", fs->nactvar, fs->freereg);
          expdesc cond;
          expr(ls, &cond);
+         printf("[DBG] match_body guard cond: k=%d u.info=%d t=%d f=%d\n", cond.k, cond.u.info, cond.t, cond.f);
          luaK_goiftrue(fs, &cond);
          luaK_concat(fs, &next_check_jump, cond.f);
       }
@@ -6965,8 +6985,11 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
       if (testnext(ls, TK_ARROW)) {
          expdesc e;
          expr(ls, &e);
+         printf("[DBG] match_body body expr: k=%d u.info=%d t=%d f=%d result_reg=%d freereg=%d\n",
+                e.k, e.u.info, e.t, e.f, result_reg, fs->freereg);
          if (is_expr) {
            /* 表达式模式：将结果存入结果寄存器 */
+           printf("[DBG] match_body calling luaK_exp2reg with reg=%d\n", result_reg);
            luaK_exp2reg(fs, &e, result_reg);
          } else {
            /* 语句模式：评估表达式（副作用），不返回 */
@@ -7015,11 +7038,16 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
 
   leaveblock(fs);
 
+  printf("[DBG] match_body after leaveblock: nactvar=%d freereg=%d result_reg=%d\n",
+         fs->nactvar, fs->freereg, result_reg);
+
   /* 表达式模式：设置返回值 */
   if (is_expr) {
     /* 离开块后 nactvar 恢复到外部块的状态，需要将结果移动到外部块的变量基址，
     ** 以便后续 local 赋值等操作能正确获取结果 */
     int target_reg = fs->nactvar;
+    printf("[DBG] match_body result: target_reg=%d result_reg=%d\n",
+           target_reg, result_reg);
     if (result_reg != target_reg) {
       luaK_codeABC(fs, OP_MOVE, target_reg, result_reg, 0);
     }
@@ -7137,8 +7165,9 @@ static void switchstat (LexState *ls, int line) {
          expdesc e;
          expr(ls, &e);
          luaK_exp2nextreg(fs, &e);
-         luaK_ret(fs, e.u.info, 1);
-         previous_body_active = 0; /* Returns, so no fallthrough */
+         /* 箭头体执行完后跳转到 switch 结束（不返回函数） */
+         luaK_concat(fs, &escapelist, luaK_jump(fs));
+         previous_body_active = 0;
       } else {
          testnext(ls, ':');
          testnext(ls, TK_DO);
@@ -7174,7 +7203,8 @@ static void switchstat (LexState *ls, int line) {
          expdesc e;
          expr(ls, &e);
          luaK_exp2nextreg(fs, &e);
-         luaK_ret(fs, e.u.info, 1);
+         /* 箭头体执行完后跳转到 switch 结束（不返回函数） */
+         luaK_concat(fs, &escapelist, luaK_jump(fs));
          previous_body_active = 0;
       } else {
          testnext(ls, ':');
@@ -14335,7 +14365,7 @@ static void mainfunc (LexState *ls, FuncState *fs) {
 
 LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                        Dyndata *dyd, const char *name, int firstchar) {
-#ifdef LXCLUA_OLD_PARSER
+ // #ifdef LXCLUA_OLD_PARSER
   /* 旧版解析器：直接解析+codegen，不使用AST中间表示 */
   LexState lexstate;
   FuncState funcstate;
@@ -14374,13 +14404,12 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   L->top.p--;
   L->top.p--;
   L->top.p--;
-  return cl;
+  return cl;/*
 #else
   LClosure *cl = luaF_newLclosure(L, 1);
   setclLvalue2s(L, L->top.p, cl);
   luaD_inctop(L);
   dyd->actvar.n = dyd->gt.n = dyd->label.n = 0;
-  /* 暂停GC，防止AST内存池中的TString被GC回收 */
   int old_gc_state = lua_gc(L, LUA_GCISRUNNING, 0);
   lua_gc(L, LUA_GCSTOP, 0);
   AstChunk *chunk = luaY_parse_ast(L, z, buff, dyd, name, firstchar);
@@ -14390,11 +14419,11 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   luaC_objbarrier(L, cl, p);
   ast_pool_free(chunk->pool);
   luaM_free(L, chunk->pool);
-  if (old_gc_state) lua_gc(L, LUA_GCRESTART, 0);  /* 恢复GC */
+  if (old_gc_state) lua_gc(L, LUA_GCRESTART, 0); 
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
   lua_assert(cl->nupvalues == cl->p->sizeupvalues);
   return cl;
-#endif
+#endif*/
 }
 
 

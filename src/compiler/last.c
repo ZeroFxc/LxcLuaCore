@@ -1601,10 +1601,11 @@ AstIfArm *ast_new_ifarm(AstPool *p, AstExpr *cond, int line) {
  * @param line 源代码行号
  * @return 初始化好的SwitchCase结构
  */
-AstSwitchCase *ast_new_switchcase(AstPool *p, AstExpr *pattern, int is_default, int line) {
+AstSwitchCase *ast_new_switchcase(AstPool *p, AstExpr **patterns, int npatterns, int is_default, int line) {
   AstSwitchCase *c = cast(AstSwitchCase *, ast_pool_alloc(p, sizeof(AstSwitchCase)));
   (void)line;
-  c->pattern = pattern;
+  c->patterns = patterns;
+  c->npatterns = npatterns;
   c->is_default = is_default;
   c->body.count = 0;
   c->body.capacity = 0;
@@ -2214,13 +2215,17 @@ void ast_dump_expr(FILE *out, AstExpr *e, int indent) {
       }
       break;
     case AST_EXPR_SWITCH_EXPR: {
-      int j;
+      int j, k;
       fputs("(switch ", out);
       ast_dump_expr(out, e->u.switchx.cond, 0);
       for (j = 0; j < e->u.switchx.narms; j++) {
         fputc(' ', out);
         fputc('(', out);
-        ast_dump_expr(out, e->u.switchx.arms[j].pattern, 0);
+        fputs("case ", out);
+        for (k = 0; k < e->u.switchx.arms[j].npatterns; k++) {
+          if (k > 0) fputs(", ", out);
+          ast_dump_expr(out, e->u.switchx.arms[j].patterns[k], 0);
+        }
         fputc(' ', out);
         ast_dump_expr(out, e->u.switchx.arms[j].body, 0);
         fputc(')', out);
@@ -2538,14 +2543,17 @@ void ast_dump_stmt(FILE *out, AstStmt *s, int indent) {
       fprintf(out, "(label %s)", getstr(s->u.label.name));
       break;
     case AST_STMT_SWITCH: {
-      int j;
+      int j, k;
       fputs("(switch ", out);
       ast_dump_expr(out, s->u.switchstmt.cond, 0);
       for (j = 0; j < s->u.switchstmt.ncases; j++) {
         fputc('\n', out);
         dump_indent(out, indent + 1);
         fputs("(case ", out);
-        ast_dump_expr(out, s->u.switchstmt.cases[j].pattern, 0);
+        for (k = 0; k < s->u.switchstmt.cases[j].npatterns; k++) {
+          if (k > 0) fputs(", ", out);
+          ast_dump_expr(out, s->u.switchstmt.cases[j].patterns[k], 0);
+        }
         if (s->u.switchstmt.cases[j].body.count > 0) {
           ast_dump_block(out, &s->u.switchstmt.cases[j].body, indent + 2);
         }

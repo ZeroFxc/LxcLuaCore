@@ -298,8 +298,9 @@ struct AstEnumEntry {
 
 /* ---------- switch表达式分支 ---------- */
 struct AstCaseArm {
-  AstExpr *pattern;
-  AstExpr *body;
+  AstExpr **patterns;   /**< case匹配表达式数组（支持多值模式: case 1, 2, 3 ->） */
+  int npatterns;        /**< 匹配表达式数量 */
+  AstExpr *body;        /**< case体表达式 */
 };
 
 
@@ -562,7 +563,8 @@ struct AstAssignTarget {
 
 /* ---------- switch case分支 ---------- */
 struct AstSwitchCase {
-  AstExpr *pattern;    /**< case匹配表达式 */
+  AstExpr **patterns;  /**< case匹配表达式数组（支持多值模式: case 1, 2, 3 ->） */
+  int npatterns;       /**< 匹配表达式数量 */
   AstBlock body;       /**< case体 */
   int is_default;      /**< 是否为default分支 */
 };
@@ -929,7 +931,7 @@ LUAI_FUNC AstClassMember *ast_new_class_member(AstPool *p, AstMemberKind kind, A
 LUAI_FUNC AstIfArm *ast_new_ifarm(AstPool *p, AstExpr *cond, int line);
 
 /** 创建switch case分支 */
-LUAI_FUNC AstSwitchCase *ast_new_switchcase(AstPool *p, AstExpr *pattern, int is_default, int line);
+LUAI_FUNC AstSwitchCase *ast_new_switchcase(AstPool *p, AstExpr **patterns, int npatterns, int is_default, int line);
 
 
 /* ---------- Upvalue来源枚举 ---------- */
