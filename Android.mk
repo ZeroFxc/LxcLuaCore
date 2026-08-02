@@ -53,6 +53,7 @@ LOCAL_SRC_FILES := \
 	src/compiler/last_parse.c \
 	src/compiler/last_visitor.c \
 	src/compiler/last_serialize.c \
+	src/compiler/last_unparse.c \
 	src/compiler/lcodegen.c \
 	src/utils/lpromise.c \
 	src/core/lstate.c \

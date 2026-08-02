@@ -26,6 +26,12 @@
 #include "lparser.h"
 #include "lclass.h"
 #include "lcodegen.h"
+#include "last_serialize.h"  /* ast_serialize_to_lua */
+#include "lauxlib.h"  /* luaL_ref */
+
+/* 延迟模式 sentinel（定义于 lparser.c）：当 AstChunk* 等于此指针时，
+ * 表示 upvalue[1] 是 registry ast_ref（整数cast），不是真 Proto*。 */
+extern char astparser_string_mode_sentinel[1];
 
 /* Android 调试日志 - 写入文件避免 logcat 截断 */
 
@@ -429,7 +435,8 @@ static AstStmt *lp_try_command_call(ParserState *ps) {
     return NULL;
   if (lp_softkw_is(ps, "class") || lp_softkw_is(ps, "interface") ||
       lp_softkw_is(ps, "abstract") || lp_softkw_is(ps, "final") ||
-      lp_softkw_is(ps, "sealed") || lp_softkw_is(ps, "match") ||
+      lp_softkw_is(ps, "sealed") || lp_softkw_is(ps, "singleton") ||
+      lp_softkw_is(ps, "match") ||
       lp_softkw_is(ps, "trait") || lp_softkw_is(ps, "require"))
     return NULL;
 
@@ -966,7 +973,8 @@ static const struct {
   {1, 1},    /* AST_BIN_NULLCOAL '??' (right assoc) */
   {1, 1},    /* AST_BIN_CASE '=>' */
   {5, 5},    /* AST_BIN_INFIX (infix call) */
-  {5, 5}     /* AST_BIN_MERGE '<>' */
+  {5, 5},    /* AST_BIN_MERGE '<>' */
+  {3, 3}     /* AST_BIN_AS 'as' */
 };
 
 
@@ -1088,22 +1096,27 @@ static AstExpr *parse_primary(ParserState *ps) {
     case TK_LET: {
       TString *name = ls->t.seminfo.ts;
       /* 软关键字检查：new ClassName(args) */
+      /* 需要前瞻检查：new 后必须跟类名（TK_NAME），否则是变量名 */
       if (ls->t.token == TK_NAME && lp_softkw_is(ps, "new")) {
-        int line = ls->linenumber;
-        lp_next(ps);  /* skip 'new' */
-        /* 解析类名（suffixedexpr） */
-        AstExpr *class_expr = parse_suffixedexpr(ps, parse_primary(ps));
-        /* 解析参数列表 */
-        int nargs = 0;
-        AstExpr **args = NULL;
-        if (lp_testnext(ps, '(')) {
-          if (!lp_check(ps, ')')) {
-            args = parse_exprlist(ps, &nargs);
+        int la = lp_lookahead(ps);
+        if (is_nametoken(la)) {
+          int line = ls->linenumber;
+          lp_next(ps);  /* skip 'new' */
+          /* 解析类名（suffixedexpr） */
+          AstExpr *class_expr = parse_suffixedexpr(ps, parse_primary(ps));
+          /* 解析参数列表 */
+          int nargs = 0;
+          AstExpr **args = NULL;
+          if (lp_testnext(ps, '(')) {
+            if (!lp_check(ps, ')')) {
+              args = parse_exprlist(ps, &nargs);
+            }
+            lp_checknext(ps, ')');
           }
-          lp_checknext(ps, ')');
+          e = ast_new_expr_new(ps->pool, class_expr, args, nargs, line);
+          break;
         }
-        e = ast_new_expr_new(ps->pool, class_expr, args, nargs, line);
-        break;
+        /* new 后跟的不是类名，作为普通变量名处理 */
       }
       /* 软关键字检查：match expr { ... } (表达式模式) */
       if (ls->t.token == TK_NAME && lp_softkw_is(ps, "match")) {
@@ -1868,276 +1881,145 @@ static AstExpr *parse_primary(ParserState *ps) {
       break;
     }
     case TK_ASTPARSER: {
-      /* astparser 作为表达式：从 ZIO 直接读取括号内的代码，解析并编译 */
+      /* astparser 作为表达式：优先走 string-mode（astparser("xxx") / astparser([[xxx]])
+       * 用 lexer 已解析好的 TString（已正确去引号/去长括号、转义字符已处理），
+       * 避免 char-mode 把括号里的长括号/引号连同实际源码一起喂给 luaY_parse_ast，
+       * 导致二次解析把 [[ 当成 map constructor 等错误解析。
+       * 如果 lookahead1='(' 且 lookahead2 是字符串 token：走 string-mode，
+       * 否则把 astparser 当作普通 IDENT "astparser" 函数调用处理（不再走 char-mode，
+       * 因为 char-mode 直接读 ZIO 与 lookahead token 机制冲突，导致找不到 '('）。
+       */
       lua_State *L = ps->L;
-      ZIO *z = ls->z;
-      int c;
+      LexState *ls = ps->ls;
+      line = ls->linenumber;
+      e = NULL;
 
-      /* 跳过空格和换行，找到 '(' */
-      c = ls->current;
-      while (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-        c = zgetc(z);
-      }
-      if (c != '(') {
-        lp_error_expected(ps, '(');
-      }
-      /* 跳过 '(' */
-      c = zgetc(z);
-
-      /* 从 ZIO 读取原始源码，跟踪嵌套括号，跳过字符串和注释 */
-      size_t buf_len = 0, buf_cap = 256;
-      char *buf = luaM_newvector(L, buf_cap, char);
-
-      int depth = 1;  /* 已经消费了 '('，深度为 1 */
-      /* c 已是 '(' 之后的第一个字符，直接使用 */
-
-      while (depth > 0) {
-        if (c == EOZ) {
-          luaM_free(L, buf);
-          lp_error(ps, "unfinished astparser block");
+      int la1 = lp_lookahead(ps);
+      int la2 = lp_lookahead2(ps);
+      int is_string_mode = 0;
+      if (la1 == '(') {
+        if (la2 == TK_STRING || la2 == TK_RAWSTRING || la2 == TK_INTERPSTRING) {
+          is_string_mode = 1;
         }
-
-        /* 处理字符串：单引号和双引号 */
-        if (c == '\'' || c == '"') {
-          int quote = c;
-          if (buf_len >= buf_cap) {
-            size_t old = buf_cap; buf_cap *= 2;
-            buf = luaM_reallocvchar(L, buf, old, buf_cap);
-          }
-          buf[buf_len++] = (char)c;
-          while ((c = zgetc(z)) != EOZ) {
-            if (buf_len >= buf_cap) {
-              size_t old = buf_cap; buf_cap *= 2;
-              buf = luaM_reallocvchar(L, buf, old, buf_cap);
-            }
-            buf[buf_len++] = (char)c;
-            if (c == '\\') {  /* 转义字符 */
-              c = zgetc(z);
-              if (c != EOZ) {
-                if (buf_len >= buf_cap) {
-                  size_t old = buf_cap; buf_cap *= 2;
-                  buf = luaM_reallocvchar(L, buf, old, buf_cap);
-                }
-                buf[buf_len++] = (char)c;
-              }
-              continue;
-            }
-            if (c == quote) break;
-          }
-          c = zgetc(z);
-          continue;
-        }
-
-        /* 处理长括号 [[ 或 [=...[ */
-        if (c == '[') {
-          int c2 = zgetc(z);
-          if (c2 == '[' || c2 == '=') {
-            int eq = 0;
-            while (c2 == '=') { eq++; c2 = zgetc(z); }
-            if (c2 == '[') {
-              /* 确认是长括号，写入原始字符 */
-              if (buf_len + 2 + eq >= buf_cap) {
-                size_t old = buf_cap;
-                buf_cap = (buf_len + 2 + eq) * 2;
-                buf = luaM_reallocvchar(L, buf, old, buf_cap);
-              }
-              buf[buf_len++] = '[';
-              {
-                int i;
-                for (i = 0; i < eq; i++) buf[buf_len++] = '=';
-              }
-              buf[buf_len++] = '[';
-
-              /* 读取直到匹配的 ]=...=] */
-              while ((c = zgetc(z)) != EOZ) {
-                if (buf_len >= buf_cap) {
-                  size_t old = buf_cap; buf_cap *= 2;
-                  buf = luaM_reallocvchar(L, buf, old, buf_cap);
-                }
-                buf[buf_len++] = (char)c;
-                if (c == ']') {
-                  int match = 1;
-                  int i;
-                  for (i = 0; i < eq; i++) {
-                    c = zgetc(z);
-                    if (c != '=') { match = 0; break; }
-                    if (buf_len >= buf_cap) {
-                      size_t old = buf_cap; buf_cap *= 2;
-                      buf = luaM_reallocvchar(L, buf, old, buf_cap);
-                    }
-                    buf[buf_len++] = (char)c;
-                  }
-                  if (match) {
-                    c = zgetc(z);
-                    if (c == ']') {
-                      if (buf_len >= buf_cap) {
-                        size_t old = buf_cap; buf_cap *= 2;
-                        buf = luaM_reallocvchar(L, buf, old, buf_cap);
-                      }
-                      buf[buf_len++] = ']';
-                      break;
-                    }
-                    if (buf_len >= buf_cap) {
-                      size_t old = buf_cap; buf_cap *= 2;
-                      buf = luaM_reallocvchar(L, buf, old, buf_cap);
-                    }
-                    buf[buf_len++] = (char)c;
-                  }
-                }
-              }
-              c = zgetc(z);
-              continue;
-            }
-          }
-          /* 不是长括号，普通 '[' */
-          zungetc(z);
-          depth++;
-          if (buf_len >= buf_cap) {
-            size_t old = buf_cap; buf_cap *= 2;
-            buf = luaM_reallocvchar(L, buf, old, buf_cap);
-          }
-          buf[buf_len++] = '[';
-          c = zgetc(z);
-          continue;
-        }
-
-        /* 处理注释 -- */
-        if (c == '-') {
-          int c2 = zgetc(z);
-          if (c2 == '-') {
-            /* 注释开始 */
-            int c3 = zgetc(z);
-            if (c3 == '[') {
-              /* 可能是块注释 --[[ */
-              int c4 = zgetc(z);
-              if (c4 == '[' || c4 == '=') {
-                /* 块注释，跳过直到 ]] */
-                if (c4 == '[') {
-                  while ((c = zgetc(z)) != EOZ) {
-                    if (c == ']') {
-                      c = zgetc(z);
-                      if (c == ']') break;
-                    }
-                  }
-                } else {
-                  int eq = 0;
-                  while (c4 == '=') { eq++; c4 = zgetc(z); }
-                  while ((c = zgetc(z)) != EOZ) {
-                    if (c == ']') {
-                      int match = 1;
-                      int i;
-                      for (i = 0; i < eq; i++) {
-                        c = zgetc(z);
-                        if (c != '=') { match = 0; break; }
-                      }
-                      if (match && (c = zgetc(z)) == ']') break;
-                    }
-                  }
-                }
-                c = zgetc(z);
-                continue;
-              } else {
-                /* 行注释，跳过直到行尾 */
-                zungetc(z);
-                while ((c = zgetc(z)) != EOZ && c != '\n' && c != '\r') {}
-                if (c == '\r') {
-                  c = zgetc(z);
-                  if (c != '\n') { zungetc(z); c = '\n'; }
-                }
-                c = zgetc(z);
-                continue;
-              }
-            } else {
-              /* 行注释，跳过直到行尾 */
-              zungetc(z);
-              while ((c = zgetc(z)) != EOZ && c != '\n' && c != '\r') {}
-              if (c == '\r') {
-                c = zgetc(z);
-                if (c != '\n') { zungetc(z); c = '\n'; }
-              }
-              c = zgetc(z);
-              continue;
-            }
-          } else {
-            /* 普通 '-' */
-            zungetc(z);
-            if (buf_len >= buf_cap) {
-              size_t old = buf_cap; buf_cap *= 2;
-              buf = luaM_reallocvchar(L, buf, old, buf_cap);
-            }
-            buf[buf_len++] = '-';
-            c = zgetc(z);
-            continue;
-          }
-        }
-
-        /* 跟踪括号嵌套 */
-        if (c == '(') depth++;
-        else if (c == ')') depth--;
-
-        if (depth > 0) {
-          if (buf_len >= buf_cap) {
-            size_t old = buf_cap; buf_cap *= 2;
-            buf = luaM_reallocvchar(L, buf, old, buf_cap);
-          }
-          buf[buf_len++] = (char)c;
-        }
-
-        c = zgetc(z);
       }
 
-      /* 更新 ls->current 为 ')' 之后的下一个字符 */
-      ls->current = c;
+      if (is_string_mode) {
+        /* string-mode（单参/多参统一走 delay 模式）：
+         * 原直接 parse+codegen 单参模式的问题：
+         *   a) 强制单参数，用户传 astparser("src", {ast=true}) 直接报错；
+         *   b) Dyndata/AstChunk 虽然堆分配，但 codegen 路径与 astparser_runner 不一致，
+         *      易引入 stack-local 引用导致 UB，以及序列化/反序列化行为差异。
+         * 统一改为 delay 模式：parse 时间只做 parse + serialize → 存 registry（ast_ref），
+         * runtime 由 astparser_runner 走同一套 codegen 路径（与 inputmode=ast 完全一致）。
+         * 单参 astparser("src") 与多参 astparser("src", opts) 都能正确工作。
+         */
+        TString *source_ts = NULL;
+        /* 按 token 级别消费：先跳过 TK_ASTPARSER，再跳过 '(', 字符串 token */
+        lp_next(ps);  /* skip TK_ASTPARSER */
+        if (!lp_testnext(ps, '(')) {
+          lp_error_expected(ps, '(');
+        }
+        /* 现在 ls->t 应该是字符串 token */
+        if (ls->t.token != TK_STRING && ls->t.token != TK_RAWSTRING &&
+            ls->t.token != TK_INTERPSTRING) {
+          lp_error_expected(ps, TK_STRING);
+        }
+        source_ts = ls->t.seminfo.ts;
+        lp_next(ps);  /* skip string token */
 
-      /* NUL 终止 */
-      if (buf_len >= buf_cap) {
-        size_t old = buf_cap;
-        buf_cap = buf_len + 1;
-        buf = luaM_reallocvchar(L, buf, old, buf_cap);
+        /* source_ts 的文本就是实际要解析的 Lua 源码内容 */
+        const char *src = getstr(source_ts);
+        size_t src_len = tsslen(source_ts);
+
+        /* 拷贝到可写 buf（加上结尾两个 NUL，防止 zreader 越界） */
+        size_t buf_len = src_len;
+        size_t buf_cap = buf_len + 2;
+        char *buf = luaM_newvector(L, buf_cap, char);
+        memcpy(buf, src, buf_len);
+        buf[buf_len] = '\0';
+        buf[buf_len+1] = '\0';
+
+        int firstchar = (buf_len > 0) ? (unsigned char)buf[0] : '\n';
+        ZIO ast_z;
+        memset(&ast_z, 0, sizeof(ast_z));
+        ast_z.L = L;
+        ast_z.p = (buf_len > 0) ? buf + 1 : buf;
+        ast_z.n = (buf_len > 0) ? buf_len - 1 : 0;
+        ast_z.reader = astparser_zreader;
+
+        Mbuffer ast_buff;
+        luaZ_initbuffer(L, &ast_buff);
+
+        Dyndata ast_dyd;
+        memset(&ast_dyd, 0, sizeof(ast_dyd));
+
+        /* 关 GC：与 lparser.c string-mode delay 路径保持一致 */
+        int old_gc = lua_gc(L, LUA_GCISRUNNING, 0);
+        lua_gc(L, LUA_GCSTOP, 0);
+
+        AstChunk *orig_chunk = luaY_parse_ast(L, &ast_z, &ast_buff, &ast_dyd, "astparser",
+          firstchar);
+        orig_chunk->main_func->is_vararg = 1;
+
+        /* 序列化 AST → Lua table（与 ast_parser({ast=true}) 结果一致） */
+        ast_serialize_to_lua(L, orig_chunk);
+
+        /* 释放 C AST：serialize 后不再需要，避免 parser 阶段内存暴涨 */
+        ast_pool_free(orig_chunk->pool);
+        luaM_free(L, orig_chunk->pool);
+        orig_chunk = NULL;
+
+        if (old_gc) lua_gc(L, LUA_GCRESTART, 0);
+
+        /* serialized AST table 存入 registry，得整数引用 ast_ref */
+        int ast_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+        luaZ_freebuffer(L, &ast_buff);
+        luaM_free(L, buf);
+
+        /* 构造 delay-mode AST_EXPR_ASTPARSER：
+         *   proto = (Proto*)(uintptr_t)ast_ref（不是真 Proto*）
+         *   chunk = &astparser_string_mode_sentinel（sentinel 标记延迟模式）
+         * lcodegen.c 检测到 sentinel 时不会把 proto 加入子函数表，
+         * 而是直接生成 CClosure(astparser_runner, 2)。
+         */
+        e = ast_new_expr_astparser(ps->pool,
+              (Proto*)(uintptr_t)ast_ref,
+              (AstChunk*)astparser_string_mode_sentinel,
+              line);
+
+        /* 检查下一 token：')'（单参） 或 ','（多参，带 opts 表） */
+        if (lp_testnext(ps, ',')) {
+          /* 多参数模式：astparser("src", opts_expr)
+           * 解析 opts（第二参数），包装成 AST_EXPR_CALL，
+           * 等价于调用 delay-mode 返回的闭包 (opts)。 */
+          AstExpr *opts_expr = parse_expr(ps);
+          if (!lp_testnext(ps, ')')) {
+            lp_error_expected(ps, ')');
+          }
+          AstExpr **args = cast(AstExpr **,
+            ast_pool_alloc(ps->pool, sizeof(AstExpr *)));
+          args[0] = opts_expr;
+          e = ast_new_expr_call(ps->pool, e, args, 1, line);
+        } else {
+          /* 单参数模式：astparser("src") → 期望 ')' */
+          if (!lp_testnext(ps, ')')) {
+            lp_error_expected(ps, ')');
+          }
+        }
+
+        break;
       }
-      buf[buf_len] = '\0';
 
-      /* 创建 ZIO 用于 AST 解析 */
-      /* firstchar 从 buf[0] 读取，ZIO 从 buf+1 开始，避免重复读取 */
-      int firstchar = (buf_len > 0) ? (unsigned char)buf[0] : '\n';
-      ZIO ast_z;
-      memset(&ast_z, 0, sizeof(ast_z));
-      ast_z.L = L;
-      ast_z.p = (buf_len > 0) ? buf + 1 : buf;
-      ast_z.n = (buf_len > 0) ? buf_len - 1 : 0;
-      ast_z.reader = astparser_zreader;  /* 设置 reader，避免 zgetc 耗尽缓冲后空指针崩溃 */
-
-      /* AST 解析用的 Mbuffer */
-      Mbuffer ast_buff;
-      luaZ_initbuffer(L, &ast_buff);
-
-      /* 创建 Dyndata */
-      Dyndata ast_dyd;
-      memset(&ast_dyd, 0, sizeof(ast_dyd));
-
-      /* 暂停 GC */
-      int old_gc = lua_gc(L, LUA_GCISRUNNING, 0);
-      lua_gc(L, LUA_GCSTOP, 0);
-
-      /* AST 解析 + 代码生成 */
-      AstChunk *chunk = luaY_parse_ast(L, &ast_z, &ast_buff, &ast_dyd, "astparser",
-        firstchar);
-      chunk->main_func->is_vararg = 1;
-      Proto *p = luaY_codegen_chunk(L, chunk, &ast_dyd);
-
-      /* 恢复 GC */
-      if (old_gc) lua_gc(L, LUA_GCRESTART, 0);
-
-      /* 创建 AST_EXPR_ASTPARSER 节点 */
-      e = ast_new_expr_astparser(ps->pool, p, chunk, line);
-
-      /* 释放源码缓冲区 */
-      luaZ_freebuffer(L, &ast_buff);
-      luaM_free(L, buf);
-
-      /* 推进 lexer 到下一个 token（astparser 块已处理完毕） */
-      luaX_next(ls);
-
+      /* 非 string-mode：把 astparser 当作普通标识符 "astparser"，后续由 parse_suffixedexpr
+       * 处理函数调用 / 成员访问等后缀。不再使用 char-mode：因为 lookahead 机制已经从 ZIO
+       * 读取了 token（比如 la1 与 la2 保存在 lookahead buffer 中），直接操作 ls->z 会
+       * 与 token 位置不一致，导致找不到 '(' 或把后续源码读错位（语法错误 / UB）。 */
+      {
+        TString *name = luaS_newliteral(L, "astparser");
+        lp_next(ps);  /* skip TK_ASTPARSER token */
+        e = ast_new_expr_ident(ps->pool, name, line);
+      }
       break;
     }
     default: {
@@ -2146,7 +2028,8 @@ static AstExpr *parse_primary(ParserState *ps) {
       break;
     }
   }
-  return parse_suffixedexpr(ps, e);
+  AstExpr *r = parse_suffixedexpr(ps, e);
+  return r;
 }
 
 
@@ -2346,6 +2229,12 @@ static AstExpr *parse_suffixedexpr(ParserState *ps, AstExpr *v) {
           || v->kind == AST_EXPR_CALL) {
         break;
       }
+      /* as 安全类型转换运算符：不在 suffixedexpr 中处理，
+       * 交给 parse_subexpr 作为二元运算符处理 */
+      if (strcmp(getstr(ls->t.seminfo.ts), "as") == 0) {
+        fprintf(stderr, "[DBG] parse_suffixedexpr: breaking on 'as', token=%s\n", getstr(ls->t.seminfo.ts));
+        break;
+      }
       /* 中缀函数调用：receiver method arg
        * 条件：同一行、lookahead 是表达式起始
        * 注意：luaX_lookahead 会缓存 token，但在 suffixedexpr 中，
@@ -2398,7 +2287,10 @@ static AstExpr *parse_simpleexpr(ParserState *ps) {
       return ast_new_expr_unop(ps->pool, (AstUnOp)uop, operand, line);
     }
   }
-  return parse_primary(ps);
+  {
+    AstExpr *r = parse_primary(ps);
+    return r;
+  }
 }
 
 
@@ -2414,6 +2306,15 @@ static AstExpr *parse_subexpr(ParserState *ps, int min_prec) {
 
   for (;;) {
     int op = get_binop(ls->t.token);
+
+    /* 检测 as 安全类型转换运算符（软关键字，TK_NAME 且值为 "as"） */
+    if (op == -1 && ls->t.token == TK_NAME &&
+        strcmp(getstr(ls->t.seminfo.ts), "as") == 0 &&
+        lp_lookahead(ps) == TK_NAME) {
+      op = AST_BIN_AS;
+      fprintf(stderr, "[DBG] parse_subexpr: detected 'as' binary operator, la=%d\n", lp_lookahead(ps));
+    }
+
     if (op == -1) {
       break;
     }
@@ -2467,7 +2368,8 @@ static AstExpr *parse_subexpr(ParserState *ps, int min_prec) {
  * @return 表达式节点
  */
 static AstExpr *parse_expr(ParserState *ps) {
-  return parse_subexpr(ps, 0);
+  AstExpr *r = parse_subexpr(ps, 0);
+  return r;
 }
 
 
@@ -4861,7 +4763,7 @@ static AstStmt *parse_enum_stat(ParserState *ps) {
 /**
  * @brief 解析 class 语句: class Name [extends Parent] [implements I1, I2] [use T1, T2] { ... } / do ... end
  * @param ps 解析器状态
- * @param class_flags 类修饰符标志（CLASS_FLAG_ABSTRACT/FINAL/SEALED，0表示无修饰符）
+ * @param class_flags 类修饰符标志（CLASS_FLAG_ABSTRACT/FINAL/SEALED/SINGLETON，0表示无修饰符）
  * @return 语句节点
  */
 static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
@@ -4871,14 +4773,63 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
 
   TString *name = lp_checkname(ps);
 
-  /* 捕获父类名：支持 extends 关键字和 : 语法 */
-  TString *extends_name = NULL;
+  /* 解析泛型参数 <T, U, ...> */
+  TString **generic_params = NULL;
+  int ngeneric = 0;
+  if (lp_testnext(ps, '<')) {
+    int gcap = 4;
+    generic_params = cast(TString **,
+      ast_pool_alloc(ps->pool, gcap * sizeof(TString *)));
+    do {
+      if (ngeneric >= gcap) {
+        int new_cap = gcap * 2;
+        TString **new_arr = cast(TString **,
+          ast_pool_alloc(ps->pool, new_cap * sizeof(TString *)));
+        memcpy(new_arr, generic_params, ngeneric * sizeof(TString *));
+        generic_params = new_arr;
+        gcap = new_cap;
+      }
+      generic_params[ngeneric++] = lp_checkname(ps);
+    } while (lp_testnext(ps, ','));
+    lp_checknext(ps, '>');
+  }
+
+  /* 捕获父类名：支持 extends 关键字和 : 语法，支持逗号分隔的多父类 */
+  TString **extends_names = NULL;
+  int nextends = 0;
   if (lp_testnext(ps, ':')) {
-    /* class Name : ParentName 语法 */
-    extends_name = lp_checkname(ps);
+    /* class Name : ParentName 语法（单父类兼容） */
+    int cap = 0;
+    do {
+      if (nextends >= cap) {
+        int new_cap = (cap == 0) ? 4 : cap * 2;
+        TString **new_arr = cast(TString **,
+          ast_pool_alloc(ps->pool, new_cap * sizeof(TString *)));
+        if (extends_names) {
+          memcpy(new_arr, extends_names, nextends * sizeof(TString *));
+        }
+        extends_names = new_arr;
+        cap = new_cap;
+      }
+      extends_names[nextends++] = lp_checkname(ps);
+    } while (lp_testnext(ps, ','));
   } else if (lp_softkw_is(ps, "extends")) {
     lp_next(ps); /* skip 'extends' */
-    extends_name = lp_checkname(ps);
+    /* 支持逗号分隔的多个父类 */
+    int cap = 0;
+    do {
+      if (nextends >= cap) {
+        int new_cap = (cap == 0) ? 4 : cap * 2;
+        TString **new_arr = cast(TString **,
+          ast_pool_alloc(ps->pool, new_cap * sizeof(TString *)));
+        if (extends_names) {
+          memcpy(new_arr, extends_names, nextends * sizeof(TString *));
+        }
+        extends_names = new_arr;
+        cap = new_cap;
+      }
+      extends_names[nextends++] = lp_checkname(ps);
+    } while (lp_testnext(ps, ','));
   }
 
   /* 捕获 implements 接口名列表 */
@@ -5053,6 +5004,22 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
         }
         nmembers++;
       } else if (ls->t.token == TK_NAME) {
+        /* 检查是否是嵌套类定义 */
+        if (strcmp(getstr(ls->t.seminfo.ts), "class") == 0 || lp_softkw_is(ps, "class")) {
+          /* 嵌套类：递归解析 */
+          AstStmt *nested = parse_class_stat(ps, 0);
+          if (nested != NULL && nested->kind == AST_STMT_CLASS) {
+            AstClassMember *m = &members[nmembers];
+            m->kind = AST_MEMBER_NESTED_CLASS;
+            m->access = access;
+            m->is_static = 1;  /* 嵌套类始终是静态成员 */
+            m->name = nested->u.classstmt.name;
+            m->u.nested_class = nested;
+            m->line = member_line;
+            nmembers++;
+          }
+          continue;
+        }
         /* 属性定义: name = value */
         TString *prop_name = ls->t.seminfo.ts;
         lp_next(ps);
@@ -5094,7 +5061,8 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
   s->decorators = NULL;
   s->ndecorators = 0;
   s->u.classstmt.name = name;
-  s->u.classstmt.extends_name = extends_name;
+  s->u.classstmt.extends_names = extends_names;
+  s->u.classstmt.nextends = nextends;
   s->u.classstmt.implements = implements;
   s->u.classstmt.nimplements = nimplements;
   s->u.classstmt.use_traits = use_traits;
@@ -5103,6 +5071,8 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
   s->u.classstmt.body = body;
   s->u.classstmt.members = members;
   s->u.classstmt.nmembers = nmembers;
+  s->u.classstmt.generic_params = generic_params;
+  s->u.classstmt.ngeneric_params = ngeneric;
   return s;
 }
 
@@ -5160,6 +5130,28 @@ static AstStmt *parse_interface_stat(ParserState *ps) {
 
   TString *name = lp_checkname(ps);
 
+  /* 解析接口继承（软关键字 extends） */
+  /* 接口可以继承多个父接口，以逗号分隔 */
+  TString **extends_names = NULL;
+  int nextends = 0;
+  if (lp_softkw_is(ps, "extends")) {
+    lp_next(ps); /* skip 'extends' */
+    int cap = 0;
+    do {
+      if (nextends >= cap) {
+        int new_cap = (cap == 0) ? 4 : cap * 2;
+        TString **new_arr = cast(TString **,
+          ast_pool_alloc(ps->pool, new_cap * sizeof(TString *)));
+        if (extends_names) {
+          memcpy(new_arr, extends_names, nextends * sizeof(TString *));
+        }
+        extends_names = new_arr;
+        cap = new_cap;
+      }
+      extends_names[nextends++] = lp_checkname(ps);
+    } while (lp_testnext(ps, ','));
+  }
+
   /* 解析接口体：接受 {, do 或 begin 作为块开始符 */
   AstBlock body = {NULL, 0, 0};
   block_init(ps, &body);
@@ -5185,7 +5177,10 @@ static AstStmt *parse_interface_stat(ParserState *ps) {
     ps->curfunc = oldfunc;
   }
 
-  return ast_new_stmt_typed(ps->pool, AST_STMT_INTERFACE, name, &body, line);
+  AstStmt *s = ast_new_stmt_typed(ps->pool, AST_STMT_INTERFACE, name, &body, line);
+  s->u.nsstruct.extends_names = extends_names;
+  s->u.nsstruct.nextends = nextends;
+  return s;
 }
 
 
@@ -6655,14 +6650,15 @@ static AstStmt *parse_stat(ParserState *ps) {
         }
         return s;
       }
-      /* export 软关键字: class, interface, trait, abstract, final, sealed */
+      /* export 软关键字: class, interface, trait, abstract, final, sealed, singleton */
       if (ls->t.token == TK_NAME) {
         int skw = lp_softkw_is(ps, "class") ? 1 :
                   lp_softkw_is(ps, "interface") ? 2 :
                   lp_softkw_is(ps, "trait") ? 3 :
                   lp_softkw_is(ps, "abstract") ? 4 :
                   lp_softkw_is(ps, "final") ? 5 :
-                  lp_softkw_is(ps, "sealed") ? 6 : 0;
+                  lp_softkw_is(ps, "sealed") ? 6 :
+                  lp_softkw_is(ps, "singleton") ? 7 : 0;
         if (skw == 1) {
           /* export class */
           s = parse_class_stat(ps, 0);
@@ -6706,6 +6702,16 @@ static AstStmt *parse_stat(ParserState *ps) {
             return NULL;
           }
           s = parse_class_stat(ps, CLASS_FLAG_SEALED);
+          if (s && s->kind == AST_STMT_CLASS) ast_block_add_export(ps->pool, &ps->curfunc->body, s->u.classstmt.name);
+          return s;
+        } else if (skw == 7) {
+          /* export singleton class */
+          lp_next(ps); /* skip 'singleton' */
+          if (!lp_softkw_is(ps, "class")) {
+            lp_error(ps, "'singleton' export must be followed by 'class'");
+            return NULL;
+          }
+          s = parse_class_stat(ps, CLASS_FLAG_SINGLETON);
           if (s && s->kind == AST_STMT_CLASS) ast_block_add_export(ps->pool, &ps->curfunc->body, s->u.classstmt.name);
           return s;
         }
@@ -6876,19 +6882,39 @@ static AstStmt *parse_stat(ParserState *ps) {
         if (cmd_stmt) return cmd_stmt;
       }
 
-      /* 软关键字检查：class/trait/interface/match/abstract/final/sealed
-       * 这些关键字不是独立 token，而是 TK_NAME，需要在表达式解析前检查 */
+      /* 软关键字/上下文关键字检查：namespace/using/guard/with/class/trait/interface/match/abstract/final/sealed
+       * 这些关键字不是独立 token，可能只是 TK_NAME。在表达式解析前检查字符串内容。
+       * 先直接比对 token 字符串，再辅以软关键字系统判断，确保命中。 */
       if (ls->t.token == TK_NAME) {
-        if (lp_softkw_is(ps, "class")) {
-          return parse_class_stat(ps, 0);
+        TString *nm = ls->t.seminfo.ts;
+        const char *s = nm ? getstr(nm) : "";
+        if (strcmp(s, "namespace") == 0 || lp_softkw_is(ps, "namespace")) {
+          return parse_namespace_stat(ps);
         }
-        if (lp_softkw_is(ps, "trait")) {
+        if (strcmp(s, "using") == 0 || lp_softkw_is(ps, "using")) {
+          return parse_using_stat(ps);
+        }
+        if (strcmp(s, "guard") == 0 || lp_softkw_is(ps, "guard")) {
+          return parse_guard_stat(ps);
+        }
+        if (strcmp(s, "with") == 0 || lp_softkw_is(ps, "with")) {
+          return parse_with_stat(ps);
+        }
+        if (strcmp(s, "class") == 0 || lp_softkw_is(ps, "class")) {
+          /* 检查前瞻 token：class 后必须跟类名（TK_NAME），否则是变量名 */
+          int la = lp_lookahead(ps);
+          if (is_nametoken(la)) {
+            return parse_class_stat(ps, 0);
+          }
+          /* class 后跟操作符（=、+ 等），是赋值/表达式语句，不是类声明 */
+        }
+        if (strcmp(s, "trait") == 0 || lp_softkw_is(ps, "trait")) {
           return parse_trait_stat(ps);
         }
-        if (lp_softkw_is(ps, "interface")) {
+        if (strcmp(s, "interface") == 0 || lp_softkw_is(ps, "interface")) {
           return parse_interface_stat(ps);
         }
-        if (lp_softkw_is(ps, "match")) {
+        if (strcmp(s, "match") == 0 || lp_softkw_is(ps, "match")) {
           return parse_match_stat(ps);
         }
         /* abstract/final/sealed 是 class 的修饰符 */
@@ -6915,6 +6941,14 @@ static AstStmt *parse_stat(ParserState *ps) {
           }
           /* sealed 后必须跟 class */
           lp_error(ps, "'sealed' must be followed by 'class'");
+        }
+        if (lp_softkw_is(ps, "singleton")) {
+          lp_next(ps); /* skip 'singleton' */
+          if (lp_softkw_is(ps, "class")) {
+            return parse_class_stat(ps, CLASS_FLAG_SINGLETON);
+          }
+          /* singleton 后必须跟 class */
+          lp_error(ps, "'singleton' must be followed by 'class'");
         }
         /* trait require 声明: require function name(args) - 无函数体 */
         if (lp_softkw_is(ps, "require")) {
@@ -7057,7 +7091,16 @@ static AstStmt *parse_stat(ParserState *ps) {
           return s;
         }
 
-        /* 普通表达式语句（函数调用） */
+        /* 普通表达式语句（函数调用）
+         * 特殊：如果表达式是 AST_EXPR_ASTPARSER（astparser("src") 的直接结果，
+         * 即未被后续 suffixedexpr 包装成 call 的裸闭包），则自动用 0 参数调用它。
+         * 语义：语句级 astparser("src") = 立即执行；而表达式级 local f=astparser("src")
+         *       = 返回可调用闭包（parse_suffixedexpr 未追加 call 时不包装）。
+         * 如果用户显式写 astparser("src")(args) 则 parse_suffixedexpr 已包成
+         * AST_EXPR_CALL，此处 kind != AST_EXPR_ASTPARSER，不会重复包。 */
+        if (e->kind == AST_EXPR_ASTPARSER) {
+          e = ast_new_expr_call(ps->pool, e, NULL, 0, stmt_line);
+        }
         s = ast_new_stmt_expr(ps->pool, e, stmt_line);
         return s;
       }

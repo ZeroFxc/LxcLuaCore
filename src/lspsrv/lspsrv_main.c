@@ -52,11 +52,30 @@ static void setup_signal_handlers(void) {
 }
 
 /*
- * @brief 将错误信息写入stderr（不干扰LSP通信）
+ * @brief 将错误信息写入stderr（不干扰LSP通信）；
+ *        @since 3.17：trace_level == OFF 时，除 ERROR/FATAL/Server starting 启动停止类关键日志外，普通信息日志静默。
+ * @param level 0=VERBOSE, 1=MESSAGE, 2=ERROR (>=messages 级别下 verbose 会过滤 verbose: 0 verbose messages: 1 off 2 off
  * @param fmt 格式化字符串
  * @param ... 可变参数
  */
-static void log_to_stderr(const char *fmt, ...) {
+#define LOG_LEVEL_VERBOSE 0
+#define LOG_LEVEL_MESSAGE 1
+#define LOG_LEVEL_ERROR   2
+static void log_to_stderr_ex(int level, const char *fmt, ...) {
+    LspServer *srv = (LspServer *)g_server;
+    int tl = srv ? lsp_get_trace_level(srv) : LSP_TRACE_MESSAGES;
+    /* 映射：LSP_TRACE_OFF(0)=仅ERROR+生命周期事件；MESSAGES(1)=MESSAGE+ERROR；VERBOSE(2)=全部 */
+    int allow = 0;
+    if (level == LOG_LEVEL_ERROR) allow = 1;
+    else if (tl >= LSP_TRACE_VERBOSE) allow = 1;
+    else if (tl == LSP_TRACE_MESSAGES && level == LOG_LEVEL_MESSAGE) allow = 1;
+    /* 生命周期 & ERROR 关键日志：off 也允许 */
+    if (!allow && fmt && (strstr(fmt, "Server starting") || strstr(fmt, "Server stopped") ||
+                          strstr(fmt, "Exit requested") || strstr(fmt, "Client disconnected") ||
+                          strstr(fmt, "ERROR:"))) {
+        allow = 1;
+    }
+    if (!allow) return;
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -64,6 +83,9 @@ static void log_to_stderr(const char *fmt, ...) {
     fflush(stderr);
     va_end(ap);
 }
+#define log_to_stderr(...) log_to_stderr_ex(LOG_LEVEL_MESSAGE, __VA_ARGS__)
+#define log_to_stderr_verbose(...) log_to_stderr_ex(LOG_LEVEL_VERBOSE, __VA_ARGS__)
+#define log_to_stderr_error(...) log_to_stderr_ex(LOG_LEVEL_ERROR, __VA_ARGS__)
 
 #ifdef _WIN32
 /*
@@ -267,9 +289,24 @@ static int main_loop(void) {
             free(response);
         }
         free(data);
+
+        /* Drain any pending server-initiated notifications queued by
+         * lsp_handle_message (e.g. publishDiagnostics, $/progress,
+         * window/logMessage, window/showMessage, workspace/applyEdit, ...). */
+        {
+            LspServer *srv = (LspServer *)g_server;
+            char **notifs = NULL;
+            int n = lsp_drain_pending_notifications(srv, &notifs, 0);
+            for (int i = 0; i < n; i++) {
+                log_to_stderr("[LXCLUA-LSP] Sending notification %d/%d (%d bytes)", i + 1, n, (int)strlen(notifs[i]));
+                write_lsp_message(notifs[i]);
+                free(notifs[i]);
+            }
+            if (notifs) free(notifs);
+        }
+        LspServer *srv = (LspServer *)g_server;
         
         /* Check if exit was requested */
-        LspServer *srv = (LspServer *)g_server;
         if (srv->exit_requested) {
             log_to_stderr("[LXCLUA-LSP] Exit requested by client");
             break;

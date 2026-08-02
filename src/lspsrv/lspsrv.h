@@ -76,6 +76,29 @@
 #define LSP_METHOD_WINDOW_LOG          "window/logMessage"
 #define LSP_METHOD_WINDOW_SHOW_MSG     "window/showMessage"
 #define LSP_METHOD_CANCEL_REQUEST      "$/cancelRequest"
+/* LSP 3.17 additional methods */
+#define LSP_METHOD_WS_DIAGNOSTIC       "workspace/diagnostic"
+#define LSP_METHOD_WS_SYMBOL_RESOLVE   "workspaceSymbol/resolve"
+#define LSP_METHOD_REGISTER_CAP        "client/registerCapability"
+#define LSP_METHOD_UNREGISTER_CAP      "client/unregisterCapability"
+#define LSP_METHOD_SET_TRACE           "$/setTrace"
+#define LSP_METHOD_LOG_TRACE           "$/logTrace"
+#define LSP_METHOD_WS_CONFIGURATION    "workspace/configuration"
+#define LSP_METHOD_SHOW_DOCUMENT       "window/showDocument"
+#define LSP_METHOD_WS_FOLDERS          "workspace/workspaceFolders"
+#define LSP_METHOD_DOC_COLOR           "textDocument/documentColor"
+#define LSP_METHOD_CODE_ACTION_RESOLVE "codeAction/resolve"
+#define LSP_METHOD_APPLY_EDIT          "workspace/applyEdit"
+/* ---- LSP 3.17 新增方法 ---- */
+#define LSP_METHOD_INLINE_VALUE        "textDocument/inlineValue"
+/* ---- 刷新通知（Server -> Client 请求） @since 3.17 ---- */
+#define LSP_METHOD_CODE_LENS_REFRESH   "workspace/codeLens/refresh"
+#define LSP_METHOD_INLAY_HINT_REFRESH  "workspace/inlayHint/refresh"
+#define LSP_METHOD_INLINE_VALUE_REFRESH "workspace/inlineValue/refresh"
+#define LSP_METHOD_SEMANTIC_TOKENS_REFRESH "workspace/semanticTokens/refresh"
+#define LSP_METHOD_DIAGNOSTIC_REFRESH  "workspace/diagnostic/refresh"
+/* ---- Telemetry / Trace ---- */
+#define LSP_METHOD_TELEMETRY_EVENT     "telemetry/event"
 
 /* LSP CompletionItemKind */
 enum {
@@ -158,6 +181,44 @@ enum {
     MSG_TYPE_LOG     = 4,
 };
 
+/* LSP DiagnosticTag */
+enum {
+    DIAG_TAG_UNNECESSARY = 1,
+    DIAG_TAG_DEPRECATED  = 2,
+};
+
+/* LSP CodeActionKind */
+#define CODE_ACTION_KIND_QUICKFIX             "quickfix"
+#define CODE_ACTION_KIND_REFACTOR             "refactor"
+#define CODE_ACTION_KIND_REFACTOR_EXTRACT     "refactor.extract"
+#define CODE_ACTION_KIND_REFACTOR_INLINE      "refactor.inline"
+#define CODE_ACTION_KIND_REFACTOR_REWRITE     "refactor.rewrite"
+#define CODE_ACTION_KIND_SOURCE               "source"
+#define CODE_ACTION_KIND_SOURCE_ORGANIZE_IMPORTS "source.organizeImports"
+#define CODE_ACTION_KIND_SOURCE_FIX_ALL       "source.fixAll"
+
+enum {
+    CODE_ACTION_KIND_ID_QUICKFIX = 1,
+    CODE_ACTION_KIND_ID_REFACTOR,
+    CODE_ACTION_KIND_ID_REFACTOR_EXTRACT,
+    CODE_ACTION_KIND_ID_REFACTOR_INLINE,
+    CODE_ACTION_KIND_ID_REFACTOR_REWRITE,
+    CODE_ACTION_KIND_ID_SOURCE,
+    CODE_ACTION_KIND_ID_SOURCE_ORGANIZE_IMPORTS,
+    CODE_ACTION_KIND_ID_SOURCE_FIX_ALL,
+};
+
+/* LSP FoldingRangeKind */
+#define FOLDING_RANGE_KIND_COMMENT  "comment"
+#define FOLDING_RANGE_KIND_IMPORTS  "imports"
+#define FOLDING_RANGE_KIND_REGION   "region"
+
+enum {
+    FOLDING_RANGE_KIND_ID_COMMENT = 1,
+    FOLDING_RANGE_KIND_ID_IMPORTS,
+    FOLDING_RANGE_KIND_ID_REGION,
+};
+
 /*
 ** ---- JSON-RPC 2.0 Data Structures ----
 */
@@ -221,9 +282,25 @@ enum {
     JRPC_INVALID_PARAMS  = -32602,
     JRPC_INTERNAL_ERROR  = -32603,
     JRPC_SERVER_NOT_INIT = -32002,
-    JRPC_REQUEST_CANCELLED= -32800,
+    JRPC_UNKNOWN_ERROR   = -32001,
+    JRPC_REQUEST_FAILED  = -32803,
+    JRPC_SERVER_CANCELLED= -32802,
     JRPC_CONTENT_MODIFIED = -32801,
+    JRPC_REQUEST_CANCELLED= -32800,
 };
+
+/* LSP ErrorCodes named macros */
+#define LSP_ERR_ParseError           -32700
+#define LSP_ERR_InvalidRequest       -32600
+#define LSP_ERR_MethodNotFound       -32601
+#define LSP_ERR_InvalidParams        -32602
+#define LSP_ERR_InternalError        -32603
+#define LSP_ERR_ServerNotInitialized -32002
+#define LSP_ERR_UnknownErrorCode     -32001
+#define LSP_ERR_RequestFailed        -32803
+#define LSP_ERR_ServerCancelled      -32802
+#define LSP_ERR_ContentModified      -32801
+#define LSP_ERR_RequestCancelled     -32800
 
 /*
 ** ---- LXCLUA Lexer Tokens (matches compiler/llex.h) ----
@@ -458,6 +535,7 @@ typedef struct LspServer {
     int initialized;
     int shutdown;
     int exit_requested;
+    int exit_code;
     /* Document store */
     LspDocument *docs[MAX_DOCUMENTS];
     int ndocs;
@@ -493,6 +571,32 @@ typedef struct LspServer {
         int moniker;
         int on_type_formatting;
         int range_formatting;
+        int inline_value;  /**< @since 3.17 textDocument/inlineValue */
+        /* LSP 3.17 resolve support */
+        int code_action_resolve;
+        int completion_resolve;
+        int code_lens_resolve;
+        int document_link_resolve;
+        int inlay_hint_resolve;
+        /* Workspace nested capabilities */
+        struct {
+            int workspace_folders;
+            int did_change_configuration;
+            int did_change_watched_files;
+            int file_operations;
+            struct {
+                int enabled;
+                char **commands;
+                int ncommands;
+            } execute_command;
+        } workspace;
+        /* Window nested capabilities */
+        struct {
+            int work_done_progress;
+            int show_message;
+            int show_message_request;
+            int show_document;
+        } window;
     } capabilities;
     /* Client capabilities (received from client) */
     struct {
@@ -504,13 +608,72 @@ typedef struct LspServer {
         int supports_resolve;
         int supports_insert_replace;
         int supports_label_details;
+        struct {
+            int apply_edit;
+        } workspace;
     } client_caps;
     /* Pending request tracking */
     int next_request_id;
     /* Semantic tokens delta state */
     int prev_semantic_version;   /**< 上一次语义标记请求时的文档版本 */
     char *prev_semantic_result_id; /**< 上一次语义标记请求的 resultId */
+    /* ---- LSP 3.17 extended state (appended for ABI safety) ---- */
+    /* Cancelled request tracking */
+    #define LSP_MAX_CANCEL_IDS 64
+    int cancel_count;
+    int cancel_ids[LSP_MAX_CANCEL_IDS];
+    int cancel_id_max;
+    /* Progress tracking */
+    #define LSP_MAX_PROGRESS_IDS 64
+    int progress_count;
+    int progress_ids[LSP_MAX_PROGRESS_IDS];
+    char *progress_values[LSP_MAX_PROGRESS_IDS];
+    /* Current semantic result id string */
+    char *semantic_result_id;
+    /* Raw client capabilities JSON for later inspection */
+    char *client_capabilities_json;
+    /* Workspace folders array */
+    #define LSP_MAX_WORKSPACE_FOLDERS 64
+    struct {
+        char *uri;
+        char *name;
+    } workspaceFolders[LSP_MAX_WORKSPACE_FOLDERS];
+    int n_workspace_folders;
+    /* Diagnostic (Pull) resultId cache per document */
+    #define LSP_MAX_DIAG_RESULT_IDS 64
+    int n_diag_result_ids;
+    char *diag_result_uris[LSP_MAX_DIAG_RESULT_IDS];
+    char *diag_result_ids[LSP_MAX_DIAG_RESULT_IDS];
+    /* Semantic tokens: last resultId (for delta) and sequence counter */
+    char *last_semantic_result_id;
+    int semantic_token_seq;
+    /* ---- Outbound notification queue (for publishDiagnostics, $/progress,
+     *      window/logMessage, window/showMessage, workspace/applyEdit, ...).
+     *      Main-loop (lspsrv_main.c) drains after each lsp_handle_message()
+     *      by inspecting srv->pending_notifications[] / n_pending_notifications
+     *      and sending each serialized frame via write_lsp_message().   ---- */
+    #define LSP_MAX_PENDING_NOTIFICATIONS 32
+    char *pending_notifications[LSP_MAX_PENDING_NOTIFICATIONS];
+    int n_pending_notifications;
+    /* Trace level 控制 ('off' | 'messages' | 'verbose') @since 3.17 */
+    #define LSP_TRACE_OFF      0
+    #define LSP_TRACE_MESSAGES 1
+    #define LSP_TRACE_VERBOSE  2
+    int trace_level;
+    /* 下一 server->client 请求 id（用于 workspace/xxx/refresh 等） @since 3.17 */
+    int next_server_request_id;
+    /* ContentModified(-32801) 检测：请求处理前记录 uri/version，didChange 时 bump
+     * 文档版本，处理完毕比较，若版本已被改动则返回 ContentModified。
+     * 目前仅记录最近 1 个请求（足够覆盖大多数同步模型：每请求串行处理）。 */
+    char *cm_uri;      /**< 当前处理中请求的文档 uri（若涉及文档） */
+    int cm_version;    /**< 该请求处理起始时的文档版本（-1 表示无文档） */
 } LspServer;
+
+/* ---- 入站消息后服务器需要主循环额外推送的通知：
+ *      lspsrv_main.c 调用 lsp_drain_pending_notifications() 并把返回的每条
+ *      JSON-RPC 帧写到 stdout。调用者负责对返回的每个字符串调用 lsp_free()。
+ *      返回值为实际弹出的通知数量；最多 pop_max 条。 */
+int lsp_drain_pending_notifications(LspServer *srv, char ***out_notifs, int pop_max);
 
 /*
 ** ---- Function Declarations ----
@@ -552,6 +715,28 @@ void *lsp_init(void);  /* returns LspServer* */
 int lsp_handle_message(void *server, const char *data, int len, char **response);
 void lsp_shutdown(void *server);
 void lsp_srv_free(void *server);
+int lsp_is_cancelled(LspServer *srv, JsonValue *id);
+/* ---- @since 3.17 辅助函数 ---- */
+/**
+ * @brief 触发一次 workspace/xxx/refresh（server 发起请求到 client，请求其重新拉取对应数据）。
+ *        若 client 声明了支持（需客户端 capabilities 支持），把请求帧加入 pending 队列。
+ * @param srv   LSP 服务器
+ * @param method 刷新方法，如 LSP_METHOD_CODE_LENS_REFRESH 等
+ * @return 0 已入队，-1 失败（队列满/参数错）
+ */
+int lsp_request_refresh(LspServer *srv, const char *method);
+/**
+ * @brief 发送 telemetry/event 通知（server->client 任意遥测数据）。
+ * @param srv    LSP 服务器
+ * @param data   已经 stringify 的 JSON LSPAny 数据（调用者保证正确 JSON）
+ */
+int lsp_send_telemetry(LspServer *srv, const char *data_json);
+
+/**
+ * @brief 查询当前 trace_level（供主循环控制日志量；>=LSP_TRACE_MESSAGES 才输出普通调试日志）。
+ * @since 3.17
+ */
+static inline int lsp_get_trace_level(LspServer *srv) { return srv ? srv->trace_level : LSP_TRACE_OFF; }
 
 /* ---- lspsrv_doc.c ---- */
 int lsp_doc_open(void *server, const char *uri, const char *text, int version);
@@ -635,9 +820,43 @@ int lsp_selection_range(LspDocument *doc, int npositions, int *lines, int *cols,
 int lsp_linked_editing_range(LspDocument *doc, int line, int col, int **out_lines, int **out_cols, int *count);
 
 /* ---- Diagnostic push ---- */
+JsonValue *lsp_build_diagnostics_arr(LspDiagnostic *diags, int ndiags);
 void lsp_publish_diagnostics(void *server, const char *uri);
 void lsp_send_log(void *server, int type, const char *fmt, ...);
 void lsp_show_message(void *server, int type, const char *message);
+
+/* ---- Window notifications (construct JSON only, no network send) ---- */
+char *lsp_send_log_message(LspServer *srv, int type, const char *msg);
+char *lsp_send_show_message(LspServer *srv, int type, const char *msg);
+
+/**
+ * @brief Server -> Client: 发起 window/workDoneProgress/create 请求（带 id）
+ *        入队到 pending_notifications，由主循环 drain 时发送。
+ *        服务端使用 progress_count/progress_ids 表自增 token；
+ *        创建成功后调用者可使用 lsp_progress_report() 用同一 token 发送 $/progress。
+ * @param srv          LSP 服务器
+ * @param out_token    可选输出：返回分配的字符串 token（`lsp_free` 释放），无需可传 NULL
+ * @param title        可选标题，NULL 时用空串
+ * @param cancellable  是否可取消（客户端显示取消按钮）
+ * @param message      可选初始进度消息，NULL 时不显示
+ * @param percentage   可选 0-100 初始百分比，<0 时不显示
+ * @return 0 入队成功，-1 参数错误/队列满
+ * @since 3.15 (LSP 3.17 保留，兼容 Work Done Progress 流程)
+ */
+int lsp_work_done_progress_create(LspServer *srv, char **out_token, const char *title,
+                                  int cancellable, const char *message, int percentage);
+
+/**
+ * @brief 向已创建的 workDoneProgress token 发送 $/progress report 通知（begin/report/end 三种）。
+ * @param srv   LSP 服务器
+ * @param token 与 lsp_work_done_progress_create 返回一致的字符串 token
+ * @param kind  "begin"|"report"|"end"
+ * @param message  可选消息（report/end 时显示）
+ * @param percentage 可选百分比（report 时，<0 不填）
+ * @return 0 入队成功，-1 失败
+ */
+int lsp_progress_report(LspServer *srv, const char *token, const char *kind,
+                        const char *message, int percentage);
 
 /* ---- lspsrv_util.c ---- */
 char *lsp_strdup(const char *s);

@@ -8,6 +8,7 @@
 
 #include "lprefix.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "lua.h"
@@ -172,16 +173,113 @@ static void copytable(lua_State *L, int src_idx, int dst_idx) {
 ** 返回值：
 **   1 - 返回新创建的对象
 */
+
+/* 前向声明 */
+static int luaC_specialize(lua_State *L, int class_idx, int type_args_idx);
+static int luaC_clone_wrap(lua_State *L);
+
 static int class_call(lua_State *L) {
   int nargs = lua_gettop(L) - 1;  /* 排除类本身 */
-  
+
   /* 检查第一个参数是否是类 */
   if (!luaC_isclass(L, 1)) {
     luaL_error(L, "attempt to call a non-class value");
     return 0;
   }
-  
+
+  /* 检查是否是 singleton 类，如果有缓存实例则直接返回 */
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_rawget(L, 1);
+  if (lua_isinteger(L, -1)) {
+    int flags = (int)lua_tointeger(L, -1);
+    if (flags & CLASS_FLAG_SINGLETON) {
+      lua_pop(L, 1);  /* 弹出 flags */
+      /* 检查是否有缓存的单例实例 */
+      lua_pushstring(L, CLASS_KEY_SINGLETON_INST);
+      lua_rawget(L, 1);
+      if (!lua_isnil(L, -1)) {
+        /* 已有缓存实例，直接返回 */
+        return 1;
+      }
+      lua_pop(L, 1);  /* 弹出 nil */
+      /* 创建新实例 */
+      luaC_newobject(L, 1, nargs);
+      /* 缓存实例 */
+      lua_pushstring(L, CLASS_KEY_SINGLETON_INST);
+      lua_pushvalue(L, -2);  /* 复制实例 */
+      lua_rawset(L, 1);
+      return 1;
+    }
+  }
+  lua_pop(L, 1);  /* 弹出 flags */
+
+  /* 检查是否是泛型特化调用：ClassName(Type) */
+  /* 如果参数是类/表，且当前类有类型参数，则进行特化 */
+  if (nargs == 1) {
+    lua_pushstring(L, CLASS_KEY_TYPEPARAMS);
+    lua_rawget(L, 1);
+    if (lua_istable(L, -1)) {
+      lua_pop(L, 1);  /* 弹出 __typeparams */
+      /* 检查参数是否是类或表（类型参数） */
+      if (luaC_isclass(L, 2) || lua_istable(L, 2)) {
+        /* 创建类型参数列表 */
+        lua_newtable(L);
+        lua_pushvalue(L, 2);  /* 复制类型参数 */
+        lua_rawseti(L, -2, 1);
+        luaC_specialize(L, 1, lua_gettop(L));
+        /* 返回特化类 */
+        return 1;
+      }
+    } else {
+      lua_pop(L, 1);  /* 弹出非表的 __typeparams */
+    }
+  }
+
   /* 创建新对象实例 */
+  luaC_newobject(L, 1, nargs);
+  return 1;
+}
+
+/*
+ * 默认构造函数（当用户未自定义 static function new 时由 class_index 兜底返回的 new 函数）
+ * 语义与 class_call 完全一致：直接调用类的 __call 即 luaC_newobject（使用 upvalue 中的类）。
+ * 用法：ClassName.new(...) 等价于 ClassName(...)。
+ * 参数：
+ *   L - Lua 状态机；upvalue 1 = 类表
+ *   栈: [1..n] = 构造参数
+ * 返回：1 = 新创建的对象
+ */
+static int class_default_new(lua_State *L) {
+  int nargs = lua_gettop(L);
+  /* 把 upvalue 的类（upvalueindex(1) 压到栈底，参数整体右移，然后交给 luaC_newobject */
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  if (!luaC_isclass(L, 1)) {
+    luaL_error(L, "default new: corrupted class upvalue");
+    return 0;
+  }
+  /* 检查是否是 singleton 类，如果有缓存实例则直接返回 */
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_rawget(L, 1);
+  if (lua_isinteger(L, -1)) {
+    int flags = (int)lua_tointeger(L, -1);
+    if (flags & CLASS_FLAG_SINGLETON) {
+      lua_pop(L, 1);  /* 弹出 flags */
+      lua_pushstring(L, CLASS_KEY_SINGLETON_INST);
+      lua_rawget(L, 1);
+      if (!lua_isnil(L, -1)) {
+        return 1;
+      }
+      lua_pop(L, 1);  /* 弹出 nil */
+      luaC_newobject(L, 1, nargs);
+      /* 缓存实例 */
+      lua_pushstring(L, CLASS_KEY_SINGLETON_INST);
+      lua_pushvalue(L, -2);
+      lua_rawset(L, 1);
+      return 1;
+    }
+  }
+  lua_pop(L, 1);  /* 弹出 flags */
   luaC_newobject(L, 1, nargs);
   return 1;
 }
@@ -198,6 +296,27 @@ static const char* get_class_name_str(lua_State *L, int class_idx);
 */
 static int class_index(lua_State *L) {
   /* 栈: [1]=类表, [2]=键 */
+  
+  /* 对于 'new' 键，优先查找 STATICS（静态 new 方法），而非 METHODS（init 别名） */
+  {
+    const char *kstr = lua_tostring(L, 2);
+    if (kstr && strcmp(kstr, CLASS_KEY_NEW) == 0) {
+      /* 先查 STATICS.new */
+      lua_pushstring(L, CLASS_KEY_STATICS);
+      lua_rawget(L, 1);
+      if (lua_istable(L, -1)) {
+        lua_pushstring(L, CLASS_KEY_NEW);
+        lua_rawget(L, -2);
+        if (!lua_isnil(L, -1)) {
+          lua_remove(L, -2);  /* 移除 STATICS 表 */
+          return 1;  /* 返回静态 new 方法 */
+        }
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+      /* STATICS.new 不存在，继续查 METHODS.new */
+    }
+  }
   
   /* 首先在类自身的方法表中查找（使用rawget避免递归） */
   lua_pushstring(L, CLASS_KEY_METHODS);
@@ -224,16 +343,105 @@ static int class_index(lua_State *L) {
     lua_pop(L, 1);
   }
   lua_pop(L, 1);
-  
-  /* 最后在父类中查找 */
-  lua_pushstring(L, CLASS_KEY_PARENT);
+
+  /*
+   * 默认 new 构造函数兜底：用户访问 ClassName.new 但 METHODS/STATICS.new 都未定义时，
+   * 若 METHODS.__init__ 存在，则自动返回一个默认构造闭包（等价 ClassName(...) 语法）。
+   * class_newindex 和 luaC_setmethod 中已恢复 new<->__init__ 别名同步，
+   * 此兜底用于处理别名同步未覆盖的边界场景（如从外部路径设置 init）。
+   */
+  {
+    const char *kstr = lua_tostring(L, 2);
+    if (kstr && strcmp(kstr, "new") == 0) {
+      /* 先检查 METHODS.new 是否已存在（别名同步可能已设置），
+         如果已存在则直接返回，不生成兜底闭包 */
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_rawget(L, 1);
+      if (lua_istable(L, -1)) {
+        lua_pushliteral(L, "new");
+        lua_rawget(L, -2);
+        if (!lua_isnil(L, -1)) {
+          lua_remove(L, -2);  /* 移除 METHODS 表 */
+          return 1;
+        }
+        lua_pop(L, 1);  /* 弹出 nil */
+      }
+      lua_pop(L, 1);  /* 弹出 METHODS 表或非表值 */
+
+      /* 按 MRO 顺序检查 METHODS.init 或 METHODS.__init__ 是否存在 */
+      int has_init = 0;
+      lua_pushstring(L, CLASS_KEY_MRO);
+      lua_rawget(L, 1);
+      if (lua_istable(L, -1)) {
+        int mro_len = (int)luaL_len(L, -1);
+        for (int mi = 1; mi <= mro_len && !has_init; mi++) {
+          lua_rawgeti(L, -1, mi);  /* 获取 MRO 中的第 mi 个类 */
+          if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+          }
+          int mro_cls = lua_gettop(L);
+          lua_pushstring(L, CLASS_KEY_METHODS);
+          lua_rawget(L, mro_cls);
+          if (lua_istable(L, -1)) {
+            /* 优先查找 init */
+            lua_pushstring(L, CLASS_KEY_INIT);
+            lua_rawget(L, -2);
+            if (lua_isfunction(L, -1)) { has_init = 1; lua_pop(L, 3); break; }
+            lua_pop(L, 1);
+            /* 兼容旧键名 __init__ */
+            lua_pushstring(L, CLASS_KEY_INIT_LEGACY);
+            lua_rawget(L, -2);
+            if (lua_isfunction(L, -1)) { has_init = 1; lua_pop(L, 3); break; }
+            lua_pop(L, 1);
+          }
+          lua_pop(L, 2);  /* 弹出 METHODS 和 mro_cls */
+        }
+      }
+      lua_pop(L, 1);  /* 弹出 MRO 表 */
+
+      if (has_init) {
+        /* 生成默认 new 函数：return Class(...) */
+        lua_pushvalue(L, 1);  /* upvalue 1: class */
+        lua_pushcclosure(L, class_default_new, 1);
+        return 1;
+      }
+    }
+  }
+
+  /* 按 MRO 顺序在父类中查找 */
+  lua_pushstring(L, CLASS_KEY_MRO);
   lua_rawget(L, 1);
   if (lua_istable(L, -1)) {
-    lua_pushvalue(L, 2);  /* 键 */
-    lua_gettable(L, -2);  /* 父类可以触发其__index */
-    return 1;
+    int mro_len = (int)luaL_len(L, -1);
+    /* 从 MRO 位置 2 开始，跳过类自身（已在前面检查过） */
+    for (int i = 2; i <= mro_len; i++) {
+      lua_rawgeti(L, -1, i);  /* 获取 MRO 中的第 i 个类 */
+      if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        continue;
+      }
+      int mro_class_idx = lua_gettop(L);
+      /* 检查该类的 METHODS 表 */
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_rawget(L, mro_class_idx);
+      if (lua_istable(L, -1)) {
+        lua_pushvalue(L, 2);  /* 键 */
+        lua_rawget(L, -2);
+        if (!lua_isnil(L, -1)) {
+          /* 找到了，清理栈并返回 */
+          lua_remove(L, -2);  /* 移除 METHODS 表 */
+          lua_remove(L, -2);  /* 移除 mro_class */
+          lua_remove(L, -2);  /* 移除 MRO 表 */
+          return 1;
+        }
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 2);  /* 弹出 METHODS 和 mro_class */
+    }
   }
-  
+  lua_pop(L, 1);  /* 弹出 MRO 表 */
+
   lua_pushnil(L);
   return 1;
 }
@@ -249,6 +457,11 @@ static int class_index(lua_State *L) {
 static int class_newindex(lua_State *L) {
   /* 栈: [1]=类表, [2]=键, [3]=值 */
   
+  const char *kstr = lua_tostring(L, 2);
+  int is_new_key = (kstr && strcmp(kstr, "new") == 0);
+  int is_init_key = (kstr && (strcmp(kstr, CLASS_KEY_INIT) == 0 || strcmp(kstr, CLASS_KEY_INIT_LEGACY) == 0));
+  int is_legacy_init = (kstr && strcmp(kstr, CLASS_KEY_INIT_LEGACY) == 0);
+
   /* 如果值是函数，设置到方法表（使用rawget/rawset避免递归） */
   if (lua_isfunction(L, 3)) {
     /* 如果有父类，检查是否在重写 final 方法 */
@@ -283,9 +496,57 @@ static int class_newindex(lua_State *L) {
       lua_insert(L, -2);
       lua_rawset(L, 1);
     }
-    lua_pushvalue(L, 2);  /* 键 */
+    /* 保存值副本用于后续别名同步 */
+    lua_pushvalue(L, 3);  /* 复制值，栈: ... METHODS, key, value, value_copy */
+    /* 写入方法表：旧键名 __init__ 统一存储为 init */
+    if (is_legacy_init) {
+      lua_pushstring(L, CLASS_KEY_INIT);  /* 存储为 init */
+    } else {
+      lua_pushvalue(L, 2);  /* 键 */
+    }
     lua_pushvalue(L, 3);  /* 值 */
-    lua_rawset(L, -3);
+    lua_rawset(L, -4);    /* METHODS[key]=value，弹出 key 和 value，
+                             栈: ... METHODS, value_copy */
+
+    /* 别名同步：new <-> init
+       注意：仅当目标不存在时才同步，避免覆盖已有定义
+       例如 static function new 不应覆盖已定义的构造函数 init */
+    if (is_new_key) {
+      /* 设置 new 时同步 init：仅当 init 不存在时才同步 */
+      lua_pushstring(L, CLASS_KEY_INIT);
+      lua_rawget(L, -3);  /* METHODS.init */
+      if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushstring(L, CLASS_KEY_INIT);
+        lua_pushvalue(L, -2);  /* value_copy */
+        lua_rawset(L, -4);
+      } else {
+        lua_pop(L, 1);
+      }
+    } else if (is_init_key) {
+      /* 设置 init / __init__ 时同步 new：仅当 new 不存在时才同步 */
+      lua_pushliteral(L, "new");
+      lua_rawget(L, -3);  /* METHODS.new */
+      if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushliteral(L, "new");
+        lua_pushvalue(L, -2);  /* value_copy */
+        lua_rawset(L, -4);
+      } else {
+        lua_pop(L, 1);
+      }
+    }
+
+    /* 旧键名 __init__ 向后兼容：同时写入 __init__ 并输出弃用警告 */
+    if (is_legacy_init) {
+      lua_pushstring(L, CLASS_KEY_INIT_LEGACY);
+      lua_pushvalue(L, -2);  /* value_copy */
+      lua_rawset(L, -4);     /* METHODS.__init__ = value */
+      fprintf(stderr, "[WARNING] class '%s': '__init__' is deprecated, use 'init' instead\n",
+              get_class_name_str(L, 1));
+    }
+
+    lua_pop(L, 1);  /* 弹出 value_copy，栈: ... METHODS */
   } else {
     /* 否则设置到静态成员表 */
     lua_pushstring(L, CLASS_KEY_STATICS);
@@ -301,6 +562,9 @@ static int class_newindex(lua_State *L) {
     lua_pushvalue(L, 2);  /* 键 */
     lua_pushvalue(L, 3);  /* 值 */
     lua_rawset(L, -3);
+
+    /* 同上，移除 STATICS 表上的 new/__init__ 无条件别名同步 */
+    lua_pop(L, 1);
   }
   
   return 0;
@@ -870,6 +1134,34 @@ static int object_newindex(lua_State *L) {
   }
   lua_pop(L, 1);
   
+  /* SEALED 检查：禁止在 sealed 类实例上动态添加新字段 */
+  /* 检查对象所属类是否是 sealed */
+  lua_pushstring(L, OBJ_KEY_CLASS);
+  lua_rawget(L, 1);
+  if (lua_istable(L, -1)) {
+    lua_pushstring(L, CLASS_KEY_FLAGS);
+    lua_rawget(L, -2);
+    if (lua_isinteger(L, -1)) {
+      int flags = (int)lua_tointeger(L, -1);
+      if (flags & CLASS_FLAG_SEALED) {
+        /* 检查键是否已存在于对象自身表中 */
+        lua_pushvalue(L, 2);  /* 键 */
+        lua_rawget(L, 1);
+        if (lua_isnil(L, -1)) {
+          /* 键不存在于对象自身，是新增字段，报错 */
+          const char *classname = get_class_name_str(L, lua_gettop(L) - 2);
+          const char *key = lua_tostring(L, 2);
+          lua_pop(L, 4);  /* 清理栈 */
+          return luaL_error(L, "cannot add new field '%s' to sealed class '%s'",
+                           key ? key : "?", classname);
+        }
+        lua_pop(L, 1);  /* pop rawget 结果 */
+      }
+    }
+    lua_pop(L, 1);  /* pop flags */
+  }
+  lua_pop(L, 1);  /* pop class */
+  
   /* 权限检查通过，设置属性 */
   lua_pushvalue(L, 2);
   lua_pushvalue(L, 3);
@@ -950,6 +1242,10 @@ void luaC_newclass(lua_State *L, TString *name) {
   /* 创建方法表（公开成员） */
   lua_pushstring(L, CLASS_KEY_METHODS);
   lua_newtable(L);
+  /* 注册内置 clone 方法到类方法表 */
+  lua_pushstring(L, "clone");
+  lua_pushcfunction(L, luaC_clone_wrap);
+  lua_rawset(L, -3);
   lua_rawset(L, class_idx);
   
   /* 创建静态成员表 */
@@ -1040,7 +1336,30 @@ void luaC_newclass(lua_State *L, TString *name) {
   /* 应用元表 */
   lua_setmetatable(L, class_idx);
   
-  /* 类表现在在栈顶 */
+  /* 检查并调用静态构造函数 */
+  lua_pushstring(L, CLASS_KEY_STATICS);
+  lua_rawget(L, class_idx);
+  if (lua_istable(L, -1)) {
+    lua_pushstring(L, CLASS_KEY_INIT);
+    lua_rawget(L, -2);
+    if (lua_isfunction(L, -1)) {
+      lua_call(L, 0, 0);  /* 调用静态 init，无参数，无返回值 */
+    } else {
+      lua_pop(L, 1);  /* pop 非函数值 */
+    }
+  }
+  lua_pop(L, 1);  /* pop __statics 表 */
+
+  /* 计算初始 MRO（无父类时 MRO = [class]），确保每个类都有 __mro */
+  fprintf(stderr, "[DBG] luaC_newclass: before compute_mro, class_idx=%d, name=%s\n", class_idx, getstr(name));
+  luaC_compute_mro(L, class_idx);
+  /* 验证 MRO 是否设置成功 */
+  lua_pushstring(L, CLASS_KEY_MRO);
+  lua_rawget(L, class_idx);
+  fprintf(stderr, "[DBG] luaC_newclass: after compute_mro, __mro type=%s\n", lua_typename(L, lua_type(L, -1)));
+  lua_pop(L, 1);
+
+  /* 类表现在栈顶 */
 }
 
 
@@ -1071,6 +1390,11 @@ void luaC_inherit(lua_State *L, int child_idx, int parent_idx) {
     if (flags & CLASS_FLAG_SEALED) {
       const char *parent_name = get_class_name_str(L, parent_idx);
       luaL_error(L, "cannot inherit from sealed class '%s'", parent_name);
+      return;
+    }
+    if (flags & CLASS_FLAG_SINGLETON) {
+      const char *parent_name = get_class_name_str(L, parent_idx);
+      luaL_error(L, "cannot inherit from singleton class '%s'", parent_name);
       return;
     }
   }
@@ -1299,6 +1623,461 @@ void luaC_inherit(lua_State *L, int child_idx, int parent_idx) {
   /* 注意：私有成员不被继承 */
 }
 
+/*
+** C3 线性化算法：计算类的方法解析顺序 (MRO)
+** 算法：L[C] = [C] + merge(L[B1], ..., L[Bn], [B1, ..., Bn])
+** 其中 merge 函数：
+**   1. 取第一个列表的头元素
+**   2. 如果该头元素不在任何其他列表的尾部出现，则将其从所有列表中移除并加入结果
+**   3. 否则取下一个列表的头元素重复检查
+**   4. 如果所有头元素都不满足条件（都在其他列表尾部出现），则 MRO 不兼容
+** 参数：
+**   L - Lua 状态机
+**   class_idx - 类在栈中的索引
+** 说明：
+**   计算完成后将 MRO 数组存入 class.__mro
+**   MRO 顺序：类自身在最前，然后按 C3 线性化排列父类
+*/
+void luaC_compute_mro(lua_State *L, int class_idx) {
+  class_idx = absindex(L, class_idx);
+
+  /* Step 1: 收集父类列表 */
+  lua_pushstring(L, CLASS_KEY_PARENTS);
+  lua_rawget(L, class_idx);
+
+  int has_parents_list = lua_istable(L, -1);
+  int num_parents = 0;
+
+  if (has_parents_list) {
+    num_parents = (int)luaL_len(L, -1);
+  } else {
+    lua_pop(L, 1);
+    /* 检查单继承 */
+    lua_pushstring(L, CLASS_KEY_PARENT);
+    lua_rawget(L, class_idx);
+    if (lua_istable(L, -1)) {
+      num_parents = 1;
+    } else {
+      lua_pop(L, 1);
+      /* 无父类，MRO = [class] */
+      lua_pushstring(L, CLASS_KEY_MRO);
+      lua_newtable(L);
+      lua_pushvalue(L, class_idx);
+      lua_rawseti(L, -2, 1);
+      lua_rawset(L, class_idx);
+      return;
+    }
+  }
+
+  /*
+  ** Step 2: 构建线性化列表
+  ** linearizations = {parent1_mro, ..., parentN_mro, parents_list}
+  ** 其中 parents_list = [parent1, ..., parentN]（父类声明顺序）
+  */
+  lua_newtable(L);  /* linearizations */
+  int lin_idx = lua_gettop(L);
+
+  lua_newtable(L);  /* parents_list */
+  int parents_list_idx = lua_gettop(L);
+
+  for (int i = 1; i <= num_parents; i++) {
+    /* 获取父类 */
+    if (has_parents_list) {
+      lua_rawgeti(L, -3, i);  /* 从 __parents 获取 (__parents 在 linearizations 和 parents_list 下方) */
+    } else {
+      lua_pushstring(L, CLASS_KEY_PARENT);
+      lua_rawget(L, class_idx);
+    }
+
+    int parent_idx = lua_gettop(L);
+
+    /* 将父类加入 parents_list */
+    lua_pushvalue(L, parent_idx);
+    lua_rawseti(L, parents_list_idx, i);
+
+    /* 获取或计算父类的 MRO */
+    lua_pushstring(L, CLASS_KEY_MRO);
+    lua_rawget(L, parent_idx);
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 1);
+      /* 递归计算父类 MRO */
+      luaC_compute_mro(L, parent_idx);
+      lua_pushstring(L, CLASS_KEY_MRO);
+      lua_rawget(L, parent_idx);
+    }
+
+    /* 将父类 MRO 存入 linearizations[i] */
+    lua_rawseti(L, lin_idx, i);
+    lua_pop(L, 1);  /* 弹出父类 */
+  }
+
+  /* 将 parents_list 作为最后一个线性化列表 */
+  lua_pushvalue(L, parents_list_idx);
+  lua_rawseti(L, lin_idx, num_parents + 1);
+
+  /* 清理栈：移除 __parents/__parent 和 parents_list */
+  if (has_parents_list) {
+    lua_remove(L, -3);  /* 移除 __parents（在 linearizations 和 parents_list 下方） */
+  } else {
+    lua_remove(L, -3);  /* 移除 __parent 值 */
+  }
+  lin_idx -= 1;          /* linearizations 下移 */
+  parents_list_idx -= 1; /* parents_list 下移 */
+  lua_pop(L, 1);         /* 弹出 parents_list（已存入 linearizations） */
+
+  /* 栈: [..., class, linearizations] */
+
+  /*
+  ** Step 3: C3 Merge 算法
+  ** 使用位置追踪表来避免频繁的栈操作
+  */
+  int total_lists = num_parents + 1;  /* 父类 MRO + parents_list */
+
+  /* 创建结果 MRO 表 */
+  lua_pushstring(L, CLASS_KEY_MRO);
+  lua_newtable(L);
+  int result_idx = lua_gettop(L);
+
+  /* 类自身在 MRO 第一位 */
+  lua_pushvalue(L, class_idx);
+  lua_rawseti(L, result_idx, 1);
+  int result_len = 1;
+
+  /* 创建位置追踪表：positions[i] = 列表 i 的当前游标 */
+  lua_newtable(L);
+  int pos_idx = lua_gettop(L);
+  for (int i = 1; i <= total_lists; i++) {
+    lua_pushinteger(L, 1);  /* 从位置 1 开始 */
+    lua_rawseti(L, pos_idx, i);
+  }
+
+  /* 合并循环：重复直到无法找到合法的头元素 */
+  int found;
+  do {
+    found = 0;
+
+    for (int li = 1; li <= total_lists && !found; li++) {
+      /* 获取列表 li 的当前游标 */
+      lua_rawgeti(L, pos_idx, li);
+      int cur_pos = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 1;
+      lua_pop(L, 1);
+
+      /* 获取列表 li */
+      lua_rawgeti(L, lin_idx, li);
+      int list_idx = lua_gettop(L);
+
+      if (!lua_istable(L, list_idx)) {
+        lua_pop(L, 1);
+        continue;
+      }
+
+      int list_len = (int)luaL_len(L, list_idx);
+
+      if (cur_pos > list_len) {
+        lua_pop(L, 1);  /* 列表已耗尽 */
+        continue;
+      }
+
+      /* 获取头元素 */
+      lua_rawgeti(L, list_idx, cur_pos);
+      int head_idx = lua_gettop(L);
+      /* 栈: ... lin, pos, MRO, result, pos_table, list_li, head */
+
+      /* 检查 head 是否在其他列表的尾部出现 */
+      int bad = 0;
+      for (int lj = 1; lj <= total_lists && !bad; lj++) {
+        if (lj == li) continue;
+
+        lua_rawgeti(L, lin_idx, lj);  /* 获取其他列表 */
+        int other_idx = lua_gettop(L);
+
+        if (!lua_istable(L, other_idx)) {
+          lua_pop(L, 1);
+          continue;
+        }
+
+        int other_len = (int)luaL_len(L, other_idx);
+        /* 检查尾部（位置 2..n） */
+        for (int k = 2; k <= other_len; k++) {
+          lua_rawgeti(L, other_idx, k);
+          if (lua_rawequal(L, head_idx, -1)) {
+            bad = 1;
+            lua_pop(L, 1);
+            break;
+          }
+          lua_pop(L, 1);
+        }
+        lua_pop(L, 1);  /* 弹出 other list */
+      }
+
+      if (!bad) {
+        /* 合法的头元素：加入结果 */
+        result_len++;
+        lua_pushvalue(L, head_idx);  /* 复制 head */
+        lua_rawseti(L, result_idx, result_len);
+
+        /* 在包含此 head 的所有列表中推进游标 */
+        for (int lj = 1; lj <= total_lists; lj++) {
+          lua_rawgeti(L, lin_idx, lj);  /* 获取列表 lj */
+          int adv_idx = lua_gettop(L);
+
+          if (!lua_istable(L, adv_idx)) {
+            lua_pop(L, 1);
+            continue;
+          }
+
+          int adv_len = (int)luaL_len(L, adv_idx);
+
+          lua_rawgeti(L, pos_idx, lj);
+          int adv_pos = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 1;
+          lua_pop(L, 1);
+
+          if (adv_pos <= adv_len) {
+            lua_rawgeti(L, adv_idx, adv_pos);
+            if (lua_rawequal(L, head_idx, -1)) {
+              /* 当前元素匹配 head，推进游标 */
+              lua_pushinteger(L, adv_pos + 1);
+              lua_rawseti(L, pos_idx, lj);
+            }
+            lua_pop(L, 1);
+          }
+
+          lua_pop(L, 1);  /* 弹出 adv list */
+        }
+
+        found = 1;
+      }
+
+      lua_pop(L, 2);  /* 弹出 head 和 list_li */
+    }
+  } while (found);
+
+  /* 检查是否所有线性化列表都已耗尽 */
+  for (int li = 1; li <= total_lists; li++) {
+    lua_rawgeti(L, lin_idx, li);
+    int check_idx = lua_gettop(L);
+
+    if (lua_istable(L, check_idx)) {
+      int check_len = (int)luaL_len(L, check_idx);
+
+      lua_rawgeti(L, pos_idx, li);
+      int check_pos = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 1;
+      lua_pop(L, 1);
+
+      if (check_pos <= check_len) {
+        /* 有未消耗的元素：MRO 不兼容 */
+        lua_pop(L, 1);  /* 弹出 check list */
+        /* 清理栈并报错 */
+        lua_pop(L, 1);  /* 弹出 pos */
+        lua_pop(L, 1);  /* 弹出 result */
+        lua_pop(L, 1);  /* 弹出 "MRO" */
+        lua_pop(L, 1);  /* 弹出 linearizations */
+        luaL_error(L, "incompatible MRO: cannot create a consistent method resolution order");
+        return;
+      }
+    }
+    lua_pop(L, 1);  /* 弹出 check list */
+  }
+
+  /* 清理并存储结果 */
+  lua_pop(L, 1);     /* 弹出 pos */
+  /* 栈: [..., class, linearizations, "MRO", result] */
+  lua_remove(L, -3); /* 移除 linearizations（在 "MRO" 下方） */
+  /* 栈: [..., class, "MRO", result] */
+  /* 存储 MRO：class["__mro"] = result */
+  lua_rawset(L, class_idx);
+}
+
+/* 操作符元方法列表，自动从METHODS表安装到对象元表 */
+static const char *operator_methods[] = {
+  "__add", "__sub", "__mul", "__div", "__mod", "__pow",
+  "__concat", "__eq", "__lt", "__le", "__len", "__unm",
+  "__band", "__bor", "__bxor", "__bnot", "__shl", "__shr",
+  NULL
+};
+
+/*
+** 深拷贝值的辅助函数
+** 使用 seen 表处理循环引用（original -> clone 映射）
+** 参数：
+**   L - Lua 状态机
+**   idx - 要拷贝的值在栈中的索引
+**   seen_idx - seen 映射表在栈中的索引
+** 说明：
+**   递归拷贝表、对象、map等复合类型
+**   基本类型（number、string、boolean）直接返回
+*/
+static void clone_value(lua_State *L, int idx, int seen_idx) {
+  idx = lua_absindex(L, idx);
+  seen_idx = lua_absindex(L, seen_idx);
+  
+  int t = lua_type(L, idx);
+  
+  switch (t) {
+    case LUA_TNUMBER:
+    case LUA_TSTRING:
+    case LUA_TBOOLEAN:
+    case LUA_TNIL:
+      /* 基本类型直接复制 */
+      lua_pushvalue(L, idx);
+      return;
+      
+    case LUA_TTABLE: {
+      /* 检查是否已经拷贝过（循环引用处理） */
+      lua_pushvalue(L, idx);
+      lua_rawget(L, seen_idx);
+      if (!lua_isnil(L, -1)) {
+        /* 已经拷贝过，返回缓存的拷贝 */
+        return;
+      }
+      lua_pop(L, 1);  /* 弹出 nil */
+      
+      /* 创建新表 */
+      lua_newtable(L);
+      int new_idx = lua_gettop(L);
+      
+      /* 缓存映射：seen[原始表] = 新表 */
+      lua_pushvalue(L, idx);
+      lua_pushvalue(L, new_idx);
+      lua_rawset(L, seen_idx);
+      
+      /* 共享元表（避免递归克隆类定义等复杂元表） */
+      if (lua_getmetatable(L, idx)) {
+        lua_setmetatable(L, new_idx);
+      }
+      
+      /* 递归拷贝所有键值对 */
+      lua_pushnil(L);
+      while (lua_next(L, idx) != 0) {
+        /* Stack: [..., new_table, key, value] */
+        /* 保存原始 key 副本供 lua_next 下一次迭代使用 */
+        lua_pushvalue(L, -2);  /* [..., new_table, key, value, key_copy] */
+        
+        /* 克隆 key 和 value */
+        clone_value(L, -3, seen_idx);  /* 克隆 key: [..., new_table, key, value, key_copy, cloned_key] */
+        clone_value(L, -3, seen_idx);  /* 克隆 value: [..., new_table, key, value, key_copy, cloned_key, cloned_value] */
+        
+        /* 设置到新表：new_table[cloned_key] = cloned_value */
+        lua_rawset(L, new_idx);  /* 弹出 cloned_key 和 cloned_value: [..., new_table, key, value, key_copy] */
+        
+        /* 恢复 key 供 lua_next 继续遍历 */
+        lua_pop(L, 2);  /* 弹出 value 和 key_copy: [..., new_table, key] */
+      }
+      
+      return;
+    }
+    
+    case LUA_TFUNCTION: {
+      /* 函数直接引用（不深拷贝） */
+      lua_pushvalue(L, idx);
+      return;
+    }
+    
+    default: {
+      /* 其他类型（userdata、thread等）直接引用 */
+      lua_pushvalue(L, idx);
+      return;
+    }
+  }
+}
+
+/*
+** 深拷贝对象
+** 参数：
+**   L - Lua 状态机
+**   obj_idx - 对象在栈中的索引
+** 说明：
+**   创建对象的新副本，递归拷贝所有字段
+**   自动处理循环引用
+**   新对象保持与原始对象相同的类归属
+*/
+static int luaC_clone_wrap(lua_State *L) {
+  luaL_checkany(L, 1);
+  int orig_idx = 1;
+  
+  /* 创建 seen 映射表用于处理循环引用 */
+  lua_newtable(L);
+  int seen_idx = lua_gettop(L);
+  
+  if (lua_type(L, orig_idx) != LUA_TTABLE) {
+    /* 非表类型直接克隆 */
+    clone_value(L, orig_idx, seen_idx);
+    return 1;
+  }
+  
+  /* 对象是表：创建新表，共享元表，直接复制内部字段 */
+  lua_newtable(L);
+  int cloned_idx = lua_gettop(L);
+  
+  /* 缓存映射：seen[原始表] = 克隆表 */
+  lua_pushvalue(L, orig_idx);
+  lua_pushvalue(L, cloned_idx);
+  lua_rawset(L, seen_idx);
+  
+  /* 共享元表 */
+  if (lua_getmetatable(L, orig_idx)) {
+    lua_setmetatable(L, cloned_idx);
+  }
+  
+  /* 直接复制内部字段（不通过 clone_value，避免递归克隆类定义） */
+  const char *internal_keys[] = {
+    OBJ_KEY_CLASS, OBJ_KEY_ISOBJ, NULL
+  };
+  for (int i = 0; internal_keys[i] != NULL; i++) {
+    lua_pushstring(L, internal_keys[i]);
+    lua_rawget(L, orig_idx);
+    if (!lua_isnil(L, -1)) {
+      lua_pushstring(L, internal_keys[i]);
+      lua_pushvalue(L, -2);
+      lua_rawset(L, cloned_idx);
+    }
+    lua_pop(L, 1);  /* 弹出值或 nil */
+  }
+  
+  /* 深拷贝私有数据表 */
+  lua_pushstring(L, OBJ_KEY_PRIVATES);
+  lua_rawget(L, orig_idx);
+  if (lua_istable(L, -1)) {
+    clone_value(L, -1, seen_idx);
+    lua_pushstring(L, OBJ_KEY_PRIVATES);
+    lua_pushvalue(L, -2);
+    lua_rawset(L, cloned_idx);
+    lua_pop(L, 2);  /* 弹出克隆的私有表和原始私有表 */
+  } else {
+    lua_pop(L, 1);  /* 弹出 nil */
+  }
+  
+  /* 克隆用户字段：遍历原始表，跳过内部字段 */
+  lua_pushnil(L);
+  while (lua_next(L, orig_idx) != 0) {
+    /* Stack: [orig, seen, cloned, key, value] */
+    /* 检查是否是内部字段（以 __ 开头） */
+    int is_internal = 0;
+    if (lua_type(L, -2) == LUA_TSTRING) {
+      const char *k = lua_tostring(L, -2);
+      if (k[0] == '_' && k[1] == '_') {
+        is_internal = 1;
+      }
+    }
+    
+    if (is_internal) {
+      lua_pop(L, 1);  /* 弹出 value，保留 key 供 lua_next */
+    } else {
+      /* 保存 key 副本 */
+      lua_pushvalue(L, -2);  /* [orig, seen, cloned, key, value, key_copy] */
+      /* 克隆 value */
+      clone_value(L, -2, seen_idx);  /* [orig, seen, cloned, key, value, key_copy, cloned_value] */
+      /* 设置到克隆表：cloned[key_copy] = cloned_value */
+      lua_rawset(L, cloned_idx);  /* 弹出 key_copy 和 cloned_value: [orig, seen, cloned, key, value] */
+      lua_pop(L, 1);  /* 弹出 value: [orig, seen, cloned, key] */
+    }
+  }
+  
+  /* 弹出 seen 表 */
+  lua_remove(L, seen_idx);
+  
+  return 1;
+}
 
 /*
 ** 创建类的实例对象
@@ -1357,6 +2136,16 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
   lua_newtable(L);
   lua_rawset(L, obj_idx);
   
+  /* 设置 __super 字段指向父类，供 super 关键字使用 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
+  lua_rawget(L, class_idx);
+  if (lua_istable(L, -1)) {
+    lua_pushstring(L, "__super");
+    lua_pushvalue(L, -2);
+    lua_rawset(L, obj_idx);
+  }
+  lua_pop(L, 1);  /* 弹出parent或nil */
+  
   /* 创建并设置对象的元表 */
   lua_newtable(L);
   int mt_idx = lua_gettop(L);
@@ -1373,10 +2162,15 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
   lua_pushcfunction(L, object_tostring);
   lua_setfield(L, mt_idx, "__tostring");
   
-  /* 检查类是否有__gc方法（使用rawget访问类表） */
+  /* 设置 clone 方法 */
+  lua_pushcfunction(L, luaC_clone_wrap);
+  lua_setfield(L, mt_idx, "clone");
+  
+  /* 检查类是否有__gc方法，并安装操作符元方法到对象元表 */
   lua_pushstring(L, CLASS_KEY_METHODS);
   lua_rawget(L, class_idx);
   if (lua_istable(L, -1)) {
+    /* 检查__gc析构方法 */
     lua_pushstring(L, CLASS_KEY_DESTRUCTOR);
     lua_rawget(L, -2);
     if (lua_isfunction(L, -1)) {
@@ -1384,85 +2178,123 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
     } else {
       lua_pop(L, 1);
     }
+    
+    /* 遍历操作符元方法，自动安装到对象元表 */
+    const char **op = operator_methods;
+    while (*op != NULL) {
+      lua_pushstring(L, *op);
+      lua_rawget(L, -2);  /* 从METHODS表获取操作符方法 */
+      if (lua_isfunction(L, -1)) {
+        lua_setfield(L, mt_idx, *op);
+      } else {
+        lua_pop(L, 1);
+      }
+      op++;
+    }
   }
   lua_pop(L, 1);
   
   /* 应用元表 */
   lua_setmetatable(L, obj_idx);
   
-  /* 收集继承链中的所有类（从最顶层父类到当前类） */
-  lua_newtable(L);  /* 构造函数调用链 */
-  int chain_idx = lua_gettop(L);
-  int chain_len = 0;
+  /* 创建临时标记表，用于跟踪已通过super调用的构造函数，避免双重调用 */
+  lua_newtable(L);
+  lua_pushstring(L, OBJ_KEY_INIT_CALLED);
+  lua_pushvalue(L, -2);
+  lua_rawset(L, obj_idx);
+  /* 标记表现在栈顶，后续遍历中会用到 */
   
-  /* 遍历继承链，将所有类压入链表（逆序，最后转为正序） */
-  lua_pushvalue(L, class_idx);
-  while (lua_istable(L, -1)) {
-    chain_len++;
-    lua_pushvalue(L, -1);
-    lua_rawseti(L, chain_idx, chain_len);
+  /* 按 MRO 顺序调用构造函数链 */
+  lua_pushstring(L, CLASS_KEY_MRO);
+  lua_rawget(L, class_idx);
+  fprintf(stderr, "[DBG] luaC_newobject: MRO type=%s, class_idx=%d\n", lua_typename(L, lua_type(L, -1)), class_idx);
+  if (lua_istable(L, -1)) {
+    int mro_len = (int)luaL_len(L, -1);
     
-    lua_pushstring(L, CLASS_KEY_PARENT);
-    lua_rawget(L, -2);
-    lua_remove(L, -2);  /* 移除旧的类引用 */
-  }
-  lua_pop(L, 1);  /* 移除非表值 */
-  
-  /* 从最顶层父类开始调用构造函数（chain_len到1） */
-  for (int i = chain_len; i >= 1; i--) {
-    lua_rawgeti(L, chain_idx, i);
-    int current_class = lua_gettop(L);
-    
-    /* 获取当前类自己的构造函数（不是继承的） */
-    lua_pushstring(L, CLASS_KEY_METHODS);
-    lua_rawget(L, current_class);
-    if (lua_istable(L, -1)) {
-      lua_pushstring(L, CLASS_KEY_INIT);
-      lua_rawget(L, -2);
-      if (lua_isfunction(L, -1)) {
-        /* 检查这个构造函数是否是当前类定义的（不是从父类继承的） */
-        int is_own_init = 1;
-        if (i < chain_len) {
-          /* 不是最顶层类，检查父类是否有相同的构造函数 */
-          lua_rawgeti(L, chain_idx, i + 1);  /* 获取父类 */
-          lua_pushstring(L, CLASS_KEY_METHODS);
+    /* 先扫描找到最派生类（MRO 中第一个有自己 init 的类） */
+    int most_derived_init = -1;
+    for (int si = 1; si <= mro_len; si++) {
+      lua_rawgeti(L, -1, si);
+      int scan_class = lua_gettop(L);
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_rawget(L, scan_class);
+      if (lua_istable(L, -1)) {
+        lua_pushstring(L, CLASS_KEY_INIT);
+        lua_rawget(L, -2);
+        if (!lua_isfunction(L, -1)) {
+          lua_pop(L, 1);
+          lua_pushstring(L, CLASS_KEY_INIT_LEGACY);
           lua_rawget(L, -2);
+        }
+        if (lua_isfunction(L, -1)) {
+          most_derived_init = si;
+          lua_pop(L, 2);  /* 移除init和methods */
+          lua_pop(L, 1);  /* 移除scan_class */
+          break;
+        }
+        lua_pop(L, 1);  /* 移除init/nil */
+      }
+      lua_pop(L, 1);  /* 移除methods/nil */
+      lua_pop(L, 1);  /* 移除scan_class */
+    }
+    
+    /* 从后往前遍历 MRO（从最顶层父类到最派生类，包括类自身） */
+    for (int i = mro_len; i >= 1; i--) {
+      lua_rawgeti(L, -1, i);
+      int current_class = lua_gettop(L);
+      
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_rawget(L, current_class);
+      if (lua_istable(L, -1)) {
+        lua_pushstring(L, CLASS_KEY_INIT);
+        lua_rawget(L, -2);
+        if (!lua_isfunction(L, -1)) {
+          lua_pop(L, 1);
+          lua_pushstring(L, CLASS_KEY_INIT_LEGACY);
+          lua_rawget(L, -2);
+        }
+        if (lua_isfunction(L, -1)) {
+          /* 检查该类的构造函数是否已通过super被调用过，避免双重调用 */
+          lua_pushstring(L, OBJ_KEY_INIT_CALLED);
+          lua_rawget(L, obj_idx);
+          int already_called = 0;
           if (lua_istable(L, -1)) {
-            lua_pushstring(L, CLASS_KEY_INIT);
+            lua_pushvalue(L, current_class);
             lua_rawget(L, -2);
-            if (lua_rawequal(L, -1, -5)) {
-              /* 与父类的构造函数相同，说明是继承的 */
-              is_own_init = 0;
-            }
+            already_called = lua_toboolean(L, -1);
             lua_pop(L, 1);
           }
-          lua_pop(L, 2);
-        }
-        
-        if (is_own_init) {
-          /* 调用构造函数 */
-          lua_pushvalue(L, obj_idx);  /* self */
+          lua_pop(L, 1);  /* 弹出init_called表 */
           
-          /* 只有当前类（i==1）才传递构造参数 */
-          int args_count = (i == 1) ? nargs : 0;
-          int first_arg = class_idx + 1;
-          for (int j = 0; j < args_count; j++) {
-            lua_pushvalue(L, first_arg + j);
+          if (!already_called) {
+            /* 调用构造函数 */
+            lua_pushvalue(L, obj_idx);  /* self */
+            
+            /* 只有最派生类（有自己init的类）才传递构造参数，父类传0个参数 */
+            int args_count = (i == most_derived_init) ? nargs : 0;
+            int first_arg = class_idx + 1;
+            for (int j = 0; j < args_count; j++) {
+              lua_pushvalue(L, first_arg + j);
+            }
+            lua_call(L, args_count + 1, 0);
+          } else {
+            lua_pop(L, 1);  /* 移除已通过super调用的构造函数引用 */
           }
-          
-          lua_call(L, args_count + 1, 0);
         } else {
-          lua_pop(L, 1);  /* 移除继承的构造函数 */
+          lua_pop(L, 1);  /* 移除非函数值 */
         }
-      } else {
-        lua_pop(L, 1);  /* 移除非函数值 */
       }
+      lua_pop(L, 1);  /* 移除methods表 */
+      lua_pop(L, 1);  /* 移除当前类 */
     }
-    lua_pop(L, 1);  /* 移除methods表 */
-    lua_pop(L, 1);  /* 移除当前类 */
   }
+  lua_pop(L, 1);  /* 弹出 MRO 表 */
   
-  lua_pop(L, 1);  /* 移除chain表 */
+  /* 清理临时标记表，避免内存泄漏 */
+  lua_pushstring(L, OBJ_KEY_INIT_CALLED);
+  lua_pushnil(L);
+  lua_rawset(L, obj_idx);
+  lua_pop(L, 1);  /* 弹出init_called表 */
   
   /* 确保对象在栈顶 */
   lua_pushvalue(L, obj_idx);
@@ -1494,6 +2326,18 @@ void luaC_super(lua_State *L, int obj_idx, TString *method) {
     return;
   }
   
+  /* 如果是调用 init 方法（包括旧键名 __init__），在对象的标记表中记录父类已被调用 */
+  if (strcmp(getstr(method), CLASS_KEY_INIT) == 0 || strcmp(getstr(method), CLASS_KEY_INIT_LEGACY) == 0) {
+    lua_pushstring(L, OBJ_KEY_INIT_CALLED);
+    lua_rawget(L, obj_idx);
+    if (lua_istable(L, -1)) {
+      lua_pushvalue(L, -3);  /* parent class */
+      lua_pushboolean(L, 1);
+      lua_rawset(L, -3);     /* init_called[parent] = true */
+    }
+    lua_pop(L, 1);  /* 弹出init_called表或nil */
+  }
+  
   /* 在父类方法表中查找方法（使用rawget） */
   lua_pushstring(L, CLASS_KEY_METHODS);
   lua_rawget(L, -2);
@@ -1519,7 +2363,6 @@ void luaC_setmethod(lua_State *L, int class_idx, TString *name, int func_idx) {
   class_idx = absindex(L, class_idx);
   func_idx = absindex(L, func_idx);
   
-  /* 如果有父类，检查是否在重写 final 方法 */
   lua_pushstring(L, CLASS_KEY_PARENT);
   lua_rawget(L, class_idx);
   if (lua_istable(L, -1)) {
@@ -1556,6 +2399,62 @@ void luaC_setmethod(lua_State *L, int class_idx, TString *name, int func_idx) {
   lua_pushlstring(L, getstr(name), tsslen(name));
   lua_pushvalue(L, func_idx);
   lua_rawset(L, -3);
+
+  /* 别名：new <-> init
+     当用户定义 function new(...) 时，自动同步到 init（仅当 init 不存在时）
+     当用户定义 function init(...) 时，自动同步到 new（仅当 new 不存在时）
+     当用户定义 function __init__(...) 时，自动同步到 init 和 new，并输出弃用警告
+     注意：不同步覆盖已有值，避免 static function new 覆盖构造函数 init */
+  if (strcmp(getstr(name), "new") == 0) {
+    /* 设置 new 时同步 init：仅当 init 不存在时才同步，避免覆盖已有构造函数 */
+    lua_pushstring(L, CLASS_KEY_INIT);
+    lua_rawget(L, -3);  /* METHODS.init */
+    if (lua_isnil(L, -1)) {
+      lua_pop(L, 1);
+      lua_pushstring(L, CLASS_KEY_INIT);
+      lua_pushvalue(L, func_idx);
+      lua_rawset(L, -3);
+    } else {
+      lua_pop(L, 1);
+    }
+  } else if (strcmp(getstr(name), CLASS_KEY_INIT) == 0) {
+    /* 设置 init 时同步 new：仅当 new 不存在时才同步 */
+    lua_pushliteral(L, "new");
+    lua_rawget(L, -3);  /* METHODS.new */
+    if (lua_isnil(L, -1)) {
+      lua_pop(L, 1);
+      lua_pushliteral(L, "new");
+      lua_pushvalue(L, func_idx);
+      lua_rawset(L, -3);
+    } else {
+      lua_pop(L, 1);
+    }
+  } else if (strcmp(getstr(name), CLASS_KEY_INIT_LEGACY) == 0) {
+    /* __init__ 已弃用：同时写入 init 和 new（仅当目标不存在时） */
+    lua_pushstring(L, CLASS_KEY_INIT);
+    lua_rawget(L, -3);  /* METHODS.init */
+    if (lua_isnil(L, -1)) {
+      lua_pop(L, 1);
+      lua_pushstring(L, CLASS_KEY_INIT);
+      lua_pushvalue(L, func_idx);
+      lua_rawset(L, -3);
+    } else {
+      lua_pop(L, 1);
+    }
+    lua_pushliteral(L, "new");
+    lua_rawget(L, -3);  /* METHODS.new */
+    if (lua_isnil(L, -1)) {
+      lua_pop(L, 1);
+      lua_pushliteral(L, "new");
+      lua_pushvalue(L, func_idx);
+      lua_rawset(L, -3);
+    } else {
+      lua_pop(L, 1);
+    }
+    fprintf(stderr, "[WARNING] class method '%s' uses deprecated '__init__', use 'init' instead\n",
+            getstr(name));
+  }
+
   lua_pop(L, 1);
 }
 
@@ -1664,7 +2563,7 @@ int luaC_instanceof(lua_State *L, int obj_idx, int class_idx) {
     return 0;
   }
   
-  /* 检查class_idx是否是类 */
+  /* 检查class_idx是否是类或接口 */
   if (!luaC_isclass(L, class_idx)) {
     return 0;
   }
@@ -1672,27 +2571,61 @@ int luaC_instanceof(lua_State *L, int obj_idx, int class_idx) {
   /* 获取对象的类（使用rawget避免触发__index递归） */
   lua_pushstring(L, OBJ_KEY_CLASS);
   lua_rawget(L, obj_idx);
+  int obj_class = lua_gettop(L);
   
-  /* 沿继承链检查（使用rawget访问类表） */
+  /* 沿继承链检查：复制一份类引用用于遍历，保留 obj_class 用于后续接口检查 */
+  lua_pushvalue(L, obj_class);  /* 复制类引用 */
+  int current = lua_gettop(L);
   int loop_limit = 1000;
-  while (lua_istable(L, -1)) {
-    if (lua_rawequal(L, -1, class_idx)) {
-      lua_pop(L, 1);
+  while (lua_istable(L, current)) {
+    if (lua_rawequal(L, current, class_idx)) {
+      lua_pop(L, 2);  /* 弹出 current 和 obj_class */
       return 1;
     }
     
     if (--loop_limit == 0) {
       /* 防止无限循环 */
-      lua_pop(L, 1);
+      lua_pop(L, 2);
       return 0;
     }
 
     lua_pushstring(L, CLASS_KEY_PARENT);
-    lua_rawget(L, -2);
-    lua_remove(L, -2);  /* 移除旧的类引用 */
+    lua_rawget(L, current);
+    lua_remove(L, current);  /* 移除旧的类引用 */
+    current = lua_gettop(L);
   }
   
-  lua_pop(L, 1);
+  lua_pop(L, 1);  /* 移除最后的nil，obj_class 仍完好 */
+  
+  /* 检查接口实现链：遍历对象类的 __interfaces 表 */
+  lua_pushstring(L, CLASS_KEY_INTERFACES);
+  lua_rawget(L, obj_class);
+  if (lua_istable(L, -1)) {
+    int ifaces_idx = lua_gettop(L);
+    int n = (int)lua_rawlen(L, ifaces_idx);
+    for (int i = 1; i <= n; i++) {
+      lua_rawgeti(L, ifaces_idx, i);
+      int current_iface = lua_gettop(L);
+      /* 遍历接口继承链（接口本身也支持 extends） */
+      while (lua_istable(L, current_iface)) {
+        if (lua_rawequal(L, current_iface, class_idx)) {
+          lua_pop(L, lua_gettop(L) - obj_class);  /* 清理栈 */
+          lua_pop(L, 1);  /* 弹出obj_class */
+          return 1;
+        }
+        lua_pushstring(L, CLASS_KEY_PARENT);
+        lua_rawget(L, current_iface);
+        lua_remove(L, current_iface);
+        current_iface = lua_gettop(L);
+      }
+      lua_pop(L, 1);  /* 移除接口链最后的nil */
+    }
+    lua_pop(L, 1);  /* 移除ifaces表 */
+  } else {
+    lua_pop(L, 1);  /* 移除非表值 */
+  }
+  
+  lua_pop(L, 1);  /* 弹出obj_class */
   return 0;
 }
 
@@ -1782,8 +2715,23 @@ const char *luaC_classname(lua_State *L, int class_idx) {
 
 /*
 ** 创建接口
+** 参数：
+**   L - Lua状态机
+**   name - 接口名
+**   parent_idx - 父接口在栈中的索引（-1表示无父接口）
 */
-void luaC_newinterface(lua_State *L, TString *name) {
+/*
+** 设置接口继承关系（供 LBCTC 翻译调用）
+** child_idx: 子接口，parent_idx: 父接口
+*/
+void lua_extendiface(lua_State *L, int child_idx, int parent_idx) {
+  child_idx = absindex(L, child_idx);
+  parent_idx = absindex(L, parent_idx);
+  lua_pushvalue(L, parent_idx);
+  lua_setfield(L, child_idx, CLASS_KEY_PARENT);
+}
+
+void luaC_newinterface(lua_State *L, TString *name, int parent_idx) {
   /* 创建接口表 */
   lua_newtable(L);
   int iface_idx = lua_gettop(L);
@@ -1801,11 +2749,20 @@ void luaC_newinterface(lua_State *L, TString *name) {
   /* 创建方法表（用于声明接口方法签名） */
   lua_newtable(L);
   lua_setfield(L, iface_idx, CLASS_KEY_METHODS);
+  
+  /* 如果提供了父接口，设置__parent字段 */
+  if (parent_idx >= 0) {
+    parent_idx = absindex(L, parent_idx);
+    lua_pushvalue(L, parent_idx);
+    lua_setfield(L, iface_idx, CLASS_KEY_PARENT);
+  }
 }
 
 
 /*
 ** 实现接口
+** 递归遍历接口继承链，将接口本身及其所有父接口注册到类的接口列表中，
+** 并将所有接口方法声明合并到类的抽象方法列表中
 */
 void luaC_implement(lua_State *L, int class_idx, int interface_idx) {
   class_idx = absindex(L, class_idx);
@@ -1823,11 +2780,74 @@ void luaC_implement(lua_State *L, int class_idx, int interface_idx) {
     lua_rawset(L, class_idx);
   }
   
-  /* 添加接口到列表 */
-  int n = (int)lua_rawlen(L, -1);
+  /* 获取或创建抽象方法表 */
+  int abstracts_made = 0;
+  lua_pushstring(L, CLASS_KEY_ABSTRACTS);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_pushstring(L, CLASS_KEY_ABSTRACTS);
+    lua_insert(L, -2);
+    lua_rawset(L, class_idx);
+    abstracts_made = 1;
+  }
+  /* 栈: ... interfaces_list, abstracts_table */
+  int abstracts_idx = lua_gettop(L);
+  
+  /* 递归注册接口及其父接口，同时收集方法声明 */
   lua_pushvalue(L, interface_idx);
-  lua_rawseti(L, -2, n + 1);
-  lua_pop(L, 1);
+  while (lua_istable(L, -1)) {
+    int current_iface = lua_gettop(L);
+    
+    /* 检查是否已注册（避免重复） */
+    int n = (int)lua_rawlen(L, -3);  /* 接口列表在 abstracts_idx - 1 */
+    int already = 0;
+    for (int i = 1; i <= n; i++) {
+      lua_rawgeti(L, abstracts_idx - 1, i);
+      if (lua_rawequal(L, -1, current_iface)) {
+        already = 1;
+        lua_pop(L, 1);
+        break;
+      }
+      lua_pop(L, 1);
+    }
+    
+    if (!already) {
+      lua_pushvalue(L, current_iface);
+      lua_rawseti(L, abstracts_idx - 1, n + 1);
+    }
+    
+    /* 收集当前接口的方法声明到抽象方法表 */
+    lua_pushstring(L, CLASS_KEY_METHODS);
+    lua_rawget(L, current_iface);
+    if (lua_istable(L, -1)) {
+      lua_pushnil(L);
+      while (lua_next(L, -2) != 0) {
+        /* 栈: ... methods_table, key(方法名), value(参数个数) */
+        /* 如果抽象方法表中还没有该方法，则添加 */
+        lua_pushvalue(L, -2);  /* 复制key */
+        lua_rawget(L, abstracts_idx);
+        if (lua_isnil(L, -1)) {
+          lua_pop(L, 1);  /* 移除nil */
+          lua_pushvalue(L, -1);  /* 复制key */
+          lua_pushvalue(L, -3);  /* 复制value */
+          lua_rawset(L, abstracts_idx);
+        } else {
+          lua_pop(L, 1);  /* 移除已存在的值 */
+        }
+        lua_pop(L, 1);  /* 移除value，保留key */
+      }
+    }
+    lua_pop(L, 1);  /* 移除方法表 */
+    
+    /* 继续查找父接口 */
+    lua_pushstring(L, CLASS_KEY_PARENT);
+    lua_rawget(L, current_iface);
+    lua_remove(L, current_iface);
+  }
+  lua_pop(L, 3);  /* 移除非表值、抽象方法表、接口列表 */
 }
 
 
@@ -1873,11 +2893,137 @@ int luaC_implements(lua_State *L, int class_idx, int interface_idx) {
 
 
 /*
+** =====================================================================
+** 反射 API 包装函数 - 暴露 C API 到 Lua 全局环境
+** =====================================================================
+*/
+
+/* classof(obj) - 获取对象的类 */
+static int luaC_classof_wrap(lua_State *L) {
+  luaL_checkany(L, 1);
+  luaC_getclass(L, 1);
+  return 1;
+}
+
+/* getparent(class) - 获取类的父类 */
+static int luaC_getparent_wrap(lua_State *L) {
+  luaC_getparent(L, 1);
+  return 1;
+}
+
+/* classname(class) - 获取类名 */
+static int luaC_classname_wrap(lua_State *L) {
+  const char *name = luaC_classname(L, 1);
+  if (name) lua_pushstring(L, name);
+  else lua_pushnil(L);
+  return 1;
+}
+
+/* instanceof(obj, class) - 检查 obj 是否是 class 的实例 */
+static int luaC_instanceof_wrap(lua_State *L) {
+  int result = luaC_instanceof(L, 1, 2);
+  lua_pushboolean(L, result);
+  return 1;
+}
+
+/* isclass(value) - 检查是否是类 */
+static int luaC_isclass_wrap(lua_State *L) {
+  luaL_checkany(L, 1);
+  int result = luaC_isclass(L, 1);
+  lua_pushboolean(L, result);
+  return 1;
+}
+
+/* isobject(value) - 检查是否是对象 */
+static int luaC_isobject_wrap(lua_State *L) {
+  luaL_checkany(L, 1);
+  int result = luaC_isobject(L, 1);
+  lua_pushboolean(L, result);
+  return 1;
+}
+
+/* issubclass(child, parent) - 检查 child 是否是 parent 的子类 */
+static int luaC_issubclass_wrap(lua_State *L) {
+  int result = luaC_issubclass(L, 1, 2);
+  lua_pushboolean(L, result);
+  return 1;
+}
+
+
+/*
+** 泛型类特化：为泛型类创建绑定类型参数的特化子类
+** 参数：
+**   L - Lua 状态机
+**   class_idx - 泛型类在栈中的索引
+**   type_args_idx - 类型参数列表（table）在栈中的索引
+** 说明：
+**   创建泛型类的子类，将类型参数绑定到具体类型。
+**   特化后的类可以通过 ClassName<Type> 或 ClassName(Type) 创建。
+**   调用后栈顶为特化后的类表，原泛型类保持不变。
+*/
+static int luaC_specialize(lua_State *L, int class_idx, int type_args_idx) {
+  class_idx = absindex(L, class_idx);
+  type_args_idx = absindex(L, type_args_idx);
+  
+  /* 获取泛型参数列表，验证参数数量 */
+  lua_pushstring(L, CLASS_KEY_TYPEPARAMS);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    luaL_error(L, "class is not generic");
+    return 0;
+  }
+  int num_params = (int)luaL_len(L, -1);
+  lua_pop(L, 1);
+  
+  /* 创建特化类（作为泛型类的子类） */
+  lua_newtable(L);
+  int spec_idx = lua_gettop(L);
+  
+  /* 设置类标志 */
+  lua_pushstring(L, CLASS_KEY_ISCLASS);
+  lua_pushboolean(L, 1);
+  lua_rawset(L, spec_idx);
+  
+  lua_pushstring(L, CLASS_KEY_FLAGS);
+  lua_pushinteger(L, 0);
+  lua_rawset(L, spec_idx);
+  
+  /* 设置父类为泛型基类 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
+  lua_pushvalue(L, class_idx);
+  lua_rawset(L, spec_idx);
+  
+  /* 设置泛型基类引用 */
+  lua_pushstring(L, CLASS_KEY_GENERIC_BASE);
+  lua_pushvalue(L, class_idx);
+  lua_rawset(L, spec_idx);
+  
+  /* 设置类型参数绑定 */
+  lua_pushstring(L, CLASS_KEY_TYPEARGS);
+  lua_pushvalue(L, type_args_idx);
+  lua_rawset(L, spec_idx);
+  
+  /* 设置 MRO */
+  luaC_compute_mro(L, spec_idx);
+  
+  return 1;
+}
+
+
+/*
 ** 初始化类系统
 */
 void luaC_initclass(lua_State *L) {
-  /* 类系统初始化 - 可以在这里注册全局函数等 */
-  /* 目前不需要特殊初始化 */
+  /* 反射 API - 暴露到 Lua 全局环境 */
+  lua_register(L, "classof",    luaC_classof_wrap);
+  lua_register(L, "getparent",  luaC_getparent_wrap);
+  lua_register(L, "classname",  luaC_classname_wrap);
+  lua_register(L, "isinstance", luaC_instanceof_wrap);
+  lua_register(L, "isclass",    luaC_isclass_wrap);
+  lua_register(L, "isobject",   luaC_isobject_wrap);
+  lua_register(L, "issubclass", luaC_issubclass_wrap);
+  lua_register(L, "clone",      luaC_clone_wrap);
 }
 
 
@@ -2465,7 +3611,7 @@ int luaC_verify_interfaces(lua_State *L, int class_idx) {
   }
   lua_pop(L, 1);  /* 移除非表值 */
   
-  /* 遍历所有接口，验证方法实现 */
+  /* 遍历所有接口，验证方法实现（递归检查接口继承链） */
   for (int i = 1; i <= iface_count; i++) {
     lua_rawgeti(L, interfaces_collect_idx, i);
     int iface_idx = lua_gettop(L);
@@ -2480,43 +3626,55 @@ int luaC_verify_interfaces(lua_State *L, int class_idx) {
       strcpy(iface_name, "?");
     }
     
-    /* 获取接口的方法表 */
-    lua_pushstring(L, CLASS_KEY_METHODS);
-    lua_rawget(L, iface_idx);
-    if (lua_istable(L, -1)) {
-      int iface_methods_idx = lua_gettop(L);
+    /* 递归遍历接口及其父接口，收集所有方法并进行验证 */
+    lua_pushvalue(L, iface_idx);
+    while (lua_istable(L, -1)) {
+      int current_iface = lua_gettop(L);
       
-      /* 遍历接口的所有方法 */
-      lua_pushnil(L);
-      while (lua_next(L, iface_methods_idx) != 0) {
-        /* 栈顶: value(期望参数个数), key(方法名) */
-        int expected_params = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : -1;
-        lua_pop(L, 1);  /* 移除value，保留key用于查找 */
+      /* 获取当前接口的方法表 */
+      lua_pushstring(L, CLASS_KEY_METHODS);
+      lua_rawget(L, current_iface);
+      if (lua_istable(L, -1)) {
+        int iface_methods_idx = lua_gettop(L);
         
-        /* 获取实现方法的参数个数 */
-        int actual_params = get_method_numparams(L, class_idx, lua_gettop(L));
-        
-        if (actual_params < 0) {
-          /* 方法未实现 */
-          const char *classname = get_class_name_str(L, class_idx);
-          const char *methodname = lua_tostring(L, -1);
-          luaL_error(L, "class '%s' must implement method '%s' of interface '%s'",
-                     classname, methodname ? methodname : "?", iface_name);
-          return 0;
-        }
-        
-        /* 验证参数数量是否匹配 */
-        if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
-          const char *classname = get_class_name_str(L, class_idx);
-          const char *methodname = lua_tostring(L, -1);
-          luaL_error(L, "method '%s' from interface '%s' implemented by class '%s' has mismatched parameter count: expected %d, got %d",
-                     methodname ? methodname : "?", iface_name, classname,
-                     expected_params, actual_params);
-          return 0;
+        /* 遍历接口的所有方法 */
+        lua_pushnil(L);
+        while (lua_next(L, iface_methods_idx) != 0) {
+          /* 栈顶: value(期望参数个数), key(方法名) */
+          int expected_params = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : -1;
+          lua_pop(L, 1);  /* 移除value，保留key用于查找 */
+          
+          /* 获取实现方法的参数个数 */
+          int actual_params = get_method_numparams(L, class_idx, lua_gettop(L));
+          
+          if (actual_params < 0) {
+            /* 方法未实现 */
+            const char *classname = get_class_name_str(L, class_idx);
+            const char *methodname = lua_tostring(L, -1);
+            luaL_error(L, "class '%s' must implement method '%s' of interface '%s'",
+                       classname, methodname ? methodname : "?", iface_name);
+            return 0;
+          }
+          
+          /* 验证参数数量是否匹配 */
+          if (expected_params >= 0 && actual_params != expected_params && actual_params != expected_params + 1) {
+            const char *classname = get_class_name_str(L, class_idx);
+            const char *methodname = lua_tostring(L, -1);
+            luaL_error(L, "method '%s' from interface '%s' implemented by class '%s' has mismatched parameter count: expected %d, got %d",
+                       methodname ? methodname : "?", iface_name, classname,
+                       expected_params, actual_params);
+            return 0;
+          }
         }
       }
+      lua_pop(L, 1);  /* 移除接口方法表 */
+      
+      /* 继续查找父接口 */
+      lua_pushstring(L, CLASS_KEY_PARENT);
+      lua_rawget(L, current_iface);
+      lua_remove(L, current_iface);
     }
-    lua_pop(L, 1);  /* 移除接口方法表 */
+    lua_pop(L, 1);  /* 移除非表值 */
     lua_pop(L, 1);  /* 移除接口 */
   }
   
@@ -2563,6 +3721,56 @@ int luaC_can_override(lua_State *L, int class_idx, TString *name) {
   lua_pop(L, 1);
   
   return 1;  /* 可以重写 */
+}
+
+
+/*
+** 检查父类中是否存在指定方法（用于 override 关键字校验）
+** 参数：
+**   L - Lua状态机
+**   class_idx - 类表索引
+**   name - 方法名
+** 说明：
+**   递归检查继承链中是否存在该方法，如果不存在则抛出编译错误
+*/
+void luaC_checkoverride(lua_State *L, int class_idx, TString *name) {
+  class_idx = absindex(L, class_idx);
+  
+  /* 获取父类 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    luaL_error(L, "method '%s' declared override but class has no parent", getstr(name));
+    return;
+  }
+  
+  /* 检查父类的 METHODS 表中是否存在该方法 */
+  int parent_idx = lua_gettop(L);
+  lua_pushstring(L, CLASS_KEY_METHODS);
+  lua_rawget(L, parent_idx);
+  if (lua_istable(L, -1)) {
+    lua_pushlstring(L, getstr(name), tsslen(name));
+    lua_rawget(L, -2);
+    if (!lua_isnil(L, -1)) {
+      lua_pop(L, 3);  /* 方法存在，验证通过 */
+      return;
+    }
+    lua_pop(L, 1);  /* 弹出 nil */
+  }
+  lua_pop(L, 1);  /* 弹出 methods 表 */
+  
+  /* 递归检查父类的父类 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
+  lua_rawget(L, parent_idx);
+  if (lua_istable(L, -1)) {
+    luaC_checkoverride(L, -1, name);
+    lua_pop(L, 2);  /* 弹出父类的父类和原来的父类 */
+    return;
+  }
+  lua_pop(L, 2);  /* 弹出 nil 和父类 */
+  
+  luaL_error(L, "method '%s' declared override but no parent method found", getstr(name));
 }
 
 
@@ -2809,77 +4017,79 @@ void luaC_usetrait(lua_State *L, int class_idx, int trait_idx) {
     return;
   }
 
-  /* 1. 复制trait的公开方法到类 */
-  {
-    /* 获取类的公开方法表 */
+  /* 获取类的公开方法表（提前获取，后续代码块中复用） */
+  lua_pushstring(L, CLASS_KEY_METHODS);
+  lua_rawget(L, class_idx);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
     lua_pushstring(L, CLASS_KEY_METHODS);
-    lua_rawget(L, class_idx);
-    if (!lua_istable(L, -1)) {
-      lua_pop(L, 1);
-      lua_newtable(L);
-      lua_pushvalue(L, -1);
-      lua_pushstring(L, CLASS_KEY_METHODS);
-      lua_insert(L, -2);
-      lua_rawset(L, class_idx);
-    }
-    int class_methods = lua_gettop(L);
+    lua_insert(L, -2);
+    lua_rawset(L, class_idx);
+  }
+  int class_methods = lua_gettop(L);
 
-    /* 复制trait.__methods（如果存在） */
-    lua_pushstring(L, CLASS_KEY_METHODS);
-    lua_rawget(L, trait_idx);
-    if (lua_istable(L, -1)) {
-      int trait_methods = lua_gettop(L);
-      /* 复制方法（类已有的方法不覆盖） */
-      lua_pushnil(L);
-      while (lua_next(L, trait_methods) != 0) {
-        lua_pushvalue(L, -2);  /* 复制key */
-        lua_rawget(L, class_methods);
-        if (lua_isnil(L, -1)) {
-          lua_pop(L, 1);  /* 移除nil */
-          lua_pushvalue(L, -2);  /* key */
-          lua_pushvalue(L, -2);  /* value */
-          lua_rawset(L, class_methods);
-        } else {
-          lua_pop(L, 1);  /* 移除已有的值 */
-        }
-        lua_pop(L, 1);  /* 移除value */
-      }
-      lua_pop(L, 1);  /* 移除trait_methods */
-    }
-    lua_pop(L, 1);  /* 移除trait.__methods 或 nil */
-
-    /* 复制trait表上的直接函数字段（兼容编译器直接将方法存储到trait表的简化实现） */
+  /* 1. 复制trait.__methods（如果存在） */
+  lua_pushstring(L, CLASS_KEY_METHODS);
+  lua_rawget(L, trait_idx);
+  if (lua_istable(L, -1)) {
+    int trait_methods = lua_gettop(L);
+    /* 复制方法（类已有的方法不覆盖） */
     lua_pushnil(L);
-    while (lua_next(L, trait_idx) != 0) {
+    while (lua_next(L, trait_methods) != 0) {
       /* 栈: key, value */
-      if (lua_isfunction(L, -1)) {
-        /* 跳过内部键（以 __ 开头的键） */
-        if (lua_isstring(L, -2)) {
-          const char *k = lua_tostring(L, -2);
-          if (k && k[0] == '_' && k[1] == '_') {
-            lua_pop(L, 1);  /* 移除value */
-            continue;  /* 跳过内部键 */
-          }
+      lua_pushvalue(L, -2);  /* 复制key */
+      lua_rawget(L, class_methods);
+      if (lua_isnil(L, -1)) {
+        /* 类中不存在此方法，复制过去 */
+        lua_pop(L, 1);  /* 移除nil */
+        lua_pushvalue(L, -2);  /* 复制key */
+        lua_pushvalue(L, -2);  /* 复制value */
+        lua_rawset(L, class_methods);
+      } else {
+        /* 类中已存在此方法，跳过 */
+        lua_pop(L, 1);  /* 移除已有的值 */
+      }
+      lua_pop(L, 1);  /* 移除value，保留key供lua_next使用 */
+    }
+    lua_pop(L, 1);  /* 移除trait.__methods表 */
+  }
+  lua_pop(L, 1);  /* 移除trait.__methods 或 nil */
+
+  /* 2. 复制trait表上的直接函数字段（兼容编译器直接将方法存储到trait表的简化实现） */
+  lua_pushnil(L);
+  while (lua_next(L, trait_idx) != 0) {
+    /* 栈: key, value */
+    if (lua_isfunction(L, -1)) {
+      /* 跳过内部键（以 __ 开头的键） */
+      int skip = 0;
+      if (lua_isstring(L, -2)) {
+        const char *k = lua_tostring(L, -2);
+        if (k && k[0] == '_' && k[1] == '_') {
+          skip = 1;
         }
+      }
+      if (!skip) {
         /* 检查类是否已有此方法 */
         lua_pushvalue(L, -2);  /* 复制key */
         lua_rawget(L, class_methods);
         if (lua_isnil(L, -1)) {
+          /* 类中不存在此方法，复制过去 */
           lua_pop(L, 1);  /* 移除nil */
-          lua_pushvalue(L, -2);  /* key */
-          lua_pushvalue(L, -2);  /* value */
+          lua_pushvalue(L, -2);  /* 复制key */
+          lua_pushvalue(L, -2);  /* 复制value */
           lua_rawset(L, class_methods);
         } else {
+          /* 类中已存在此方法，跳过 */
           lua_pop(L, 1);  /* 移除已有的值 */
         }
       }
-      lua_pop(L, 1);  /* 移除value */
     }
-
-    lua_pop(L, 1);  /* 移除class_methods */
+    lua_pop(L, 1);  /* 移除value，保留key供lua_next使用 */
   }
 
-  /* 2. 收集trait的require方法到类的__trait_requires表 */
+  /* 3. 收集trait的require方法到类的__trait_requires表 */
   lua_pushstring(L, CLASS_KEY_TRAIT_REQUIRES);
   lua_rawget(L, trait_idx);
   if (lua_istable(L, -1)) {

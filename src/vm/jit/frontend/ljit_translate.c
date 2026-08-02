@@ -101,8 +101,8 @@ static void update_state_after_ins(Proto *proto, Instruction i, ljit_type_t *sta
         /* 这些指令不定义新值，只是修改对象内容，保持寄存器类型不变 */
         case OP_SETTABLE: case OP_SETTABUP: case OP_MAPSET:
         case OP_SETLIST: case OP_SETUPVAL: case OP_SETI:
-        case OP_SETFIELD: case OP_SETMETHOD: case OP_SETPROP:
-        case OP_SETSTATIC: case OP_SETSUPER: case OP_CLOSE:
+        case OP_SETFIELD: case OP_SETMETHOD: case OP_CHECKOVERRIDE:
+        case OP_SETPROP: case OP_SETSTATIC: case OP_SETSUPER: case OP_CLOSE:
         case OP_TBC:
             break;
         case OP_LOADNIL: {
@@ -831,6 +831,14 @@ void ljit_translate(ljit_ctx_t *ctx) {
                     ljit_ir_append(ctx, node);
                     break;
                 }
+                case OP_EXTENDIFACE: {
+                    ljit_ir_node_t *node = ljit_ir_new(IR_EXTENDIFACE, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                    node->flags = JIT_TYPE_ANY;
+                    ljit_ir_append(ctx, node);
+                    break;
+                }
                 case OP_IN: {
                     ljit_ir_node_t *node = ljit_ir_new(IR_IN, pc);
                     node->flags = JIT_TYPE_ANY;
@@ -1187,6 +1195,30 @@ void ljit_translate(ljit_ctx_t *ctx) {
                     }
                     node->flags = state[GETARG_A(i)];
                     ljit_ir_append(ctx, node);
+                    break;
+                }
+                case OP_ASCLASS: {
+                    /* 安全类型转换：obj as ClassName → IR_ASCLASS
+                     * 格式: OP_ASCLASS A B C, R[A] = (R[B] instanceof R[C]) ? R[B] : nil */
+                    ljit_ir_node_t *node = ljit_ir_new(IR_ASCLASS, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                    node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                    node->flags = JIT_TYPE_ANY;
+                    ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "OP_ASCLASS: pc=%d A=%d B=%d C=%d", pc, GETARG_A(i), GETARG_B(i), GETARG_C(i));
+                    break;
+                }
+                case OP_MULTIINHERIT: {
+                    /* 多重继承：class C extends A, B → IR_MULTIINHERIT
+                     * 格式: OP_MULTIINHERIT A B C, R[A] 合并 R[B..C] 作为父类 */
+                    ljit_ir_node_t *node = ljit_ir_new(IR_MULTIINHERIT, pc);
+                    node->dest.type = IR_VAL_REG; node->dest.v.reg = GETARG_A(i);
+                    node->src1.type = IR_VAL_REG; node->src1.v.reg = GETARG_B(i);
+                    node->src2.type = IR_VAL_REG; node->src2.v.reg = GETARG_C(i);
+                    node->flags = JIT_TYPE_ANY;
+                    ljit_ir_append(ctx, node);
+                    JIT_DBG(MOD_TR, "OP_MULTIINHERIT: pc=%d A=%d B=%d C=%d", pc, GETARG_A(i), GETARG_B(i), GETARG_C(i));
                     break;
                 }
                 default: {

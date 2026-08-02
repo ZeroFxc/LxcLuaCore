@@ -24,6 +24,7 @@
 #define CLASS_FLAG_INTERFACE  (1 << 2)   /**< Interface type. */
 #define CLASS_FLAG_SEALED     (1 << 3)   /**< Sealed class. */
 #define CLASS_FLAG_TRAIT      (1 << 4)   /**< Trait type (cannot be instantiated, provides default methods). */
+#define CLASS_FLAG_SINGLETON  (1 << 5)   /**< Singleton class, only one instance allowed. */
 /**@}*/
 
 /** @name Access Control Levels */
@@ -49,11 +50,15 @@
 /**@{*/
 #define CLASS_KEY_NAME       "__classname"    /**< Class name. */
 #define CLASS_KEY_PARENT     "__parent"       /**< Parent class reference. */
+#define CLASS_KEY_PARENTS    "__parents"      /**< Multi-parent class references (array). */
 #define CLASS_KEY_METHODS    "__methods"      /**< Public methods table. */
 #define CLASS_KEY_STATICS    "__statics"      /**< Static members table. */
 #define CLASS_KEY_PRIVATES   "__privates"     /**< Private members table. */
 #define CLASS_KEY_PROTECTED  "__protected"    /**< Protected members table. */
-#define CLASS_KEY_INIT       "__init__"       /**< Constructor. */
+#define CLASS_KEY_INIT       "init"           /**< Constructor. */
+#define CLASS_KEY_NEW        "new"            /**< Constructor alias. */
+/** 向后兼容的旧构造函数名，使用时会触发弃用警告 */
+#define CLASS_KEY_INIT_LEGACY "__init__"
 #define CLASS_KEY_DESTRUCTOR "__gc"           /**< Destructor. */
 #define CLASS_KEY_ISCLASS    "__isclass"      /**< Is-a-class flag. */
 #define CLASS_KEY_INTERFACES "__interfaces"   /**< Implemented interfaces list. */
@@ -67,8 +72,13 @@
 #define CLASS_KEY_PROTECTED_GETTERS "__protected_getters" /**< Protected getter table. */
 #define CLASS_KEY_PROTECTED_SETTERS "__protected_setters" /**< Protected setter table. */
 #define CLASS_KEY_MEMBER_FLAGS "__member_flags" /**< Member flags table. */
+#define CLASS_KEY_MRO          "__mro"          /**< Method Resolution Order list (C3 linearization). */
+#define CLASS_KEY_SINGLETON_INST "__singleton_inst" /**< Cached singleton instance. */
 #define CLASS_KEY_TRAITS       "__traits"       /**< Used traits table. */
 #define CLASS_KEY_TRAIT_REQUIRES "__trait_requires" /**< Required methods from traits. */
+#define CLASS_KEY_TYPEPARAMS   "__typeparams"   /**< Generic type parameters list. */
+#define CLASS_KEY_TYPEARGS     "__typeargs"      /**< Bound type arguments for specialized class. */
+#define CLASS_KEY_GENERIC_BASE "__generic_base"  /**< Base generic class (for specialization). */
 /**@}*/
 
 /** @name Object Metadata Keys */
@@ -76,6 +86,7 @@
 #define OBJ_KEY_CLASS        "__class"        /**< Class the object belongs to. */
 #define OBJ_KEY_ISOBJ        "__isobject"     /**< Is-an-object flag. */
 #define OBJ_KEY_PRIVATES     "__obj_privates" /**< Object private data. */
+#define OBJ_KEY_INIT_CALLED  "__init_called"  /**< Temporary init-call tracking table. */
 /**@}*/
 
 /*
@@ -98,6 +109,13 @@ LUAI_FUNC void luaC_newclass(lua_State *L, TString *name);
  * @param parent_idx Stack index of the parent class.
  */
 LUAI_FUNC void luaC_inherit(lua_State *L, int child_idx, int parent_idx);
+
+/**
+ * @brief Computes C3 linearization MRO for a class.
+ * @param L Lua state.
+ * @param class_idx Stack index of the class.
+ */
+LUAI_FUNC void luaC_compute_mro(lua_State *L, int class_idx);
 
 /**
  * @brief Creates an instance of a class.
@@ -204,8 +222,17 @@ LUAI_FUNC const char *luaC_classname(lua_State *L, int class_idx);
  * @brief Creates a new interface.
  * @param L Lua state.
  * @param name Interface name.
+ * @param parent_idx Stack index of parent interface (-1 for none).
  */
-LUAI_FUNC void luaC_newinterface(lua_State *L, TString *name);
+LUAI_FUNC void luaC_newinterface(lua_State *L, TString *name, int parent_idx);
+
+/**
+ * @brief Sets interface extends relationship.
+ * @param L Lua state.
+ * @param child_idx Stack index of child interface.
+ * @param parent_idx Stack index of parent interface.
+ */
+LUAI_FUNC void lua_extendiface(lua_State *L, int child_idx, int parent_idx);
 
 /**
  * @brief Implements an interface in a class.
@@ -313,6 +340,15 @@ LUAI_FUNC int luaC_verify_interfaces(lua_State *L, int class_idx);
  * @return 1 if can override, 0 otherwise.
  */
 LUAI_FUNC int luaC_can_override(lua_State *L, int class_idx, TString *name);
+
+/**
+ * @brief Checks if a method can be overridden (for override keyword).
+ *   Throws an error if the parent class does not have the method.
+ * @param L Lua state.
+ * @param class_idx Stack index of the class.
+ * @param name Method name.
+ */
+LUAI_FUNC void luaC_checkoverride(lua_State *L, int class_idx, TString *name);
 
 /**
  * @brief Sets a getter method.

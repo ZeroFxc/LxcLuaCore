@@ -78,6 +78,7 @@ static LspKeywordEntry lua_keywords[] = {
     {"requires",  COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Module dependency declaration"},
     {"sealed",    COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Declare a sealed class"},
     {"set",       COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Define a setter property accessor"},
+    {"singleton", COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Declare a singleton class (single instance)"},
     {"static",    COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Static member modifier"},
     {"struct",    COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Define a struct type"},
     {"super",     COMPLETION_KEYWORD, "Keyword (LXCLUA)", "Reference to parent class"},

@@ -1345,12 +1345,32 @@ int lsp_linked_editing_range(LspDocument *doc, int line, int col, int **out_line
  * @param uri 文档URI
  */
 void lsp_publish_diagnostics(void *server, const char *uri) {
-    /* This is a stub - full implementation would use a callback 
-     * registered via lsp_set_send_callback() to push notifications
-     * to the connected editor. In its current form, diagnostics are 
-     * served through the pull model (textDocument/diagnostic). */
-    (void)server;
-    (void)uri;
+    LspServer *srv = (LspServer *)server;
+    if (!srv || !uri || !*uri) return;
+    LspDocument *doc = lsp_doc_find(srv, uri);
+    LspDiagnostic *diags = NULL;
+    int ndiags = doc ? lsp_diagnostic(doc, &diags) : 0;
+    JsonValue *params = json_new_object();
+    json_object_set(params, "uri", json_new_string(uri));
+    if (doc && doc->version > 0) {
+        json_object_set(params, "version", json_new_number(doc->version));
+    }
+    JsonValue *diag_arr = lsp_build_diagnostics_arr(diags, ndiags);
+    json_object_set(params, "diagnostics", diag_arr);
+    if (diags) {
+        for (int i = 0; i < ndiags; i++) {
+            lsp_free(diags[i].message);
+            lsp_free(diags[i].source);
+        }
+        lsp_free(diags);
+    }
+    JsonRpcMessage *notif = jrpc_new_notification(LSP_METHOD_PUBLISH_DIAGNOSTICS, params);
+    json_free(params);
+    if (notif) {
+        char *serialized = jrpc_serialize(notif);
+        lsp_free(serialized);
+        jrpc_free(notif);
+    }
 }
 
 /*

@@ -2121,6 +2121,9 @@ LUA_API int lua_next (lua_State *L, int idx) {
     }
   } else if (ttissuperstruct(t)) {
     more = luaS_next(L, superstructvalue(t), L->top.p - 1);
+  } else if (ttisnamespace(t)) {
+    /* namespace 类型：遍历内部 data 表 */
+    more = luaH_next(L, nsvalue(t)->data, L->top.p - 1);
   } else {
     api_check(L, 0, "table or superstruct expected");
     more = 0;
@@ -2377,6 +2380,12 @@ LUA_API void lua_newobject (lua_State *L, int class_idx, int nargs) {
 LUA_API void lua_setmethod (lua_State *L, int class_idx, const char *name, int func_idx) {
   lua_lock(L);
   luaC_setmethod(L, class_idx, luaS_new(L, name), func_idx);
+  lua_unlock(L);
+}
+
+LUA_API void lua_checkoverride (lua_State *L, int class_idx, const char *name) {
+  lua_lock(L);
+  luaC_checkoverride(L, class_idx, luaS_new(L, name));
   lua_unlock(L);
 }
 
