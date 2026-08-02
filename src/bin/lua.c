@@ -86,7 +86,8 @@ static void laction (int i) {
 
 static void print_usage (const char *badoption) {
   lua_writestringerror("%s: ", progname);
-  if (badoption[1] == 'e' || badoption[1] == 'l')
+  if (badoption[1] == 'e' || badoption[1] == 'l' ||
+      badoption[1] == 'C' || badoption[1] == 'o')
     lua_writestringerror("'%s' needs argument\n", badoption);
   else
     lua_writestringerror("unrecognized option '%s'\n", badoption);
@@ -100,6 +101,8 @@ static void print_usage (const char *badoption) {
   "  -v        show version information\n"
   "  -E        ignore environment variables\n"
   "  -W        turn warnings on\n"
+  "  -C file   translate lua 'file' to C code (lbctc transpile)\n"
+  "  -o file   output file for -C option (default: stdout or <input>.c)\n"
   "  --        stop handling options\n"
   "  -         stop handling options and execute stdin\n"
   ,
@@ -272,12 +275,89 @@ static int handle_script (lua_State *L, char **argv) {
 }
 
 
+/*
+** 功能：处理 lbctc 转译，将输入 lua 文件通过 tcc 库转译为 C 代码
+** 参数：
+**   L      - Lua 状态机指针
+**   argv   - 命令行参数数组（含程序名）
+** 返回值：成功返回 LUA_OK，失败返回错误码并在栈顶留下错误信息
+*/
+static int handle_lbctc_translate (lua_State *L, char **argv) {
+  int i;
+  const char *input_file = NULL;
+  const char *output_file = NULL;
+  int status;
+
+  /* 遍历 argv，找到 -C 和 -o 的参数值 */
+  for (i = 1; argv[i] != NULL; i++) {
+    if (argv[i][0] != '-') break;  /* 遇到非选项停止 */
+    if (argv[i][1] == 'C') {
+      if (argv[i][2] != '\0')
+        input_file = argv[i] + 2;
+      else
+        input_file = argv[++i];
+    } else if (argv[i][1] == 'o') {
+      if (argv[i][2] != '\0')
+        output_file = argv[i] + 2;
+      else
+        output_file = argv[++i];
+    } else if (argv[i][1] == '-' && argv[i][2] == '\0') {
+      break;  /* '--' 停止处理选项 */
+    }
+  }
+
+  if (input_file == NULL) {
+    lua_pushstring(L, "-C option requires input lua file");
+    return LUA_ERRRUN;
+  }
+
+  /* 构造 Lua 脚本：读文件 -> require tcc -> tcc.compile -> 写输出 */
+  const char *script =
+    "local infile, outfile = ...\n"
+    "local f = assert(io.open(infile, 'rb'), 'cannot open input file: ' .. infile)\n"
+    "local src = f:read('*a')\n"
+    "f:close()\n"
+    "local tcc = assert(require('tcc'), 'tcc module not available')\n"
+    "local ccode, err = tcc.compile(src)\n"
+    "if not ccode then error(err or 'tcc.compile failed') end\n"
+    "if outfile and outfile ~= '' then\n"
+    "  local of = assert(io.open(outfile, 'wb'), 'cannot open output file: ' .. outfile)\n"
+    "  of:write(ccode)\n"
+    "  of:close()\n"
+    "else\n"
+    "  io.write(ccode)\n"
+    "  io.flush()\n"
+    "end\n"
+    "return true\n";
+
+  /* 加载脚本 */
+  status = luaL_loadbuffer(L, script, strlen(script), "=lbctc_cli");
+  if (status != LUA_OK) {
+    return status;  /* 加载失败，栈顶有错误信息 */
+  }
+
+  /* 压入脚本参数：input_file 和 output_file */
+  lua_pushstring(L, input_file);
+  lua_pushstring(L, output_file ? output_file : "");
+
+  /* 执行脚本 */
+  status = docall(L, 2, 1);
+  if (status != LUA_OK) {
+    return status;  /* 执行失败，栈顶有错误信息 */
+  }
+
+  lua_pop(L, 1);  /* 弹出返回值 true */
+  return LUA_OK;
+}
+
+
 /* bits of various argument indicators in 'args' */
 #define has_error	1	/* bad option */
 #define has_i		2	/* -i */
 #define has_v		4	/* -v */
 #define has_e		8	/* -e */
 #define has_E		16	/* -E */
+#define has_C		32	/* -C (lbctc transpile) */
 
 
 /*
@@ -329,6 +409,16 @@ static int collectargs (char **argv, int *first) {
       case 'e':
         args |= has_e;  /* FALLTHROUGH */
       case 'l':  /* both options need an argument */
+        if (argv[i][2] == '\0') {  /* no concatenated argument? */
+          i++;  /* try next 'argv' */
+          if (argv[i] == NULL || argv[i][0] == '-')
+            return has_error;  /* no next argument or it is another option */
+        }
+        break;
+      case 'C':  /* -C needs an argument (input lua file) */
+        args |= has_C;  /* 先设置 has_C 标志，再 fall through 到参数检查 */
+        /* FALLTHROUGH */
+      case 'o':  /* -o needs an argument (output c file) */
         if (argv[i][2] == '\0') {  /* no concatenated argument? */
           i++;  /* try next 'argv' */
           if (argv[i] == NULL || argv[i][0] == '-')
@@ -647,6 +737,18 @@ static int pmain (lua_State *L) {
   createargtable(L, argv, argc, script);  /* create table 'arg' */
   lua_gc(L, LUA_GCRESTART);  /* start GC... */
   lua_gc(L, LUA_GCGEN, 0, 0);  /* ...in generational mode */
+
+  /* 如果指定了 -C，执行 lbctc 转译后直接退出，不进入正常脚本/REPL 流程 */
+  if (args & has_C) {
+    int lbctc_status = handle_lbctc_translate(L, argv);
+    if (lbctc_status != LUA_OK) {
+      report(L, lbctc_status);
+      return 0;  /* 失败 */
+    }
+    lua_pushboolean(L, 1);  /* signal no errors */
+    return 1;  /* 成功 */
+  }
+
   if (!(args & has_E)) {  /* no option '-E'? */
     if (handle_luainit(L) != LUA_OK)  /* run LUA_INIT */
       return 0;  /* error running LUA_INIT */

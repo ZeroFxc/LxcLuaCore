@@ -543,7 +543,7 @@ static int luaB_type (lua_State *L) {
 
 int luaB_next (lua_State *L) {
   int t = lua_type(L, 1);
-  luaL_argcheck(L, t == LUA_TTABLE || t == LUA_TMAP || t == LUA_TSUPERSTRUCT, 1, "table, map or superstruct expected");
+  luaL_argcheck(L, t == LUA_TTABLE || t == LUA_TMAP || t == LUA_TSUPERSTRUCT || t == LUA_VNAMESPACE, 1, "table, map or superstruct expected");
   lua_settop(L, 2);  /* create a 2nd argument if there isn't one */
   if (lua_next(L, 1))
     return 2;
@@ -614,6 +614,13 @@ static int luaB_pairs (lua_State *L) {
   int t = lua_type(L, 1);
   /* map容器无元表，直接使用内置next遍历 */
   if (t == LUA_TMAP) {
+    lua_pushcfunction(L, luaB_next);  /* generator */
+    lua_pushvalue(L, 1);  /* state */
+    lua_pushnil(L);  /* initial value */
+    return 3;
+  }
+  /* namespace 类型：直接使用内置 next 遍历 */
+  if (t == LUA_VNAMESPACE) {
     lua_pushcfunction(L, luaB_next);  /* generator */
     lua_pushvalue(L, 1);  /* state */
     lua_pushnil(L);  /* initial value */
@@ -2692,6 +2699,9 @@ LUAMOD_API int luaopen_base (lua_State *L) {
 
   /* 将内部表存储到注册表中 */
   lua_setfield(L, LUA_REGISTRYINDEX, "LXC_INTERNAL");
+
+  /* 初始化类系统（注册反射 API 到全局） */
+  luaC_initclass(L);
 
   return 1;
 }

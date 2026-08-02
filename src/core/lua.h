@@ -1701,6 +1701,7 @@ LUA_API void  (lua_newclass) (lua_State *L, const char *name);
 LUA_API void  (lua_inherit) (lua_State *L, int child_idx, int parent_idx);
 LUA_API void  (lua_newobject) (lua_State *L, int class_idx, int nargs);
 LUA_API void  (lua_setmethod) (lua_State *L, int class_idx, const char *name, int func_idx);
+LUA_API void  (lua_checkoverride) (lua_State *L, int class_idx, const char *name);
 LUA_API void  (lua_setstatic) (lua_State *L, int class_idx, const char *name, int value_idx);
 LUA_API void  (lua_getprop) (lua_State *L, int obj_idx, const char *key);
 LUA_API void  (lua_setprop) (lua_State *L, int obj_idx, const char *key, int value_idx);

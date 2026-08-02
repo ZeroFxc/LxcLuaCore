@@ -366,8 +366,10 @@ OP_TESTNIL,/*	A B k	if (R[B] is nil) == k then pc++ else R[A] := R[B]	*/
 ------------------------------------------------------------------------*/
 OP_NEWCLASS,/*	A Bx	R[A] := 创建新类，类名为K[Bx]			*/
 OP_INHERIT,/*	A B	R[A].__parent := R[B]，设置类继承关系		*/
+OP_MULTIINHERIT,/*	A B	R[A] inherits from multiple parents stored in R[B] (array) */
 OP_GETSUPER,/*	A B C	R[A] := R[B].__parent[K[C]:shortstring]	调用父类方法	*/
 OP_SETMETHOD,/*	A B C	R[A][K[B]:shortstring] := R[C]，设置类方法		*/
+OP_CHECKOVERRIDE,/*	A B C	校验R[A]类的父类中存在K[B]:shortstring方法，用于override关键字	*/
 OP_SETSTATIC,/*	A B C	R[A].__static[K[B]:shortstring] := R[C]，设置静态成员	*/
 OP_NEWOBJ,/*	A B C	R[A] := R[B]()，使用R[B]类创建新对象，参数C个	*/
 OP_GETPROP,/*	A B C	R[A] := R[B][K[C]:shortstring]，获取属性（考虑继承链）*/
@@ -376,6 +378,8 @@ OP_INSTANCEOF,/*A B C k	if ((R[A] instanceof R[B]) ~= k) then pc++	*/
 OP_IMPLEMENT,/*	A B	R[A] implements R[B]，类实现接口			*/
 OP_SETIFACEFLAG,/*A	设置R[A]为接口（设置CLASS_FLAG_INTERFACE）	*/
 OP_ADDMETHOD,/*	A B C	R[A].__methods[K[B]] := K[C]，添加接口方法签名	*/
+OP_EXTENDIFACE,/*	A B	R[A].__parent := R[B]，接口继承父接口		*/
+OP_ASCLASS,/*	A B C	R[A] := (R[B] instanceof R[C]) ? R[B] : nil，安全类型转换	*/
 
 OP_IN,/*	A B C	R[A] := R[B] in R[C]				*/
 
@@ -385,10 +389,11 @@ OP_IN,/*	A B C	R[A] := R[B] in R[C]				*/
 OP_SETTRAITFLAG,/*	A	设置R[A]为Trait（设置CLASS_FLAG_TRAIT）	*/
 OP_SETTRAITREQUIRE,/*	A B C	R[A].__trait_requires[K[B]] := C，注册trait所需方法	*/
 OP_USETRAIT,/*	A B	R[A] use R[B]，将trait方法复制到类中	*/
+OP_STATICINIT,/*	A B	R[A] := static_init(R[B])，类静态构造函数		*/
 
 /*----------------------------------------------------------------------
   切片操作码 - 支持 Python 风格的切片语法 t[start:end:step]
-------------------------------------------------------------------------*/
+-------------------------------------------------------------------------*/
 OP_SLICE,/*	A B C	R[A] := slice(R[B], R[B+1], R[B+2], R[B+3])
 			B = 源表寄存器
 			B+1 = start (起始索引，nil表示1)

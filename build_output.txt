@@ -1,1 +1,1 @@
-make: *** [Makefile:313: mingw] Error 2
+make[1]: Leaving directory '/e/Soft/Proje/LXCLUA-NCore/lua'

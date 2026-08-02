@@ -170,7 +170,8 @@ typedef enum {
   AST_BIN_NULLCOAL,
   AST_BIN_CASE,
   AST_BIN_INFIX,
-  AST_BIN_MERGE
+  AST_BIN_MERGE,
+  AST_BIN_AS
 } AstBinOp;
 
 
@@ -500,6 +501,7 @@ typedef enum {
   AST_MEMBER_PROPERTY,    /**< 属性 */
   AST_MEMBER_GETTER,      /**< getter 属性访问器 */
   AST_MEMBER_SETTER,      /**< setter 属性访问器 */
+  AST_MEMBER_NESTED_CLASS, /**< 嵌套类（内部类） */
 } AstMemberKind;
 
 /* ---------- 类成员 ---------- */
@@ -511,6 +513,7 @@ typedef struct AstClassMember {
   union {
     AstFunc *method_func;      /**< 方法/抽象方法/final方法的函数体 */
     AstExpr *property_value;   /**< 属性初始值 */
+    AstStmt *nested_class;     /**< 嵌套类定义的 AST 语句节点 */
   } u;
   int line;
 } AstClassMember;
@@ -757,21 +760,26 @@ struct AstStmt {
       AstBlock body;
       AstKVPair *entries;   /**< struct/superstruct 字段数组 */
       int nentries;          /**< 字段数量 */
+      TString **extends_names;  /**< 接口继承的父接口名数组（仅interface使用） */
+      int nextends;             /**< 父接口数量 */
     } nsstruct;
 
     /* AST_STMT_CLASS */
     /* 完整类定义：修饰符、继承、接口实现、trait混入 */
     struct {
       TString *name;           /**< 类名 */
-      TString *extends_name;   /**< 父类名（NULL表示无父类） */
+      TString **extends_names;  /**< 父类名数组（NULL表示无父类，支持多继承） */
+      int nextends;             /**< 父类数量 */
       TString **implements;    /**< 实现的接口名数组 */
       int nimplements;         /**< 接口数量 */
       TString **use_traits;    /**< 混入的trait名数组 */
       int nuse_traits;         /**< trait数量 */
-      int class_flags;         /**< 类修饰符标志（CLASS_FLAG_ABSTRACT/FINAL/SEALED） */
+      int class_flags;         /**< 类修饰符标志（CLASS_FLAG_ABSTRACT/FINAL/SEALED/SINGLETON） */
       AstBlock body;           /**< 类体（兼容旧格式：如果 members==NULL 则使用 body） */
       AstClassMember *members; /**< 类成员数组（新格式） */
       int nmembers;            /**< 成员数量 */
+      TString **generic_params; /**< 泛型类型参数名数组，class<T> 语法，无泛型则为 NULL */
+      int ngeneric_params;      /**< 泛型参数数量 */
     } classstmt;
 
     /* AST_STMT_TAKE */

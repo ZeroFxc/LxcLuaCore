@@ -721,7 +721,7 @@ AstStmt *ast_new_stmt_block(AstPool *p, int line) {
  */
 void ast_block_add_stmt(AstPool *p, AstBlock *blk, AstStmt *s) {
   if (blk->count >= blk->capacity) {
-    int newcap = blk->capacity * 2;
+    int newcap = (blk->capacity == 0) ? AST_BLOCK_INIT_CAP : blk->capacity * 2;
     AstStmt **newitems = cast(AstStmt **, ast_pool_alloc(p, sizeof(AstStmt *) * newcap));
     int i;
     for (i = 0; i < blk->count; i++) {
@@ -1215,6 +1215,8 @@ AstStmt *ast_new_stmt_typed(AstPool *p, AstStmtKind kind, TString *name, AstBloc
   if (body != NULL) s->u.nsstruct.body = *body;
   s->u.nsstruct.entries = NULL;
   s->u.nsstruct.nentries = 0;
+  s->u.nsstruct.extends_names = NULL;
+  s->u.nsstruct.nextends = 0;
   return s;
 }
 
@@ -1246,6 +1248,8 @@ AstStmt *ast_new_stmt_typed_pairs(AstPool *p, AstStmtKind kind, TString *name, A
   } else {
     s->u.nsstruct.entries = NULL;
   }
+  s->u.nsstruct.extends_names = NULL;
+  s->u.nsstruct.nextends = 0;
   return s;
 }
 
@@ -1833,6 +1837,7 @@ static const char *binop_name(AstBinOp op) {
     case AST_BIN_CASE: return "<>";
     case AST_BIN_INFIX: return "infix";
     case AST_BIN_MERGE: return "merge";
+    case AST_BIN_AS: return "as";
     default: return "?";
   }
 }
@@ -2697,8 +2702,19 @@ void ast_dump_stmt(FILE *out, AstStmt *s, int indent) {
       break;
     case AST_STMT_CLASS:
       fprintf(out, "(class %s", getstr(s->u.classstmt.name));
-      if (s->u.classstmt.extends_name) {
-        fprintf(out, " extends %s", getstr(s->u.classstmt.extends_name));
+      if (s->u.classstmt.generic_params && s->u.classstmt.ngeneric_params > 0) {
+        fprintf(out, "<");
+        for (int gi = 0; gi < s->u.classstmt.ngeneric_params; gi++) {
+          if (gi > 0) fprintf(out, ", ");
+          fprintf(out, "%s", getstr(s->u.classstmt.generic_params[gi]));
+        }
+        fprintf(out, ">");
+      }
+      if (s->u.classstmt.extends_names && s->u.classstmt.nextends > 0) {
+        fprintf(out, " extends");
+        for (int ei = 0; ei < s->u.classstmt.nextends; ei++) {
+          fprintf(out, " %s", getstr(s->u.classstmt.extends_names[ei]));
+        }
       }
       /* 打印结构化成员 */
       if (s->u.classstmt.members != NULL) {
@@ -2722,6 +2738,7 @@ void ast_dump_stmt(FILE *out, AstStmt *s, int indent) {
             case AST_MEMBER_PROPERTY: fputs("property ", out); break;
             case AST_MEMBER_GETTER: fputs("getter ", out); break;
             case AST_MEMBER_SETTER: fputs("setter ", out); break;
+            case AST_MEMBER_NESTED_CLASS: fputs("nested_class ", out); break;
           }
           fprintf(out, "%s", getstr(m->name));
           if (m->kind != AST_MEMBER_PROPERTY && m->u.method_func != NULL) {

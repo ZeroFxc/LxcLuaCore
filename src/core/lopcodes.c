@@ -111,8 +111,10 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  /* 面向对象系统操作码 */
  ,opmode(0, 0, 0, 0, 1, iABx)		/* OP_NEWCLASS */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_INHERIT */
+ ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_MULTIINHERIT */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_GETSUPER */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_SETMETHOD */
+ ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_CHECKOVERRIDE */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_SETSTATIC */
  ,opmode(0, 1, 1, 0, 1, iABC)		/* OP_NEWOBJ */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_GETPROP */
@@ -121,11 +123,14 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_IMPLEMENT */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_SETIFACEFLAG */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_ADDMETHOD */
+ ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_EXTENDIFACE */
+ ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_ASCLASS */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_IN */
  /* Trait/Mixin 系统操作码 */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_SETTRAITFLAG */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_SETTRAITREQUIRE */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_USETRAIT */
+ ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_STATICINIT */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_SLICE */
  ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_NOP - 空操作，不设置任何寄存器 */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_CASE */

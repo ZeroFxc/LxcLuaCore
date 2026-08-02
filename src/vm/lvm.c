@@ -1030,6 +1030,39 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
            }
            ns = ns->using_next;
         } while (ns);
+        /* 未找到 key，检查 data 表的 __index 元表（回退到全局表） */
+        {
+          Table *first_data = nsvalue(t)->data;
+          printf("[DEBUG] luaV_finishget ns: first_data=%p, metatable=%p, key='%s'\n",
+                 (void*)first_data, first_data ? (void*)first_data->metatable : NULL,
+                 key ? getstr(tsvalue(key)) : "???");
+          if (first_data && first_data->metatable) {
+            GCObject *mt = first_data->metatable;
+            printf("[DEBUG] luaV_finishget ns: mt->tt=%d, flags=0x%x, TM_INDEX=%d, bit=%d\n",
+                   mt->tt, ((Table*)mt)->flags, TM_INDEX, (int)(((Table*)mt)->flags & (1u<<TM_INDEX)));
+            const TValue *tm = fasttm(L, first_data->metatable, TM_INDEX);
+            printf("[DEBUG] luaV_finishget ns: tm=%p, ttistable=%d\n",
+                   (void*)tm, tm ? ttistable(tm) : 0);
+            if (tm != NULL) {
+              if (ttisfunction(tm)) {
+                luaT_callTMres(L, tm, t, key, val);
+                return;
+              }
+              /* __index 是表，直接在表中查找 key */
+              if (ttistable(tm)) {
+                Table *h = hvalue(tm);
+                if (h->is_shared) l_rwlock_rdlock(&h->lock);
+                const TValue *res = luaH_get(h, key);
+                if (!isempty(res)) {
+                  setobj2s(L, val, res);
+                  if (h->is_shared) l_rwlock_unlock(&h->lock);
+                  return;
+                }
+                if (h->is_shared) l_rwlock_unlock(&h->lock);
+              }
+            }
+          }
+        }
         setnilvalue(s2v(val));
         return;
       } else if (ttissuperstruct(t)) {
@@ -1041,6 +1074,19 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
         }
         setnilvalue(s2v(val));
         return;
+      } else if (ttismap(t)) {
+        /* map 类型：先在内部数据中查找，未找到则查 __index 元方法 */
+        const TValue *res = luaM_getval(mapvalue(t), key);
+        if (res != NULL) {
+          setobj2s(L, val, res);
+          return;
+        }
+        /* 检查 map 的 metatable 或全局 LUA_TMAP 元表的 __index */
+        tm = luaT_gettmbyobj(L, t, TM_INDEX);
+        if (l_unlikely(notm(tm))) {
+          setnilvalue(s2v(val));
+          return;
+        }
       } else if (ttisstruct(t)) {
         luaS_structindex(L, t, key, val);
         return;
@@ -2404,6 +2450,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   StkId base;
   const Instruction *pc;
   int trap;
+  { FILE *f = fopen("vm_debug.log", "a"); if (f) { fprintf(f, "[VM-EXEC] luaV_execute called, ci=%p, ci->previous=%p\n", (void*)ci, ci ? (void*)ci->previous : NULL); fclose(f); } }
   #ifdef JIT_VERBOSE_LOG
   fprintf(stderr, "[JIT-DBG] luaV_execute enter, ci=%p, L->ci=%p\n", ci, L->ci);
   fflush(stderr);
@@ -2514,19 +2561,10 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   if (l_unlikely(trap))
     trap = luaG_tracecall(L);
   base = ci->func.p + 1;
-  /* main loop of interpreter */
   for (;;) {
     Instruction i;  /* instruction being executed */
     vmfetch();
     lvm_vmp_hook_point();
-    #if 0
-    { /* low-level line tracing for debugging Lua */
-      #include "lopnames.h"
-      int pcrel = pcRel(pc, cl->p);
-      printf("line: %d; %s (%d)\n", luaG_getfuncline(cl->p, pcrel),
-             opnames[GET_OPCODE(i)], pcrel);
-    }
-    #endif
     lua_assert(base == ci->func.p + 1);
     lua_assert(base <= L->top.p && L->top.p <= L->stack_last.p);
     /* invalidate top for instructions not expecting it */
@@ -3700,6 +3738,72 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         /* Call inherit function */
         luaC_inherit(L, -2, -1);
         L->top.p -= 2;
+        /* 计算继承后的 MRO */
+        setobj2s(L, L->top.p, s2v(ra));
+        L->top.p++;
+        luaC_compute_mro(L, -1);
+        L->top.p--;
+        updatetrap(ci);
+        vmbreak;
+      }
+      vmcase(OP_MULTIINHERIT) {
+        /*
+        ** Multi-inherit: set multiple parent classes
+        ** Format: OP_MULTIINHERIT A B
+        ** Function: for each parent in R[B] (array table), call luaC_inherit
+        */
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        savestate(L, ci);
+        if (ttistable(rb)) {
+          Table *parents = hvalue(rb);
+          /* 保存类值和父类表值到局部变量，防止 luaC_inherit 导致栈重新分配后 ra/rb 悬空 */
+          TValue class_val;
+          TValue parents_val;
+          setobj(L, &class_val, s2v(ra));
+          setobj(L, &parents_val, rb);
+          /* 遍历数组部分 */
+          if (parents->alimit > 0) {
+            for (unsigned int idx = 0; idx < parents->alimit; idx++) {
+              TValue *elem = &parents->array[idx];
+              if (!ttisnil(elem)) {
+                setobj2s(L, L->top.p, &class_val);
+                L->top.p++;
+                setobj2s(L, L->top.p, elem);
+                L->top.p++;
+                luaC_inherit(L, -2, -1);
+                L->top.p -= 2;
+              }
+            }
+          }
+          /* 遍历哈希部分 */
+          if (parents->lsizenode > 0) {
+            for (int i = 0; i < (1 << parents->lsizenode); i++) {
+              Node *n = gnode(parents, i);
+              if (!ttisnil(gval(n))) {
+                setobj2s(L, L->top.p, &class_val);
+                L->top.p++;
+                setobj2s(L, L->top.p, gval(n));
+                L->top.p++;
+                luaC_inherit(L, -2, -1);
+                L->top.p -= 2;
+              }
+            }
+          }
+          /* 设置 __parents 表，供 luaC_compute_mro 使用 */
+          setobj2s(L, L->top.p, &class_val);
+          L->top.p++;
+          lua_pushstring(L, "__parents");
+          setobj2s(L, L->top.p, &parents_val);
+          L->top.p++;
+          lua_rawset(L, -3);
+          L->top.p--;
+          /* 计算多重继承后的 MRO */
+          setobj2s(L, L->top.p, &class_val);
+          L->top.p++;
+          luaC_compute_mro(L, -1);
+          L->top.p--;
+        }
         updatetrap(ci);
         vmbreak;
       }
@@ -3743,6 +3847,22 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         /* Call set method function */
         luaC_setmethod(L, -2, key, -1);
         L->top.p -= 2;
+        updatetrap(ci);
+        vmbreak;
+      }
+      vmcase(OP_CHECKOVERRIDE) {
+        /*
+        ** Check override: verify parent class has the method
+        ** Format: OP_CHECKOVERRIDE A B C
+        ** Function: assert R[A].__parent.__methods[K[B]:shortstring] exists
+        */
+        StkId ra = RA(i);
+        TString *key = tsvalue(&k[GETARG_B(i)]);
+        savestate(L, ci);
+        setobj2s(L, L->top.p, s2v(ra));
+        L->top.p++;
+        luaC_checkoverride(L, -1, key);
+        L->top.p--;
         updatetrap(ci);
         vmbreak;
       }
@@ -3869,6 +3989,39 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           pc++;  /* Condition not met, skip */
         vmbreak;
       }
+      vmcase(OP_ASCLASS) {
+        /*
+        ** Safe type cast: as operator
+        ** Format: OP_ASCLASS A B C
+        ** Function: R[A] := (R[B] instanceof R[C]) ? R[B] : nil
+        */
+        /* Ensure stack has enough space（必须在获取寄存器指针前调用，避免栈重分配后指针失效） */
+        luaD_checkstack(L, 2);
+        /* Re-fetch registers after potential stack reallocation */
+        base = ci->func.p + 1;
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        TValue *rc = vRC(i);
+        savestate(L, ci);
+        setobj2s(L, L->top.p, rb);
+        L->top.p++;
+        setobj2s(L, L->top.p, rc);
+        L->top.p++;
+        int result = luaC_instanceof(L, -2, -1);
+        L->top.p -= 2;
+        /* 重新获取寄存器指针，避免 luaC_instanceof 栈操作导致指针悬空 */
+        base = ci->func.p + 1;
+        ra = RA(i);
+        rb = vRB(i);
+        rc = vRC(i);
+        if (result) {
+          setobj2s(L, ra, rb);  /* 成功：返回原值 */
+        } else {
+          setnilvalue(s2v(ra));  /* 失败：返回 nil */
+        }
+        updatetrap(ci);
+        vmbreak;
+      }
       vmcase(OP_IMPLEMENT) {
         /*
         ** Implement interface
@@ -3893,19 +4046,22 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         /*
         ** Set interface flag
         ** Format: OP_SETIFACEFLAG A
-        ** Function: Mark R[A] as an interface
+        ** Function: Mark R[A] as an interface (set __flags, __isclass, __classname)
         */
         StkId ra = RA(i);
         if (ttistable(s2v(ra))) {
           Table *t = hvalue(s2v(ra));
-          /* Set __flags field */
           TValue key, val;
+          /* Set __flags field */
           setsvalue(L, &key, luaS_newliteral(L, "__flags"));
-          /* Get current flags */
           const TValue *oldflags = luaH_getstr(t, tsvalue(&key));
           lua_Integer flags = ttisinteger(oldflags) ? ivalue(oldflags) : 0;
           flags |= CLASS_FLAG_INTERFACE;
           setivalue(&val, flags);
+          luaH_set(L, t, &key, &val);
+          /* 设置 __isclass 标志，使 isclass() 能识别接口 */
+          setsvalue(L, &key, luaS_newliteral(L, "__isclass"));
+          setbtvalue(&val);
           luaH_set(L, t, &key, &val);
         }
         vmbreak;
@@ -3933,6 +4089,22 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
             setivalue(&method_val, param_count);
             luaH_set(L, methods, &method_key, &method_val);
           }
+        }
+        vmbreak;
+      }
+      vmcase(OP_EXTENDIFACE) {
+        /*
+        ** Interface extends parent interface
+        ** Format: OP_EXTENDIFACE A B
+        ** Function: R[A].__parent := R[B]
+        */
+        StkId ra = RA(i);
+        TValue *rb = vRB(i);
+        if (ttistable(s2v(ra)) && ttistable(rb)) {
+          Table *t = hvalue(s2v(ra));
+          TValue key;
+          setsvalue(L, &key, luaS_newliteral(L, "__parent"));
+          luaH_set(L, t, &key, rb);
         }
         vmbreak;
       }
@@ -3984,6 +4156,35 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         luaC_usetrait(L, -2, -1);
         L->top.p -= 2;
         updatetrap(ci);
+        vmbreak;
+      }
+      vmcase(OP_STATICINIT) {
+        /*
+        ** Static constructor: call static init function
+        ** Format: OP_STATICINIT A B
+        ** Function: if R[A].__statics.init exists, call it
+        */
+        StkId ra = RA(i);
+        if (ttistable(s2v(ra))) {
+          Table *cl = hvalue(s2v(ra));
+          /* 查找 __statics 表 */
+          TValue key;
+          setsvalue(L, &key, luaS_newliteral(L, "__statics"));
+          const TValue *statics = luaH_getshortstr(cl, tsvalue(&key));
+          if (ttistable(statics)) {
+            /* 查找 __statics.init */
+            setsvalue(L, &key, luaS_newliteral(L, "init"));
+            const TValue *init_func = luaH_getshortstr(hvalue(statics), tsvalue(&key));
+            if (ttisfunction(init_func)) {
+              savestate(L, ci);
+              setobj2s(L, L->top.p, init_func);
+              L->top.p++;
+              luaD_call(L, L->top.p - 1, 0);
+              updatetrap(ci);
+              L->top.p = ci->top.p;
+            }
+          }
+        }
         vmbreak;
       }
       vmcase(OP_IN) {

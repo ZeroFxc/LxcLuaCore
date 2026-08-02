@@ -216,7 +216,8 @@ static void PrintCode(const Proto* f) {
         case OP_INSTANCEOF: printf("%d %d", a, b); break;
         case OP_IMPLEMENT:  printf("%d %d", a, b); break;
         case OP_SETIFACEFLAG: printf("%d %d", a, b); break;
-        case OP_ADDMETHOD:  printf("%d %d %d", a, b, c); break;
+        case OP_USETRAIT:   printf("%d %d", a, b); break;
+        case OP_STATICINIT: printf("%d %d", a, b); break;
         case OP_SLICE:      printf("%d %d %d", a, b, c); break;
         case OP_NOP:        break;
         case OP_CASE:       printf("%d %d %d", a, b, c); break;

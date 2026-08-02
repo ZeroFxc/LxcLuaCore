@@ -91,6 +91,7 @@ static const char *binop_name(AstBinOp op) {
     case AST_BIN_CASE: return "case";
     case AST_BIN_INFIX: return "infix";
     case AST_BIN_MERGE: return "merge";
+    case AST_BIN_AS: return "as";
     default: return "?";
   }
 }
@@ -161,6 +162,7 @@ static const char *expr_kind_name(AstExprKind kind) {
     case AST_EXPR_LIST_COMP: return "listcomp";
     case AST_EXPR_SPREAD: return "spread";
     case AST_EXPR_WALRUS: return "walrus";
+    case AST_EXPR_ASTPARSER: return "astparser";
     default: return "unknown";
   }
 }
@@ -537,6 +539,23 @@ static void ast_serialize_expr(lua_State *L, AstExpr *e) {
 
     case AST_EXPR_DICT_COMP:
     case AST_EXPR_LIST_COMP:
+      /* 这两个节点在 parser 里包装成一个匿名子函数（e->u.func.func），里面包含 for-gen 循环与 return _t，
+         所以输出成 AST_EXPR_FUNC 形式即可，方便 unparse */
+      {
+        AstFunc *f = e->u.func.func;
+        /* 构造一个 localfunc 形式的序列化：params=nil，is_vararg=0，输出 body 块 */
+        setboolfield(L, "is_arrow", 0);
+        lua_newtable(L);
+        setarrayelem(L, 0); /* 占位：空 params 数组 */
+        lua_setfield(L, -2, "params");
+        setboolfield(L, "is_vararg", (f ? f->is_vararg : 0));
+        setboolfield(L, "is_comp", 1);
+        setintfield(L, "comp_kind", (int)e->kind);
+        if (f) {
+          ast_serialize_block(L, &f->body);
+          lua_setfield(L, -2, "body");
+        }
+      }
       break;
 
     case AST_EXPR_SPREAD:
@@ -551,6 +570,12 @@ static void ast_serialize_expr(lua_State *L, AstExpr *e) {
       }
       ast_serialize_expr(L, e->u.walrus.expr);
       lua_setfield(L, -2, "expr");
+      break;
+
+    case AST_EXPR_ASTPARSER:
+      /* C-level Proto and AstChunk pointers plus delay-mode ast_ref are not
+       * serializable. Keep only kind="astparser" marker; deserialization
+       * substitutes a placeholder ident to avoid wild-pointer access. */
       break;
 
     default:
@@ -602,6 +627,12 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
         if (t->kind == AST_TGT_VAR && t->as.var.name) {
           lua_pushstring(L, getstr(t->as.var.name));
           lua_setfield(L, -2, "name");
+        } else if (t->kind == AST_TGT_INDEX) {
+          setstrfield(L, "kind", "index");
+          ast_serialize_expr(L, t->as.index.table);
+          lua_setfield(L, -2, "table");
+          ast_serialize_expr(L, t->as.index.key);
+          lua_setfield(L, -2, "key");
         }
         setarrayelem(L, i + 1);
       }
@@ -792,10 +823,56 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
 
     case AST_STMT_COMPOUND_ASSIGN:
       setstrfield(L, "op", binop_name(s->u.compound.op));
+      /* 序列化 targets 数组 */
+      lua_newtable(L);
+      for (int i = 0; i < s->u.compound.ntargets; i++) {
+        AstAssignTarget *t = &s->u.compound.targets[i];
+        push_table(L);
+        if (t->kind == AST_TGT_VAR && t->as.var.name) {
+          lua_pushstring(L, getstr(t->as.var.name));
+          lua_setfield(L, -2, "name");
+        } else if (t->kind == AST_TGT_INDEX) {
+          setstrfield(L, "kind", "index");
+          ast_serialize_expr(L, t->as.index.table);
+          lua_setfield(L, -2, "table");
+          ast_serialize_expr(L, t->as.index.key);
+          lua_setfield(L, -2, "key");
+        }
+        setarrayelem(L, i + 1);
+      }
+      lua_setfield(L, -2, "targets");
+      /* 序列化 value */
+      if (s->u.compound.value) {
+        ast_serialize_expr(L, s->u.compound.value);
+        lua_setfield(L, -2, "value");
+      }
       break;
 
-    case AST_STMT_INCR_DECR:
+    case AST_STMT_INCR_DECR: {
+      const char *kind_str = NULL;
+      if (s->u.incr.kind == AST_INCR_PRE_INC)       kind_str = "pre_incr";
+      else if (s->u.incr.kind == AST_INCR_PRE_DEC)  kind_str = "pre_decr";
+      else if (s->u.incr.kind == AST_INCR_POST_INC) kind_str = "post_incr";
+      else if (s->u.incr.kind == AST_INCR_POST_DEC) kind_str = "post_decr";
+      if (kind_str) setstrfield(L, "op", kind_str);
+      /* 序列化 target */
+      if (s->u.incr.target) {
+        push_table(L);
+        AstAssignTarget *t = s->u.incr.target;
+        if (t->kind == AST_TGT_VAR && t->as.var.name) {
+          lua_pushstring(L, getstr(t->as.var.name));
+          lua_setfield(L, -2, "name");
+        } else if (t->kind == AST_TGT_INDEX) {
+          setstrfield(L, "kind", "index");
+          ast_serialize_expr(L, t->as.index.table);
+          lua_setfield(L, -2, "table");
+          ast_serialize_expr(L, t->as.index.key);
+          lua_setfield(L, -2, "key");
+        }
+        lua_setfield(L, -2, "target");
+      }
       break;
+    }
 
     case AST_STMT_TRY:
       ast_serialize_block(L, &s->u.trycatch.body);
@@ -879,25 +956,259 @@ static void ast_serialize_stmt(lua_State *L, AstStmt *s) {
     /* 以下复杂类型创建占位节点 */
     case AST_STMT_CATCH:
     case AST_STMT_FINALLY:
+      /* 与 try 共用 trycatch 结构；用于单独调试时不丢失字段 */
+      if (s->u.trycatch.catch_var) {
+        ast_serialize_expr(L, s->u.trycatch.catch_var);
+        lua_setfield(L, -2, "catch_var");
+      }
+      ast_serialize_block(L, &s->u.trycatch.body);
+      lua_setfield(L, -2, "body");
+      if (s->kind == AST_STMT_CATCH) {
+        ast_serialize_block(L, &s->u.trycatch.catch_body);
+        lua_setfield(L, -2, "catch_body");
+      }
+      ast_serialize_block(L, &s->u.trycatch.finally_body);
+      lua_setfield(L, -2, "finally_body");
+      break;
+
     case AST_STMT_USING:
+      setboolfield(L, "is_namespace", s->u.usingstmt.is_namespace);
+      if (s->u.usingstmt.name) {
+        lua_pushstring(L, getstr(s->u.usingstmt.name));
+        lua_setfield(L, -2, "name");
+      }
+      if (s->u.usingstmt.last_member) {
+        lua_pushstring(L, getstr(s->u.usingstmt.last_member));
+        lua_setfield(L, -2, "last_member");
+      }
+      break;
+
     case AST_STMT_NAMESPACE:
+      if (s->u.nsstruct.name) {
+        lua_pushstring(L, getstr(s->u.nsstruct.name));
+        lua_setfield(L, -2, "name");
+      }
+      ast_serialize_block(L, &s->u.nsstruct.body);
+      lua_setfield(L, -2, "body");
+      break;
+
     case AST_STMT_STRUCT:
     case AST_STMT_SUPERSTRUCT:
-    case AST_STMT_ENUM:
+      if (s->u.nsstruct.name) {
+        lua_pushstring(L, getstr(s->u.nsstruct.name));
+        lua_setfield(L, -2, "name");
+      }
+      /* 若 entries 字段数组 */
+      if (s->u.nsstruct.entries && s->u.nsstruct.nentries > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.nsstruct.nentries; i++) {
+          AstKVPair *ent = &s->u.nsstruct.entries[i];
+          push_table(L);
+          if (ent->key)   { ast_serialize_expr(L, ent->key);   lua_setfield(L, -2, "key");   }
+          if (ent->value) { ast_serialize_expr(L, ent->value); lua_setfield(L, -2, "value"); }
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "entries");
+        setintfield(L, "nentries", s->u.nsstruct.nentries);
+      } else {
+        ast_serialize_block(L, &s->u.nsstruct.body);
+        lua_setfield(L, -2, "body");
+      }
+      break;
+
+    case AST_STMT_ENUM: {
+      if (s->u.enumstmt.name) {
+        lua_pushstring(L, getstr(s->u.enumstmt.name));
+        lua_setfield(L, -2, "name");
+      }
+      setboolfield(L, "is_class", s->u.enumstmt.is_enum_class);
+      setintfield(L, "nentries", s->u.enumstmt.nentries);
+      if (s->u.enumstmt.entries && s->u.enumstmt.nentries > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.enumstmt.nentries; i++) {
+          AstEnumEntry *e = &s->u.enumstmt.entries[i];
+          push_table(L);
+          if (e->name) { lua_pushstring(L, getstr(e->name)); lua_setfield(L, -2, "name"); }
+          if (e->value_expr) { ast_serialize_expr(L, e->value_expr); lua_setfield(L, -2, "value_expr"); }
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "entries");
+      }
+      break;
+    }
+
     case AST_STMT_CLASS:
-    case AST_STMT_TRAIT:
-    case AST_STMT_INTERFACE:
+      if (s->u.classstmt.name) {
+        lua_pushstring(L, getstr(s->u.classstmt.name));
+        lua_setfield(L, -2, "name");
+      }
+      if (s->u.classstmt.extends_names && s->u.classstmt.nextends > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.classstmt.nextends; i++) {
+          lua_pushstring(L, getstr(s->u.classstmt.extends_names[i]));
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "extends_names");
+        setintfield(L, "nextends", s->u.classstmt.nextends);
+      }
+      if (s->u.classstmt.implements && s->u.classstmt.nimplements > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.classstmt.nimplements; i++) {
+          lua_pushstring(L, getstr(s->u.classstmt.implements[i]));
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "implements");
+        setintfield(L, "nimplements", s->u.classstmt.nimplements);
+      }
+      if (s->u.classstmt.use_traits && s->u.classstmt.nuse_traits > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.classstmt.nuse_traits; i++) {
+          lua_pushstring(L, getstr(s->u.classstmt.use_traits[i]));
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "use_traits");
+        setintfield(L, "nuse_traits", s->u.classstmt.nuse_traits);
+      }
+      setintfield(L, "class_flags", s->u.classstmt.class_flags);
+      /* 泛型参数 */
+      if (s->u.classstmt.generic_params && s->u.classstmt.ngeneric_params > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.classstmt.ngeneric_params; i++) {
+          lua_pushstring(L, getstr(s->u.classstmt.generic_params[i]));
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "generic_params");
+        setintfield(L, "ngeneric_params", s->u.classstmt.ngeneric_params);
+      }
+      /* members 优先 */
+      if (s->u.classstmt.members && s->u.classstmt.nmembers > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.classstmt.nmembers; i++) {
+          AstClassMember *m = &s->u.classstmt.members[i];
+          push_table(L);
+          setintfield(L, "kind", (int)m->kind);
+          setintfield(L, "access", (int)m->access);
+          setboolfield(L, "is_static", m->is_static);
+          if (m->name) { lua_pushstring(L, getstr(m->name)); lua_setfield(L, -2, "name"); }
+          if (m->kind == AST_MEMBER_PROPERTY && m->u.property_value) {
+            ast_serialize_expr(L, m->u.property_value);
+            lua_setfield(L, -2, "property_value");
+          } else if (m->kind == AST_MEMBER_METHOD && m->u.method_func) {
+            /* 方法：临时构造一个 AstStmt localfunc，复用 stmt 序列化写出 params / body / is_vararg */
+            AstStmt tmp_st;
+            memset(&tmp_st, 0, sizeof(tmp_st));
+            tmp_st.kind = AST_STMT_LOCAL_FUNC;
+            tmp_st.u.localfunc.name = m->name;
+            tmp_st.u.localfunc.func = m->u.method_func;
+            ast_serialize_stmt(L, &tmp_st);  /* 结果包含 name/params/is_vararg/body 等字段 */
+            lua_setfield(L, -2, "method_func");
+          }
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "members");
+        setintfield(L, "nmembers", s->u.classstmt.nmembers);
+      } else {
+        ast_serialize_block(L, &s->u.classstmt.body);
+        lua_setfield(L, -2, "body");
+      }
+      break;
+
     case AST_STMT_WITH:
+      if (s->u.withstmt.target) {
+        ast_serialize_expr(L, s->u.withstmt.target); lua_setfield(L, -2, "target");
+      }
+      ast_serialize_block(L, &s->u.withstmt.body);
+      lua_setfield(L, -2, "body");
+      break;
+
     case AST_STMT_ASM:
+      if (s->u.asmstmt.raw_body) {
+        lua_pushlstring(L, getstr(s->u.asmstmt.raw_body), tsslen(s->u.asmstmt.raw_body));
+        lua_setfield(L, -2, "raw_body");
+      }
+      break;
+
     case AST_STMT_CONCEPT:
+      /* concept 与 nsstruct 复用 nsstruct 与 typed 用 typed name+body 包 */
+      if (s->u.nsstruct.name) {
+        lua_pushstring(L, getstr(s->u.nsstruct.name));
+        lua_setfield(L, -2, "name");
+      }
+      ast_serialize_block(L, &s->u.nsstruct.body);
+      lua_setfield(L, -2, "body");
+      break;
+
     case AST_STMT_EXPORT:
+      break;
+
     case AST_STMT_WHILE_LET:
+      setintfield(L, "nnames", s->u.whilelet.nnames);
+      if (s->u.whilelet.names && s->u.whilelet.nnames > 0) {
+        lua_newtable(L);
+        for (int i = 0; i < s->u.whilelet.nnames; i++) {
+          lua_pushstring(L, getstr(s->u.whilelet.names[i]));
+          setarrayelem(L, i + 1);
+        }
+        lua_setfield(L, -2, "names");
+      }
+      if (s->u.whilelet.expr) {
+        ast_serialize_expr(L, s->u.whilelet.expr);
+        lua_setfield(L, -2, "expr");
+      }
+      ast_serialize_block(L, &s->u.whilelet.body);
+      lua_setfield(L, -2, "body");
+      setboolfield(L, "has_else", s->u.whilelet.has_else);
+      ast_serialize_block(L, &s->u.whilelet.else_body);
+      lua_setfield(L, -2, "else_body");
+      break;
+
     case AST_STMT_GUARD:
+      if (s->u.guard.cond) {
+        ast_serialize_expr(L, s->u.guard.cond);
+        lua_setfield(L, -2, "cond");
+      }
+      if (s->u.guard.let_var) {
+        lua_pushstring(L, getstr(s->u.guard.let_var));
+        lua_setfield(L, -2, "let_var");
+      }
+      if (s->u.guard.let_value) {
+        ast_serialize_expr(L, s->u.guard.let_value);
+        lua_setfield(L, -2, "let_value");
+      }
+      ast_serialize_block(L, &s->u.guard.else_block);
+      lua_setfield(L, -2, "else_block");
+      break;
+
     case AST_STMT_COMMAND:
     case AST_STMT_KEYWORD:
     case AST_STMT_OPERATOR:
+      /* 这三个同样复用 nsstruct 的 name + body
+      （ast_new_stmt_typed 创建(name body
+      name = {name,body块 解析，也AST_STMT_TRAIT/INTERFACE/CONCEPT也是用 ast_new_stmt_typed，所以 nsstruct.name 和 nsstruct.body）*/
+      if (s->u.nsstruct.name) {
+        lua_pushstring(L, getstr(s->u.nsstruct.name));
+        lua_setfield(L, -2, "name");
+      }
+      ast_serialize_block(L, &s->u.nsstruct.body);
+      lua_setfield(L, -2, "body");
+      break;
+
     case AST_STMT_EMPTY:
+      break;
+
     case AST_STMT_CONSTEXPR:
+      if (s->u.constexpr_stmt.directive) {
+        lua_pushstring(L, getstr(s->u.constexpr_stmt.directive));
+        lua_setfield(L, -2, "directive");
+      }
+      if (s->u.constexpr_stmt.cond) {
+        ast_serialize_expr(L, s->u.constexpr_stmt.cond);
+        lua_setfield(L, -2, "cond");
+      }
+      ast_serialize_block(L, &s->u.constexpr_stmt.body);
+      lua_setfield(L, -2, "body");
+      break;
+
     default:
       break;
   }
@@ -1001,6 +1312,13 @@ static int get_field_bool(lua_State *L, int idx, const char *k) {
   return v;
 }
 
+static lua_Number get_field_num(lua_State *L, int idx, const char *k) {
+  lua_getfield(L, idx, k);
+  lua_Number v = lua_tonumber(L, -1);
+  lua_pop(L, 1);
+  return v;
+}
+
 /* 字符串 → 二元运算符 */
 static AstBinOp str_to_binop(const char *s) {
   if (s == NULL) return AST_BIN_ADD;
@@ -1028,6 +1346,7 @@ static AstBinOp str_to_binop(const char *s) {
   if (strcmp(s, ">=") == 0) return AST_BIN_GE;
   if (strcmp(s, "<=>") == 0) return AST_BIN_SPACESHIP;
   if (strcmp(s, "is") == 0) return AST_BIN_IS;
+  if (strcmp(s, "as") == 0) return AST_BIN_AS;
   if (strcmp(s, "in") == 0) return AST_BIN_IN;
   if (strcmp(s, "and") == 0) return AST_BIN_AND;
   if (strcmp(s, "or") == 0) return AST_BIN_OR;
@@ -1346,6 +1665,248 @@ static AstExpr *ast_deserialize_expr(lua_State *L, AstPool *pool, int idx) {
     return ast_new_expr_match(pool, stmt, line);
   }
 
+  /* 基础字面量：nil */
+  if (strcmp(kind, "nil") == 0) return ast_new_expr_nil(pool, line);
+  if (strcmp(kind, "true") == 0) return ast_new_expr_bool(pool, 1, line);
+  if (strcmp(kind, "false") == 0) return ast_new_expr_bool(pool, 0, line);
+  if (strcmp(kind, "int") == 0) {
+    lua_Integer iv = (lua_Integer)get_field_int(L, idx, "value");
+    return ast_new_expr_int(pool, iv, line);
+  }
+  if (strcmp(kind, "float") == 0) {
+    lua_Number fv = (lua_Number)get_field_num(L, idx, "value");
+    return ast_new_expr_flt(pool, fv, line);
+  }
+  if (strcmp(kind, "string") == 0 || strcmp(kind, "interpstring") == 0 || strcmp(kind, "regex") == 0) {
+    const char *sv = get_field_str(L, idx, "value");
+    AstExprKind ek = AST_EXPR_STRING;
+    if (strcmp(kind, "interpstring") == 0) ek = AST_EXPR_INTERPSTRING;
+    else if (strcmp(kind, "regex") == 0) ek = AST_EXPR_REGEX;
+    return ast_new_expr_str(pool, sv ? luaS_new(L, sv) : luaS_newliteral(L, ""), ek, line);
+  }
+  if (strcmp(kind, "vararg") == 0) return ast_new_expr_vararg(pool, line);
+  if (strcmp(kind, "ident") == 0) {
+    const char *nm = get_field_str(L, idx, "name");
+    return ast_new_expr_ident(pool, nm ? luaS_new(L, nm) : luaS_newliteral(L, "_"), line);
+  }
+  if (strcmp(kind, "map") == 0) {
+    /* AST_EXPR_MAP_CTOR：复用 table 反序列化但用 map 构造器 */
+    lua_getfield(L, idx, "entries");
+    int n = (int)luaL_len(L, -1);
+    AstMapEntry *mes = NULL;
+    if (n > 0) {
+      mes = ast_pool_alloc(pool, sizeof(AstMapEntry) * n);
+      for (int i = 0; i < n; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        lua_getfield(L, -1, "key");
+        mes[i].key = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "value");
+        mes[i].value = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+    return ast_new_expr_map(pool, mes, n, line);
+  }
+  if (strcmp(kind, "arrowfunc") == 0 || strcmp(kind, "function") == 0) {
+    AstExprKind ek = (strcmp(kind, "arrowfunc") == 0) ? AST_EXPR_ARROW_FUNC : AST_EXPR_FUNC_EXPR;
+    int is_vararg = (int)get_field_bool(L, idx, "is_vararg");
+    lua_getfield(L, idx, "params");
+    int np = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    AstFunc *f = ast_new_func(pool, 0, -1, line);
+    f->is_vararg = is_vararg;
+    if (np > 0) {
+      f->nparams = np;
+      f->params = ast_pool_alloc(pool, sizeof(AstFuncParam) * np);
+      lua_getfield(L, idx, "params");
+      for (int i = 0; i < np; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        if (lua_isstring(L, -1)) {
+          f->params[i].name = luaS_new(L, lua_tostring(L, -1));
+        } else if (lua_istable(L, -1)) {
+          const char *nm = get_field_str(L, lua_gettop(L), "name");
+          f->params[i].name = nm ? luaS_new(L, nm) : luaS_newliteral(L, "_");
+        } else {
+          f->params[i].name = luaS_newliteral(L, "_");
+        }
+        f->params[i].default_value = NULL;
+        f->params[i].attr = AST_ATTR_NONE;
+        f->params[i].type_hint = NULL;
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &f->body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_func(pool, f, (ek == AST_EXPR_ARROW_FUNC) ? 1 : 0, line);
+  }
+  /* pipe / nullcoal / spaceship / is / in / merge / revpipe / safepipe：共用 binop 结构 */
+  {
+    AstBinOp op = AST_BIN_ADD;
+    int is_bin = 1;
+    if (strcmp(kind, "nullcoal") == 0) op = AST_BIN_NULLCOAL;
+    else if (strcmp(kind, "spaceship") == 0) op = AST_BIN_SPACESHIP;
+    else if (strcmp(kind, "is") == 0) op = AST_BIN_IS;
+    else if (strcmp(kind, "as") == 0) op = AST_BIN_AS;
+    else if (strcmp(kind, "in") == 0) op = AST_BIN_IN;
+    else if (strcmp(kind, "merge") == 0) op = AST_BIN_MERGE;
+    else if (strcmp(kind, "pipe") == 0) op = AST_BIN_PIPE;
+    else if (strcmp(kind, "revpipe") == 0) op = AST_BIN_REVPIPE;
+    else if (strcmp(kind, "safepipe") == 0) op = AST_BIN_SAFEPIPE;
+    else is_bin = 0;
+    if (is_bin) {
+      lua_getfield(L, idx, "lhs");
+      AstExpr *lhs = ast_deserialize_expr(L, pool, lua_gettop(L));
+      lua_pop(L, 1);
+      lua_getfield(L, idx, "rhs");
+      AstExpr *rhs = ast_deserialize_expr(L, pool, lua_gettop(L));
+      lua_pop(L, 1);
+      return ast_new_expr_binop(pool, op, lhs, rhs, line);
+    }
+  }
+  if (strcmp(kind, "await") == 0) {
+    /* await 作为 UN_AWAIT 一元操作 */
+    lua_getfield(L, idx, "operand");
+    AstExpr *opd = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_unop(pool, AST_UN_AWAIT, opd, line);
+  }
+  if (strcmp(kind, "range") == 0) {
+    lua_getfield(L, idx, "start");
+    AstExpr *st = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "end");
+    AstExpr *ed = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_range(pool, st, ed, line);
+  }
+  if (strcmp(kind, "optchain") == 0) {
+    /* 可选链：等价于 index(expr, key, is_opt=1) */
+    lua_getfield(L, idx, "table");
+    AstExpr *tbl = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "key");
+    AstExpr *key = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_index(pool, tbl, key, 1, line);
+  }
+  if (strcmp(kind, "super") == 0) return ast_new_expr_super(pool, line);
+  if (strcmp(kind, "selectcase") == 0) {
+    /* SELECT_CASE：返回占位 ident（实际代码中不直接解析） */
+    return ast_new_expr_ident(pool, luaS_newliteral(L, "__select_case__"), line);
+  }
+  if (strcmp(kind, "methodref") == 0) {
+    AstExpr *recv = NULL;
+    lua_getfield(L, idx, "recv");
+    if (!lua_isnil(L, -1)) recv = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    const char *m = get_field_str(L, idx, "method");
+    return ast_new_expr_methodref(pool, recv, m ? luaS_new(L, m) : luaS_newliteral(L, ""), line);
+  }
+  if (strcmp(kind, "new") == 0) {
+    lua_getfield(L, idx, "class_expr");
+    AstExpr *cls = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "args");
+    int na = (int)luaL_len(L, -1);
+    AstExpr **args = NULL;
+    if (na > 0) {
+      args = ast_pool_alloc(pool, sizeof(AstExpr *) * na);
+      for (int i = 0; i < na; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        args[i] = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+    return ast_new_expr_new(pool, cls, args, na, line);
+  }
+  if (strcmp(kind, "testtype") == 0) {
+    lua_getfield(L, idx, "operand");
+    AstExpr *opd = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    const char *tn = get_field_str(L, idx, "type_name");
+    return ast_new_expr_test_type(pool, opd, tn ? luaS_new(L, tn) : luaS_newliteral(L, ""), line);
+  }
+  if (strcmp(kind, "embed") == 0) {
+    const char *fn = get_field_str(L, idx, "filename");
+    return ast_new_expr_embed(pool, fn ? luaS_new(L, fn) : luaS_newliteral(L, ""), line);
+  }
+  if (strcmp(kind, "object") == 0) {
+    lua_getfield(L, idx, "ctor");
+    AstExpr *ctor = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_object(pool, ctor, line);
+  }
+  if (strcmp(kind, "slice") == 0) {
+    lua_getfield(L, idx, "table");
+    AstExpr *tbl = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    AstExpr *st = NULL, *ed = NULL, *sp = NULL;
+    lua_getfield(L, idx, "start");
+    if (!lua_isnil(L, -1)) st = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "end");
+    if (!lua_isnil(L, -1)) ed = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "step");
+    if (!lua_isnil(L, -1)) sp = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_slice(pool, tbl, st, ed, sp, line);
+  }
+  if (strcmp(kind, "dictcomp") == 0 || strcmp(kind, "listcomp") == 0) {
+    /* 推导式：序列化写的是 func 子结构，先重建 AstFunc 再包装为 DICT/LIST COMP */
+    int is_vararg = (int)get_field_bool(L, idx, "is_vararg");
+    lua_getfield(L, idx, "params");
+    int np = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    AstFunc *f = ast_new_func(pool, 0, -1, line);
+    f->is_vararg = is_vararg;
+    if (np > 0) {
+      f->nparams = np;
+      f->params = ast_pool_alloc(pool, sizeof(AstFuncParam) * np);
+      lua_getfield(L, idx, "params");
+      for (int i = 0; i < np; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        if (lua_isstring(L, -1)) f->params[i].name = luaS_new(L, lua_tostring(L, -1));
+        else f->params[i].name = luaS_newliteral(L, "_");
+        f->params[i].default_value = NULL;
+        f->params[i].attr = AST_ATTR_NONE;
+        f->params[i].type_hint = NULL;
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &f->body, lua_gettop(L));
+    lua_pop(L, 1);
+    AstExpr *e = ast_new_node(pool, AstExpr, AST_EXPR, line);
+    e->kind = (strcmp(kind, "dictcomp") == 0) ? AST_EXPR_DICT_COMP : AST_EXPR_LIST_COMP;
+    e->u.func.func = f;  /* 复用 func 联合字段 */
+    return e;
+  }
+  if (strcmp(kind, "spread") == 0) {
+    lua_getfield(L, idx, "expr");
+    AstExpr *ex = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_spread(pool, ex, line);
+  }
+  if (strcmp(kind, "walrus") == 0) {
+    const char *nm = get_field_str(L, idx, "name");
+    lua_getfield(L, idx, "expr");
+    AstExpr *ex = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_expr_walrus(pool, nm ? luaS_new(L, nm) : luaS_newliteral(L, "_"), ex, line);
+  }
+  if (strcmp(kind, "astparser") == 0) {
+    /* AST_EXPR_ASTPARSER：Proto/AstChunk 无法从 Lua table 重建，返回 ident 占位（防止后续 segv） */
+    return ast_new_expr_ident(pool, luaS_newliteral(L, "__astparser_block__"), line);
+  }
+
   /* 未知类型，返回 nil */
   return ast_new_expr_nil(pool, line);
 }
@@ -1398,12 +1959,28 @@ static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx) {
         lua_rawgeti(L, -1, i + 1);
         AstAssignTarget *t = &s->u.assign.targets[i];
         memset(t, 0, sizeof(AstAssignTarget));
-        const char *name = get_field_str(L, -1, "name");
-        if (name) {
-          t->kind = AST_TGT_VAR;
-          t->as.var.name = luaS_new(L, name);
-          t->as.var.var_kind = AST_VAR_GLOBAL;
-          t->as.var.idx = -1;
+        const char *tgt_kind = get_field_str(L, -1, "kind");
+        if (tgt_kind && strcmp(tgt_kind, "index") == 0) {
+          /* 索引目标：先读子节点再解引用 */
+          lua_getfield(L, -1, "table");
+          AstExpr *tbl = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "key");
+          AstExpr *key = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          if (tbl && key) {
+            t->kind = AST_TGT_INDEX;
+            t->as.index.table = tbl;
+            t->as.index.key = key;
+          }
+        } else {
+          const char *name = get_field_str(L, -1, "name");
+          if (name) {
+            t->kind = AST_TGT_VAR;
+            t->as.var.name = luaS_new(L, name);
+            t->as.var.var_kind = AST_VAR_GLOBAL;
+            t->as.var.idx = -1;
+          }
         }
         lua_pop(L, 1);
       }
@@ -1420,6 +1997,115 @@ static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx) {
       }
       lua_pop(L, 1);
     }
+    return s;
+  }
+
+  if (strcmp(kind, "compound") == 0) {
+    /* 解析复合赋值运算符：注意 op_name 是符号字符串（"+", "-", "*" 等），不是单词名 */
+    const char *op_name = get_field_str(L, idx, "op");
+    AstBinOp op = AST_BIN_ADD;
+    if (op_name) {
+      if (strcmp(op_name, "+") == 0) op = AST_BIN_ADD;
+      else if (strcmp(op_name, "-") == 0) op = AST_BIN_SUB;
+      else if (strcmp(op_name, "*") == 0) op = AST_BIN_MUL;
+      else if (strcmp(op_name, "/") == 0) op = AST_BIN_DIV;
+      else if (strcmp(op_name, "//") == 0) op = AST_BIN_IDIV;
+      else if (strcmp(op_name, "%") == 0) op = AST_BIN_MOD;
+      else if (strcmp(op_name, "^") == 0) op = AST_BIN_POW;
+      else if (strcmp(op_name, "..") == 0) op = AST_BIN_CONCAT;
+      else if (strcmp(op_name, "&") == 0) op = AST_BIN_BAND;
+      else if (strcmp(op_name, "|") == 0) op = AST_BIN_BOR;
+      else if (strcmp(op_name, "~") == 0) op = AST_BIN_BXOR;
+      else if (strcmp(op_name, "<<") == 0) op = AST_BIN_SHL;
+      else if (strcmp(op_name, ">>") == 0) op = AST_BIN_SHR;
+    }
+    lua_getfield(L, idx, "targets");
+    int ntargets = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    /* value 先读出来（ntargets 创建时需要传 value 指针，后填充 targets） */
+    lua_getfield(L, idx, "value");
+    AstExpr *value_expr = !lua_isnil(L, -1) ? ast_deserialize_expr(L, pool, lua_gettop(L)) : NULL;
+    lua_pop(L, 1);
+    AstStmt *s = ast_new_stmt_compound(pool, op, ntargets, value_expr, line);
+    /* 反序列化 targets */
+    if (ntargets > 0) {
+      s->u.compound.targets = ast_pool_alloc(pool, sizeof(AstAssignTarget) * ntargets);
+      lua_getfield(L, idx, "targets");
+      for (int i = 0; i < ntargets; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        AstAssignTarget *t = &s->u.compound.targets[i];
+        memset(t, 0, sizeof(AstAssignTarget));
+        const char *tgt_kind = get_field_str(L, -1, "kind");
+        if (tgt_kind && strcmp(tgt_kind, "index") == 0) {
+          lua_getfield(L, -1, "table");
+          AstExpr *tbl = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "key");
+          AstExpr *key = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          if (tbl && key) {
+            t->kind = AST_TGT_INDEX;
+            t->as.index.table = tbl;
+            t->as.index.key = key;
+          }
+        } else {
+          const char *name = get_field_str(L, -1, "name");
+          if (name) {
+            t->kind = AST_TGT_VAR;
+            t->as.var.name = luaS_new(L, name);
+            t->as.var.var_kind = AST_VAR_GLOBAL;
+            t->as.var.idx = -1;
+          }
+        }
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    return s;
+  }
+
+  if (strcmp(kind, "incr") == 0) {
+    const char *op_name = get_field_str(L, idx, "op");
+    AstIncrKind ik = AST_INCR_PRE_INC;
+    if (op_name) {
+      if (strcmp(op_name, "pre_incr") == 0) ik = AST_INCR_PRE_INC;
+      else if (strcmp(op_name, "post_incr") == 0) ik = AST_INCR_POST_INC;
+      else if (strcmp(op_name, "pre_decr") == 0) ik = AST_INCR_PRE_DEC;
+      else if (strcmp(op_name, "post_decr") == 0) ik = AST_INCR_POST_DEC;
+    }
+    AstStmt *s = ast_new_stmt_incr(pool, ik, line);
+    /* 反序列化 target */
+    lua_getfield(L, idx, "target");
+    if (!lua_isnil(L, -1) && lua_istable(L, -1)) {
+      if (!s->u.incr.target) {
+        s->u.incr.target = ast_pool_alloc(pool, sizeof(AstAssignTarget));
+      }
+      AstAssignTarget *t = s->u.incr.target;
+      memset(t, 0, sizeof(AstAssignTarget));
+      const char *tgt_kind = get_field_str(L, -1, "kind");
+      if (tgt_kind && strcmp(tgt_kind, "index") == 0) {
+        lua_getfield(L, -1, "table");
+        AstExpr *tbl = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "key");
+        AstExpr *key = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+        if (tbl && key) {
+          t->kind = AST_TGT_INDEX;
+          t->as.index.table = tbl;
+          t->as.index.key = key;
+        }
+      } else {
+        const char *name = get_field_str(L, -1, "name");
+        if (name) {
+          t->kind = AST_TGT_VAR;
+          t->as.var.name = luaS_new(L, name);
+          t->as.var.var_kind = AST_VAR_GLOBAL;
+          t->as.var.idx = -1;
+        }
+      }
+    }
+    lua_pop(L, 1);
     return s;
   }
 
@@ -1776,6 +2462,465 @@ static AstStmt *ast_deserialize_stmt(lua_State *L, AstPool *pool, int idx) {
     }
     lua_pop(L, 1);
     return ast_new_stmt_try(pool, &body, catch_var, &catch_body, &finally_body, line);
+  }
+
+  /* global 语句：字段结构与 local 类似 */
+  if (strcmp(kind, "global") == 0) {
+    lua_getfield(L, idx, "names");
+    int nn = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "values");
+    int nv = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    TString **names = NULL;
+    AstStmt *s = ast_new_stmt_global(pool, nn, nv, line);
+    s->u.global.has_wildcard = (int)get_field_bool(L, idx, "has_wildcard");
+    if (nn > 0) {
+      names = ast_pool_alloc(pool, sizeof(TString *) * nn);
+      lua_getfield(L, idx, "names");
+      for (int i = 0; i < nn; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        names[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "_");
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+      s->u.global.names = names;
+    }
+    if (nv > 0) {
+      s->u.global.values = ast_pool_alloc(pool, sizeof(AstExpr *) * nv);
+      lua_getfield(L, idx, "values");
+      for (int i = 0; i < nv; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        s->u.global.values[i] = ast_deserialize_expr(L, pool, lua_gettop(L));
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    return s;
+  }
+
+  /* throw：抛出异常 */
+  if (strcmp(kind, "throw") == 0) {
+    AstExpr *e = NULL;
+    lua_getfield(L, idx, "expr");
+    if (!lua_isnil(L, -1)) e = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_throw(pool, e, line);
+  }
+
+  /* defer：延后执行的代码块 */
+  if (strcmp(kind, "defer") == 0) {
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_defer(pool, &body, line);
+  }
+
+  /* take：解构赋值（take a, b from expr） */
+  if (strcmp(kind, "take") == 0) {
+    lua_getfield(L, idx, "varnames");
+    int nv = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    TString **vns = NULL;
+    AstExpr **defs = NULL;
+    if (nv > 0) {
+      vns = ast_pool_alloc(pool, sizeof(TString *) * nv);
+      defs = ast_pool_alloc(pool, sizeof(AstExpr *) * nv);
+      memset(defs, 0, sizeof(AstExpr *) * nv);
+      lua_getfield(L, idx, "varnames");
+      for (int i = 0; i < nv; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        vns[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "_");
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+      /* defaults 反序列化（若存在） */
+      lua_getfield(L, idx, "defaults");
+      if (lua_istable(L, -1)) {
+        for (int i = 0; i < nv; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          if (!lua_isnil(L, -1)) defs[i] = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+        }
+      }
+      lua_pop(L, 1);
+    }
+    AstExpr *src = NULL;
+    lua_getfield(L, idx, "source");
+    if (!lua_isnil(L, -1)) src = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    int is_array = (int)get_field_bool(L, idx, "is_array");
+    return ast_new_stmt_take(pool, nv, vns, defs, src, is_array, line);
+  }
+
+  /* catch / finally：单独存在时复用 trycatch 结构 */
+  if (strcmp(kind, "catch") == 0 || strcmp(kind, "finally") == 0) {
+    AstBlock body, cbody, fbody;
+    memset(&body, 0, sizeof(AstBlock));
+    memset(&cbody, 0, sizeof(AstBlock));
+    memset(&fbody, 0, sizeof(AstBlock));
+    AstExpr *cv = NULL;
+    lua_getfield(L, idx, "catch_var");
+    if (!lua_isnil(L, -1)) cv = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "catch_body");
+    if (!lua_isnil(L, -1)) ast_deserialize_block(L, pool, &cbody, lua_gettop(L));
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "finally_body");
+    if (!lua_isnil(L, -1)) ast_deserialize_block(L, pool, &fbody, lua_gettop(L));
+    lua_pop(L, 1);
+    AstStmt *s = ast_new_stmt_try(pool, &body, cv, &cbody, &fbody, line);
+    s->kind = (strcmp(kind, "catch") == 0) ? AST_STMT_CATCH : AST_STMT_FINALLY;
+    return s;
+  }
+
+  /* using：using namespace / using Name::Member */
+  if (strcmp(kind, "using") == 0) {
+    int is_ns = (int)get_field_bool(L, idx, "is_namespace");
+    const char *nm = get_field_str(L, idx, "name");
+    const char *lm = get_field_str(L, idx, "last_member");
+    return ast_new_stmt_using(pool, is_ns,
+                              nm ? luaS_new(L, nm) : NULL,
+                              lm ? luaS_new(L, lm) : NULL,
+                              line);
+  }
+
+  /* namespace：命名空间 */
+  if (strcmp(kind, "namespace") == 0) {
+    const char *nm = get_field_str(L, idx, "name");
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_namespace(pool, nm ? luaS_new(L, nm) : NULL, &body, line);
+  }
+
+  /* struct / superstruct：结构体 / 超结构体 */
+  if (strcmp(kind, "struct") == 0 || strcmp(kind, "superstruct") == 0) {
+    const char *nm = get_field_str(L, idx, "name");
+    /* 优先 entries，其次 body */
+    lua_getfield(L, idx, "entries");
+    int ne = 0;
+    AstKVPair *entries = NULL;
+    if (lua_istable(L, -1)) {
+      ne = (int)luaL_len(L, -1);
+      if (ne > 0) {
+        entries = ast_pool_alloc(pool, sizeof(AstKVPair) * ne);
+        memset(entries, 0, sizeof(AstKVPair) * ne);
+        for (int i = 0; i < ne; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          lua_getfield(L, -1, "key");
+          if (!lua_isnil(L, -1)) entries[i].key = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "value");
+          if (!lua_isnil(L, -1)) entries[i].value = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          lua_pop(L, 1);
+        }
+      }
+    }
+    lua_pop(L, 1);
+    AstStmt *s;
+    if (ne > 0) {
+      s = ast_new_stmt_typed_pairs(pool,
+          (strcmp(kind, "struct") == 0) ? AST_STMT_STRUCT : AST_STMT_SUPERSTRUCT,
+          nm ? luaS_new(L, nm) : NULL, entries, ne, line);
+    } else {
+      AstBlock body;
+      memset(&body, 0, sizeof(AstBlock));
+      lua_getfield(L, idx, "body");
+      ast_deserialize_block(L, pool, &body, lua_gettop(L));
+      lua_pop(L, 1);
+      s = ast_new_stmt_typed(pool,
+          (strcmp(kind, "struct") == 0) ? AST_STMT_STRUCT : AST_STMT_SUPERSTRUCT,
+          nm ? luaS_new(L, nm) : NULL, &body, line);
+    }
+    return s;
+  }
+
+  /* enum：枚举 */
+  if (strcmp(kind, "enum") == 0) {
+    const char *nm = get_field_str(L, idx, "name");
+    int is_cls = (int)get_field_bool(L, idx, "is_class");
+    lua_getfield(L, idx, "entries");
+    int ne = 0;
+    AstEnumEntry *entries = NULL;
+    if (lua_istable(L, -1)) {
+      ne = (int)luaL_len(L, -1);
+      if (ne > 0) {
+        entries = ast_pool_alloc(pool, sizeof(AstEnumEntry) * ne);
+        memset(entries, 0, sizeof(AstEnumEntry) * ne);
+        for (int i = 0; i < ne; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          const char *ename = get_field_str(L, -1, "name");
+          entries[i].name = ename ? luaS_new(L, ename) : NULL;
+          lua_getfield(L, -1, "value_expr");
+          if (!lua_isnil(L, -1)) entries[i].value_expr = ast_deserialize_expr(L, pool, lua_gettop(L));
+          lua_pop(L, 1);
+          lua_pop(L, 1);
+        }
+      }
+    }
+    lua_pop(L, 1);
+    return ast_new_stmt_enum(pool, nm ? luaS_new(L, nm) : NULL, entries, ne, is_cls, line);
+  }
+
+  /* class：类 */
+  if (strcmp(kind, "class") == 0) {
+    AstStmt *s = ast_new_node(pool, AstStmt, AST_STMT, line);
+    s->kind = AST_STMT_CLASS;
+    const char *nm = get_field_str(L, idx, "name");
+    s->u.classstmt.name = nm ? luaS_new(L, nm) : NULL;
+    /* 反序列化多父类列表 */
+    lua_getfield(L, idx, "extends_names");
+    if (lua_istable(L, -1)) {
+      int ne = (int)luaL_len(L, -1);
+      s->u.classstmt.nextends = ne;
+      if (ne > 0) {
+        s->u.classstmt.extends_names = ast_pool_alloc(pool, sizeof(TString *) * ne);
+        for (int i = 0; i < ne; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          s->u.classstmt.extends_names[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "");
+          lua_pop(L, 1);
+        }
+      } else {
+        s->u.classstmt.extends_names = NULL;
+      }
+    } else {
+      /* 兼容旧格式：单父类 extends_name 字符串 */
+      const char *ext = get_field_str(L, idx, "extends_name");
+      if (ext) {
+        s->u.classstmt.nextends = 1;
+        s->u.classstmt.extends_names = ast_pool_alloc(pool, sizeof(TString *));
+        s->u.classstmt.extends_names[0] = luaS_new(L, ext);
+      } else {
+        s->u.classstmt.nextends = 0;
+        s->u.classstmt.extends_names = NULL;
+      }
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "implements");
+    if (lua_istable(L, -1)) {
+      int ni = (int)luaL_len(L, -1);
+      s->u.classstmt.nimplements = ni;
+      if (ni > 0) {
+        s->u.classstmt.implements = ast_pool_alloc(pool, sizeof(TString *) * ni);
+        for (int i = 0; i < ni; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          s->u.classstmt.implements[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "");
+          lua_pop(L, 1);
+        }
+      }
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "use_traits");
+    if (lua_istable(L, -1)) {
+      int nt = (int)luaL_len(L, -1);
+      s->u.classstmt.nuse_traits = nt;
+      if (nt > 0) {
+        s->u.classstmt.use_traits = ast_pool_alloc(pool, sizeof(TString *) * nt);
+        for (int i = 0; i < nt; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          s->u.classstmt.use_traits[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "");
+          lua_pop(L, 1);
+        }
+      }
+    }
+    lua_pop(L, 1);
+    s->u.classstmt.class_flags = (int)get_field_int(L, idx, "class_flags");
+    /* 反序列化泛型参数 */
+    s->u.classstmt.generic_params = NULL;
+    s->u.classstmt.ngeneric_params = 0;
+    lua_getfield(L, idx, "generic_params");
+    if (lua_istable(L, -1)) {
+      int ng = (int)luaL_len(L, -1);
+      s->u.classstmt.ngeneric_params = ng;
+      if (ng > 0) {
+        s->u.classstmt.generic_params = ast_pool_alloc(pool, sizeof(TString *) * ng);
+        for (int i = 0; i < ng; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          s->u.classstmt.generic_params[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "");
+          lua_pop(L, 1);
+        }
+      }
+    }
+    lua_pop(L, 1);
+    s->u.classstmt.members = NULL;
+    s->u.classstmt.nmembers = 0;
+    memset(&s->u.classstmt.body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "members");
+    if (lua_istable(L, -1)) {
+      int nmemb = (int)luaL_len(L, -1);
+      if (nmemb > 0) {
+        s->u.classstmt.nmembers = nmemb;
+        s->u.classstmt.members = ast_pool_alloc(pool, sizeof(AstClassMember) * nmemb);
+        memset(s->u.classstmt.members, 0, sizeof(AstClassMember) * nmemb);
+        for (int i = 0; i < nmemb; i++) {
+          lua_rawgeti(L, -1, i + 1);
+          AstClassMember *m = &s->u.classstmt.members[i];
+          m->kind = (AstMemberKind)(int)get_field_int(L, -1, "kind");
+          m->access = (AstAccessLevel)(int)get_field_int(L, -1, "access");
+          m->is_static = (int)get_field_bool(L, -1, "is_static");
+          const char *mname = get_field_str(L, -1, "name");
+          m->name = mname ? luaS_new(L, mname) : NULL;
+          if (m->kind == AST_MEMBER_PROPERTY) {
+            lua_getfield(L, -1, "property_value");
+            if (!lua_isnil(L, -1)) m->u.property_value = ast_deserialize_expr(L, pool, lua_gettop(L));
+            lua_pop(L, 1);
+          } else if (m->kind == AST_MEMBER_METHOD) {
+            lua_getfield(L, -1, "method_func");
+            if (lua_istable(L, -1)) {
+              /* 方法：从临时的 localfunc 结构解出 AstFunc */
+              AstStmt *tmp_fs = ast_deserialize_stmt(L, pool, lua_gettop(L));
+              if (tmp_fs && tmp_fs->kind == AST_STMT_LOCAL_FUNC) {
+                m->u.method_func = tmp_fs->u.localfunc.func;
+              }
+            }
+            lua_pop(L, 1);
+          }
+          lua_pop(L, 1);
+        }
+      }
+    } else {
+      lua_pop(L, 1); /* pop members(nil) */
+      lua_getfield(L, idx, "body");
+      if (!lua_isnil(L, -1)) ast_deserialize_block(L, pool, &s->u.classstmt.body, lua_gettop(L));
+    }
+    lua_pop(L, 1); /* pop members(table or body) */
+    return s;
+  }
+
+  /* trait / interface / concept：三者都是 typed 结构 */
+  if (strcmp(kind, "trait") == 0 || strcmp(kind, "interface") == 0 || strcmp(kind, "concept") == 0) {
+    AstStmtKind sk = AST_STMT_TRAIT;
+    if (strcmp(kind, "interface") == 0) sk = AST_STMT_INTERFACE;
+    else if (strcmp(kind, "concept") == 0) sk = AST_STMT_CONCEPT;
+    const char *nm = get_field_str(L, idx, "name");
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_typed(pool, sk, nm ? luaS_new(L, nm) : NULL, &body, line);
+  }
+
+  /* with：环境管理 with(expr) block */
+  if (strcmp(kind, "with") == 0) {
+    AstExpr *target = NULL;
+    lua_getfield(L, idx, "target");
+    if (!lua_isnil(L, -1)) target = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_with(pool, target, &body, line);
+  }
+
+  /* asm：内联汇编 */
+  if (strcmp(kind, "asm") == 0) {
+    const char *rb = get_field_str(L, idx, "raw_body");
+    return ast_new_stmt_asm(pool, rb ? luaS_new(L, rb) : NULL, line);
+  }
+
+  /* export：注解占位（实际 parse 阶段会展开，这里仅占位） */
+  if (strcmp(kind, "export") == 0) {
+    return ast_new_stmt_empty(pool, line);
+  }
+
+  /* while let：while let pattern = expr do ... end */
+  if (strcmp(kind, "whilelet") == 0) {
+    lua_getfield(L, idx, "names");
+    int nn = (int)luaL_len(L, -1);
+    lua_pop(L, 1);
+    TString **names = NULL;
+    if (nn > 0) {
+      names = ast_pool_alloc(pool, sizeof(TString *) * nn);
+      lua_getfield(L, idx, "names");
+      for (int i = 0; i < nn; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        names[i] = luaS_new(L, lua_tostring(L, -1) ? lua_tostring(L, -1) : "_");
+        lua_pop(L, 1);
+      }
+      lua_pop(L, 1);
+    }
+    AstExpr *expr = NULL;
+    lua_getfield(L, idx, "expr");
+    if (!lua_isnil(L, -1)) expr = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    AstStmt *s = ast_new_stmt_while_let(pool, nn, names, expr, line);
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &s->u.whilelet.body, lua_gettop(L));
+    lua_pop(L, 1);
+    s->u.whilelet.has_else = (int)get_field_bool(L, idx, "has_else");
+    if (s->u.whilelet.has_else) {
+      lua_getfield(L, idx, "else_body");
+      ast_deserialize_block(L, pool, &s->u.whilelet.else_body, lua_gettop(L));
+      lua_pop(L, 1);
+    }
+    return s;
+  }
+
+  /* guard：guard cond else { ... } / guard let v = val else { ... } */
+  if (strcmp(kind, "guard") == 0) {
+    AstExpr *cond = NULL;
+    TString *lv = NULL;
+    AstExpr *lval = NULL;
+    lua_getfield(L, idx, "cond");
+    if (!lua_isnil(L, -1)) cond = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    const char *letv = get_field_str(L, idx, "let_var");
+    if (letv) lv = luaS_new(L, letv);
+    lua_getfield(L, idx, "let_value");
+    if (!lua_isnil(L, -1)) lval = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    AstBlock else_blk;
+    memset(&else_blk, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "else_block");
+    ast_deserialize_block(L, pool, &else_blk, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_guard(pool, cond, lv, lval, &else_blk, line);
+  }
+
+  /* command / keyword / operator：三者都是 typed 结构 */
+  if (strcmp(kind, "command") == 0 || strcmp(kind, "keyword") == 0 || strcmp(kind, "operator") == 0) {
+    AstStmtKind sk = AST_STMT_COMMAND;
+    if (strcmp(kind, "keyword") == 0) sk = AST_STMT_KEYWORD;
+    else if (strcmp(kind, "operator") == 0) sk = AST_STMT_OPERATOR;
+    const char *nm = get_field_str(L, idx, "name");
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_typed(pool, sk, nm ? luaS_new(L, nm) : NULL, &body, line);
+  }
+
+  /* empty：空语句（分号） */
+  if (strcmp(kind, "empty") == 0) {
+    return ast_new_stmt_empty(pool, line);
+  }
+
+  /* constexpr：编译期条件 $if cond then ... $end */
+  if (strcmp(kind, "constexpr") == 0) {
+    const char *dir = get_field_str(L, idx, "directive");
+    AstExpr *cond = NULL;
+    lua_getfield(L, idx, "cond");
+    if (!lua_isnil(L, -1)) cond = ast_deserialize_expr(L, pool, lua_gettop(L));
+    lua_pop(L, 1);
+    AstBlock body;
+    memset(&body, 0, sizeof(AstBlock));
+    lua_getfield(L, idx, "body");
+    ast_deserialize_block(L, pool, &body, lua_gettop(L));
+    lua_pop(L, 1);
+    return ast_new_stmt_constexpr(pool, dir ? luaS_new(L, dir) : NULL, cond, &body, line);
   }
 
   /* 未知类型，返回空语句块 */

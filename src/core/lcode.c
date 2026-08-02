@@ -1807,6 +1807,11 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
       luaK_exp2anyreg(fs, v);
       break;
     }
+    case OPR_IS: {
+      /* is 运算符：确保左侧表达式在寄存器中 */
+      luaK_exp2anyreg(fs, v);
+      break;
+    }
     case OPR_MERGE: {
       /* 表合并：确保左侧表达式在寄存器中 */
       luaK_exp2anyreg(fs, v);
@@ -2003,6 +2008,17 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       int r2 = luaK_exp2anyreg(fs, e2);
       freeexps(fs, e1, e2);
       e1->u.info = luaK_codeABC(fs, OP_MERGE, 0, r1, r2);
+      e1->k = VRELOC;
+      luaK_fixline(fs, line);
+      break;
+    }
+    case OPR_AS: {
+      /* 安全类型转换：expr as ClassName → OP_ASCLASS
+      ** 成功返回原对象，失败返回 nil */
+      int r1 = luaK_exp2anyreg(fs, e1);
+      int r2 = luaK_exp2anyreg(fs, e2);
+      freeexps(fs, e1, e2);
+      e1->u.info = luaK_codeABC(fs, OP_ASCLASS, r1, r1, r2);
       e1->k = VRELOC;
       luaK_fixline(fs, line);
       break;

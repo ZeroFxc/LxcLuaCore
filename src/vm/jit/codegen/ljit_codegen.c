@@ -2002,6 +2002,7 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_GETOPS:
             case IR_GETVARG:
             case IR_IMPLEMENT:
+            case IR_EXTENDIFACE:
             case IR_LINKNAMESPACE:
             case IR_NEWCONCEPT:
             case IR_NEWNAMESPACE:
@@ -2011,6 +2012,8 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
             case IR_SETSTATIC:
             case IR_MERGE:
             case IR_REGEX:
+            case IR_ASCLASS:
+            case IR_MULTIINHERIT:
                 JIT_DBG(MOD_CG, "NYI fallback: op=%d, pc=%d", node->op, node->original_pc);
                 goto codegen_fallback;
             /*
@@ -2280,8 +2283,8 @@ sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_S1, 0, SLJIT_IMM, 0);
         "LOADKX","SELF","ADDK","SUBK","MULK","MODK","POWK","DIVK","IDIVK","BANDK","BORK","BXORK",
         "SPACESHIP","LEN","CLOSE","TBC","EQK","TEST","TESTSET",
         "TFORPREP","SETLIST","GETVARG","ERRNNIL","IS","TESTNIL",
-        "INHERIT","GETSUPER","SETMETHOD","SETSTATIC","GETPROP","SETPROP",
-        "INSTANCEOF","IMPLEMENT","SETIFACEFLAG","ADDMETHOD","IN","SLICE",
+        "INHERIT","MULTIINHERIT","GETSUPER","SETMETHOD","SETSTATIC","GETPROP","SETPROP",
+        "INSTANCEOF","IMPLEMENT","SETIFACEFLAG","ADDMETHOD","EXTENDIFACE","IN","SLICE",
         "CASE","NEWCONCEPT","NEWNAMESPACE","LINKNAMESPACE","NEWSUPER","SETSUPER",
         "GETCMDS","GETOPS","ASYNCWRAP","GENERICWRAP","CHECKTYPE","EXTRAARG",
         "SETTRAITFLAG","SETTRAITREQUIRE","USETRAIT","AWAIT","MERGE","REGEX"

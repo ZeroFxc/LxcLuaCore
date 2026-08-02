@@ -234,5 +234,11 @@ LUAMOD_API int luaopen_map (lua_State *L) {
   luaL_checkversion(L);
   lua_createtable(L, 0, sizeof(maplib)/sizeof(maplib[0]) - 1);
   luaL_setfuncs(L, maplib, 0);
+  /* 设置 LUA_TMAP 的全局 __index 元表，使 m:get("key") 等语法可用 */
+  lua_createtable(L, 0, 1);       /* 创建元表 */
+  lua_pushvalue(L, -2);           /* 复制 map 库表 */
+  lua_setfield(L, -2, "__index"); /* 元表.__index = map 库 */
+  G(L)->mt[LUA_TMAP] = (GCObject *)hvalue(s2v(L->top.p - 1));  /* 设为全局元表 */
+  L->top.p--;  /* 弹出元表，栈顶保留 map 库表作为返回值 */
   return 1;
 }

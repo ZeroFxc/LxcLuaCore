@@ -41,6 +41,8 @@ typedef enum BinOpr {
   OPR_SPACESHIP,
   /* type check operator */
   OPR_IS,
+  /* safe type cast operator */
+  OPR_AS,
   /* in operator */
   OPR_IN,
   /* logical operators */
