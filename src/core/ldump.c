@@ -493,7 +493,7 @@ static void dumpUpvalues (DumpState *D, const Proto *f) {
   dumpInt(D, n);
   for (i = 0; i < n; i++) {
     dumpByte(D, f->upvalues[i].instack);
-    dumpByte(D, f->upvalues[i].idx);
+    dumpInt(D, f->upvalues[i].idx);
     dumpByte(D, f->upvalues[i].kind);
   }
   
@@ -647,9 +647,9 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
     D->timestamp = (i == 0) ? base_timestamp : base_timestamp;  /* 所有proto使用相同timestamp */
     dumpVar(D, D->timestamp);
 
-    dumpByte(D, work_proto->numparams);
+    dumpInt(D, (int)work_proto->numparams); // numparams (full width, supports >255 params)
     dumpByte(D, work_proto->is_vararg);
-    dumpByte(D, work_proto->maxstacksize);
+    dumpInt(D, work_proto->maxstacksize);
     dumpInt(D, work_proto->difierline_mode);
 
     dumpInt(D, 0x1337C0DE); /* Padding */

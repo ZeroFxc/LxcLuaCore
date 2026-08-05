@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/lbctc/017_oop_advanced.lua:78: '(' expected
+    78 |   function init(self, name, breed)
+      |           ^ here

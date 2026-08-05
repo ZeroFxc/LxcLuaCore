@@ -648,7 +648,7 @@ typedef struct Udata0 {
 typedef struct Upvaldesc {
   TString *name;  /**< Upvalue name (for debug information). */
   lu_byte instack;  /**< Whether it is in stack (register). */
-  lu_byte idx;  /**< Index of upvalue (in stack or in outer function's list). */
+  unsigned short idx;  /**< Index of upvalue (in stack or in outer function's list). */
   lu_byte kind;  /**< Kind of corresponding variable. */
 } Upvaldesc;
 
@@ -734,10 +734,10 @@ typedef struct Proto {
   Instruction *code;  /**< Opcodes (bytecode). */
   TValue *k;  /**< Constants used by the function. */
   struct Proto **p;  /**< Functions defined inside this function. */
-  lu_byte numparams;  /**< Number of fixed (named) parameters. */
+  unsigned short numparams;  /**< Number of fixed (named) parameters. */
   lu_byte flag;       /**< Flags. */
   lu_byte is_vararg;  /**< Vararg flag. */
-  lu_byte maxstacksize;  /**< Number of registers needed by this function. */
+  unsigned short maxstacksize;  /**< Number of registers needed by this function. */
   lu_byte nodiscard;     /**< Function is marked as nodiscard. */
   unsigned int difierline_mode;      /**< Obfuscation mode flags. */
   int difierline_pad;      /**< Padding for obfuscation. */
@@ -762,11 +762,6 @@ typedef struct Proto {
   int is_sleeping; /**< Sleep status. */
   CallQueue *call_queue; /**< Call queue for sleep/wake. */
   struct VMCodeTable *vm_code_table;  /**< VM protection code table pointer. */
-#ifndef LUA_NOJIT
-  void *jit_trace;  /**< JIT compiled trace */
-  int jit_failed;
-  int jit_hotcount;  /**< 热点计数器: 函数被调用次数, 达到阈值后触发JIT编译 */
-#endif
 } Proto;
 
 /* }======================================================= */

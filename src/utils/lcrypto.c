@@ -359,7 +359,11 @@ static const luaL_Reg random_funcs[] = {
  * @param name  调试名称 (可为 NULL)
  */
 static void new_subtable_callable(lua_State *L, const luaL_Reg *funcs, const char *name) {
-  luaL_newlib(L, funcs);                    /* 子表 */
+  /* 手动计算 funcs 数组长度（排除末尾 NULL 哨兵），避免 luaL_newlib 对指针用 sizeof */
+  int n = 0;
+  while (funcs[n].name != NULL) n++;
+  lua_createtable(L, 0, n);
+  luaL_setfuncs(L, funcs, 0);
   /* 设置 __call 为子表的第一个函数 (即 sha256 函数自身) */
   lua_pushvalue(L, -1);                     /* 复制子表 */
   lua_pushcfunction(L, funcs[0].func);      /* 推入函数的 C 闭包 */

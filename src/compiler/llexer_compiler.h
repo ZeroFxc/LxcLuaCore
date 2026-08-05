@@ -70,7 +70,9 @@ typedef enum {
     IR_EXPR_COMPREHENSION,
     IR_EXPR_SPREAD,
     IR_EXPR_DESTRUCT_ASSIGN,
-    IR_EXPR_PIPE
+    IR_EXPR_PIPE,
+    IR_EXPR_ASCLASS,      /**< as 安全类型转换表达式 (lhs as rhs)，在 codegen fallback 中转写为等价 Lua 表达式 */
+    IR_OP_MULTIINHERIT    /**< 多重继承父类列表节点 (class X : P1, P2, ...)，fallback 时输出父类列表片段 */
 } IRNodeType;
 
 /* AST Node Structure */

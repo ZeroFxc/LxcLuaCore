@@ -85,7 +85,7 @@ typedef struct expdesc {
       int keystr;  /**< index in 'k' of string key, or -1 if not a string */
     } ind;
     struct {  /**< for local variables */
-      lu_byte ridx;  /**< register holding the variable */
+      unsigned short ridx;  /**< register holding the variable */
       unsigned short vidx;  /**< compiler index (in 'actvar.arr')  */
     } var;
   } u;
@@ -174,7 +174,7 @@ typedef union Vardesc {
     TValuefields;  /**< constant value (if it is a compile-time constant) */
     lu_byte kind;
     struct TypeHint *hint; /**< type hint */
-    lu_byte ridx;  /**< register holding the variable */
+    unsigned short ridx;  /**< register holding the variable */
     short pidx;  /**< index of the variable in the Proto's 'locvars' array */
     TString *name;  /**< variable name */
     lu_byte used;
@@ -192,7 +192,7 @@ typedef struct Labeldesc {
   TString *name;  /**< label identifier */
   int pc;  /**< position in code */
   int line;  /**< line where it appeared */
-  lu_byte nactvar;  /**< number of active variables in that position */
+  unsigned short nactvar;  /**< number of active variables in that position */
   lu_byte close;  /**< goto that escapes upvalues */
 } Labeldesc;
 
@@ -235,7 +235,7 @@ typedef struct BlockCnt {
   struct BlockCnt *previous;  /**< chain */
   int firstlabel;  /**< index of first label in this block */
   int firstgoto;  /**< index of first pending goto in this block */
-  lu_byte nactvar;  /**< # active locals outside the block */
+  unsigned short nactvar;  /**< # active locals outside the block */
   lu_byte upval;  /**< true if some variable in the block is an upvalue */
   lu_byte isloop;  /**< true if 'block' is a loop */
   lu_byte insidetbc;  /**< true if inside the scope of a to-be-closed var. */
@@ -264,9 +264,9 @@ typedef struct FuncState {
   int firstlocal;  /**< index of first local var (in Dyndata array) */
   int firstlabel;  /**< index of first label (in 'dyd->label->arr') */
   short ndebugvars;  /**< number of elements in 'f->locvars' */
-  lu_byte nactvar;  /**< number of active local variables */
+  unsigned short nactvar;  /**< number of active local variables */
   lu_byte nups;  /**< number of upvalues */
-  lu_byte freereg;  /**< first free register */
+  unsigned short freereg;  /**< first free register */
   lu_byte iwthabs;  /**< instructions issued since last absolute line info */
   lu_byte needclose;  /**< function needs to close upvalues when returning */
   struct TypeHint *returntype_hint;  /**< 函数声明的返回类型提示，用于类型检查 */

@@ -1,0 +1,98 @@
+========================================
+  NLang 语法测试
+========================================
+
+--- 1. 基础表达式 ---
+  [PASS] 整数常量
+  [PASS] 浮点常量
+  [PASS] 加法
+  [PASS] 减法
+  [PASS] 乘法
+  [PASS] 除法
+  [PASS] 取模
+  [PASS] 整除
+  [PASS] 幂运算
+  [PASS] 比较 <
+  [PASS] 比较 >
+  [PASS] 比较 <=
+  [PASS] 比较 >=
+  [PASS] 比较 ==
+  [PASS] 比较 ~=
+  [PASS] 按位与 &
+  [PASS] 按位或 |
+  [PASS] 按位异或 ~
+  [PASS] 左移 <<
+  [PASS] 右移 >>
+  [PASS] 按位取反 ~
+  [PASS] not 操作
+  [PASS] not true
+  [PASS] and 短路
+  [PASS] or 短路
+
+--- 2. 变量和控制流 ---
+  [PASS] 局部变量
+  [PASS] 赋值
+  [PASS] if-then
+  [PASS] if-else true
+  [FAIL] if-else false: 编译失败 - undefined variable 'cal'
+  [PASS] repeat 循环
+  [PASS] for 循环
+  [PASS] break
+  [PASS] continue
+  [PASS] do 块
+
+--- 3. 函数定义和调用 ---
+  [PASS] 简单函数调用
+  [PASS] 多参数函数
+  [PASS] 无参数函数
+  [PASS] 递归 fib(10)
+  [PASS] 递归 fib(15)
+  [PASS] 递归阶乘
+
+--- 4. 闭包 ---
+  [PASS] 闭包赋值调用
+  [PASS] 闭包捕获外部变量
+  [PASS] 闭包累加器
+
+--- 5. 字符串 ---
+  [PASS] 字符串字面量
+  [PASS] 单引号字符串
+
+--- 6. 表 ---
+  [PASS] 表数组式
+  [PASS] 表键值式
+
+--- 7. 多重赋值 ---
+  [PASS] 多重赋值
+  [PASS] 多重赋值交换
+
+--- 8. 逻辑运算符 ---
+  [PASS] and 真假
+  [PASS] or 真假
+  [PASS] not 操作
+
+--- 9. 嵌套控制流 ---
+  [PASS] 嵌套 while
+  [PASS] 嵌套 for
+  [PASS] if-elseif-else
+
+--- 10. 长度运算符 ---
+  [PASS] 字符串长度
+
+--- 11. 注释 ---
+  [PASS] 行注释
+  [PASS] 块注释
+
+--- 12. 长字符串 ---
+  [PASS] 长字符串
+
+--- 13. goto 标签 ---
+  [PASS] goto 跳转
+
+--- 14. 递归 fib 性能对比 ---
+  NLang fib(30) = 832040, 耗时 0.1350 秒
+  Lua   fib(30) = 832040, 耗时 0.0590 秒
+
+========================================
+  结果: 60/61 通过, 1 失败
+========================================

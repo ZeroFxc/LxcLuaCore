@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+@test/lbctc/015_oop_extended.lua:14: warning: unused local variable 'self' [unused]
+./lxclua.exe: test/lbctc/015_oop_extended.lua:17: '}' expected (to close '{' at line 16)
+    17 |   override function speak(self)
+      |                    ^ here

@@ -42,8 +42,8 @@ extern char astparser_string_mode_sentinel[1];
 
 
 
-/* 最大局部变量数 */
-#define CODEGEN_MAXVARS		200
+/* 最大局部变量数（LXCLUA:扩展寄存器到512） */
+#define CODEGEN_MAXVARS		512
 
 /* 初始label/goto数组大小 */
 #define LABEL_INIT_SIZE		4
@@ -57,6 +57,7 @@ static Proto *codegen_func(CodegenState *cg, AstFunc *f);
 static void codegen_match_pattern(CodegenState *cg, AstMatchPat *pat, int ctrl_reg,
                                    int *next_check_jump, int *success_jump);
 static void codegen_match_body(CodegenState *cg, AstStmt *s, expdesc *v);
+static int codegen_class_members(CodegenState *cg, AstClassMember *members, int nmembers, int class_reg);
 
 
 /* ========== BinOp/UnOp映射表 ========== */
@@ -493,15 +494,16 @@ static void cg_adjust_assign(FuncState *fs, int nvars, int nexps, expdesc *e) {
     if (extra < 0) extra = 0;
     luaK_setreturns(fs, e, extra);
   } else {
-    if (nexps > 0 && e->k != VVOID)
+    if (nexps > 0 && e->k != VVOID) {
       luaK_exp2nextreg(fs, e);
+    }
     if (needed > 0)
       luaK_nil(fs, fs->freereg, needed);
   }
   if (needed > 0)
     luaK_reserveregs(fs, needed);
   else
-    fs->freereg = cast_byte(fs->freereg + needed);
+    fs->freereg = (fs->freereg + needed);
 }
 
 
@@ -531,7 +533,7 @@ static int cg_newupvalue(CodegenState *cg, TString *name, expdesc *v) {
     up->kind = VDKREG;
   } else {
     up->instack = 0;
-    up->idx = cast_byte(v->u.info);
+    up->idx = (unsigned short)v->u.info;
     up->kind = fs->prev->f->upvalues[v->u.info].kind;
   }
   up->name = name;
@@ -1117,7 +1119,6 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
     }
     case AST_EXPR_BINOP: {
       BinOpr op = binop_map[e->u.binop.op];
-      fprintf(stderr, "[DBG] codegen AST_EXPR_BINOP: ast_op=%d, binop=%d\n", e->u.binop.op, op);
 
       /* 链式比较检测：a < b < c 等价于 (a < b) and (b < c)
        * 策略：3个寄存器 (R0/R1/R2)，比较结果在 R0/R1 交替，R2 存 AND 累积 */
@@ -1227,15 +1228,10 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
 
       /* 正常二元运算 */
       expdesc rhs;
-      fprintf(stderr, "[DBG] codegen BINOP: lhs codegen start, freereg=%d\n", fs->freereg);
       codegen_expr(cg, e->u.binop.lhs, v);
-      fprintf(stderr, "[DBG] codegen BINOP: after lhs, v->k=%d, v->u.info=%d, freereg=%d\n", v->k, v->u.info, fs->freereg);
       luaK_infix(fs, op, v);
-      fprintf(stderr, "[DBG] codegen BINOP: after infix, v->k=%d, v->u.info=%d, freereg=%d\n", v->k, v->u.info, fs->freereg);
       codegen_expr(cg, e->u.binop.rhs, &rhs);
-      fprintf(stderr, "[DBG] codegen BINOP: after rhs, rhs.k=%d, rhs.u.info=%d, freereg=%d\n", rhs.k, rhs.u.info, fs->freereg);
       luaK_posfix(fs, op, v, &rhs, line);
-      fprintf(stderr, "[DBG] codegen BINOP: after posfix, v->k=%d, v->u.info=%d, freereg=%d\n", v->k, v->u.info, fs->freereg);
       break;
     }
     /* 范围表达式：1..5 生成 range(1, 5) 表 */
@@ -1279,7 +1275,7 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
           luaK_infix(fs, cmp_op, v);
           luaK_posfix(fs, cmp_op, v, &zero, line);
           luaK_exp2reg(fs, v, r);  /* VJMP → 布尔值寄存器 */
-          fs->freereg = cast_byte(r + 1);  /* 寄存器 r 现在被占用 */
+          fs->freereg = (r + 1);  /* 寄存器 r 现在被占用 */
         } else {
           /* 类型测试: [-nil/-bool/-func expr] → type(expr) == "typename" */
           const char *typename_full;
@@ -1321,6 +1317,53 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       int pc;
       expdesc func;
       int has_vararg = 0;
+
+      /* 检查是否是 super(args) 构造函数调用 */
+      if (e->u.call.callee->kind == AST_EXPR_SUPER) {
+        /* super(args) -> 调用父类构造函数
+         * 寄存器布局: [method, self, arg1, arg2, ...]
+         * 使用 OP_GETSUPER 获取父类 init 方法 */
+        TString *self_name = luaS_newliteral(cg->L, "self");
+        expdesc self_exp;
+        cg_singlevaraux(cg, fs, self_name, &self_exp, 1);
+        if (self_exp.k == VVOID) {
+          cg_error(cg, "'super' can only be used inside class methods");
+        }
+        luaK_exp2anyreg(fs, &self_exp);
+        int self_reg = self_exp.u.info;
+
+        base = fs->freereg;
+        luaK_reserveregs(fs, 2);  /* method + self */
+
+        /* OP_GETSUPER: 获取父类 init 方法 */
+        TString *init_name = luaS_newliteral(cg->L, "init");
+        int method_k = luaK_stringK(fs, init_name);
+        luaK_codeABC(fs, OP_GETSUPER, base, self_reg, method_k);
+
+        /* base+1 = self */
+        luaK_codeABC(fs, OP_MOVE, base + 1, self_reg, 0);
+
+        nargs = e->u.call.nargs;
+        for (i = 0; i < nargs; i++) {
+          expdesc arg;
+          codegen_expr(cg, e->u.call.args[i], &arg);
+          if (i == nargs - 1 && hasmultret(arg.k)) {
+            has_vararg = 1;
+            luaK_setmultret(fs, &arg);
+          } else {
+            luaK_exp2nextreg(fs, &arg);
+          }
+        }
+
+        if (has_vararg)
+          pc = luaK_codeABC(fs, OP_CALL, base, 0, 2);
+        else
+          pc = luaK_codeABC(fs, OP_CALL, base, nargs + 2, 2);  /* +2 for method + self */
+        init_exp(v, VCALL, pc);
+        fs->freereg = base + 1;
+        break;
+      }
+
       codegen_expr(cg, e->u.call.callee, &func);
       luaK_exp2nextreg(fs, &func);
       base = func.u.info;
@@ -1345,7 +1388,7 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
         init_exp(v, VCALL, pc);
         v->nodiscard = saved_nodiscard;  /* 恢复 nodiscard 标志 */
       }
-      fs->freereg = cast_byte(base + 1);
+      fs->freereg = (base + 1);
       break;
     }
     case AST_EXPR_METHOD_CALL: {
@@ -1356,6 +1399,50 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       expdesc mkey;
       int has_vararg = 0;
       int nargs = e->u.mcall.nargs;
+
+      /* 检查是否是 super:method(args) 父类方法调用 */
+      if (e->u.mcall.recv->kind == AST_EXPR_SUPER) {
+        TString *self_name = luaS_newliteral(cg->L, "self");
+        expdesc self_exp;
+        cg_singlevaraux(cg, fs, self_name, &self_exp, 1);
+        if (self_exp.k == VVOID) {
+          cg_error(cg, "'super' can only be used inside class methods");
+        }
+        luaK_exp2anyreg(fs, &self_exp);
+        int self_reg = self_exp.u.info;
+
+        base = fs->freereg;
+        luaK_reserveregs(fs, 2);  /* method + self */
+
+        /* OP_GETSUPER: 获取父类方法 */
+        int method_k = luaK_stringK(fs, e->u.mcall.method);
+        luaK_codeABC(fs, OP_GETSUPER, base, self_reg, method_k);
+
+        /* base+1 = self */
+        luaK_codeABC(fs, OP_MOVE, base + 1, self_reg, 0);
+
+        for (i = 0; i < nargs; i++) {
+          expdesc arg;
+          codegen_expr(cg, e->u.mcall.args[i], &arg);
+          if (i == nargs - 1 && hasmultret(arg.k)) {
+            has_vararg = 1;
+            luaK_setmultret(fs, &arg);
+          } else {
+            luaK_exp2nextreg(fs, &arg);
+          }
+        }
+
+        if (has_vararg)
+          pc = luaK_codeABC(fs, OP_CALL, base, 0, 2);
+        else {
+          int nparams = fs->freereg - (base + 1);
+          pc = luaK_codeABC(fs, OP_CALL, base, nparams + 1, 2);
+        }
+        init_exp(v, VCALL, pc);
+        fs->freereg = base + 1;
+        break;
+      }
+
       codegen_expr(cg, e->u.mcall.recv, &func);
       cg_codestring(&mkey, e->u.mcall.method);
       luaK_self(fs, &func, &mkey);
@@ -1378,7 +1465,7 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
         pc = luaK_codeABC(fs, OP_CALL, base, nparams + 1, 2);
       }
       init_exp(v, VCALL, pc);
-      fs->freereg = cast_byte(base + 1);
+      fs->freereg = (base + 1);
       break;
     }
     case AST_EXPR_METHOD_REF: {
@@ -1399,7 +1486,31 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
     }
     case AST_EXPR_INDEX: {
       expdesc tbl, key;
+
+      /* 优先检查是否是 super.method 父类属性访问，避免提前codegen SUPER导致寄存器泄漏 */
+      if (e->u.index.table->kind == AST_EXPR_SUPER &&
+          e->u.index.key->kind == AST_EXPR_STRING) {
+        /* super.method: 使用 OP_GETSUPER 访问父类成员 */
+        TString *self_name = luaS_newliteral(cg->L, "self");
+        expdesc self_exp;
+        cg_singlevaraux(cg, fs, self_name, &self_exp, 1);
+        if (self_exp.k == VVOID) {
+          cg_error(cg, "'super' can only be used inside class methods");
+        }
+        luaK_exp2anyreg(fs, &self_exp);
+        int self_reg = self_exp.u.info;
+        int result_reg = fs->freereg;
+        luaK_reserveregs(fs, 1);
+
+        TString *method_name = e->u.index.key->u.strval;
+        int method_k = luaK_stringK(fs, method_name);
+        luaK_codeABC(fs, OP_GETSUPER, result_reg, self_reg, method_k);
+        init_exp(v, VNONRELOC, result_reg);
+        break;
+      }
+
       codegen_expr(cg, e->u.index.table, &tbl);
+
       if (e->u.index.is_opt) {
         /* 可选链 ?. 或 ?[expr]：生成 OP_TESTNIL + OP_JMP 短路逻辑
          * 当表为 nil 时跳过字段访问，保持 nil 值在寄存器中 */
@@ -1807,7 +1918,7 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       /* 设置返回值 */
       init_exp(v, VNONRELOC, result_reg);
       /* 确保 freereg 指向结果之后，调用者能正确分配后续寄存器 */
-      fs->freereg = cast_byte(result_reg + 1);
+      fs->freereg = (result_reg + 1);
       break;
     }
     case AST_EXPR_NEW: {
@@ -1835,7 +1946,7 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
       luaK_codeABC(fs, OP_NEWOBJ, result_reg, class_reg, nargs + 1);
 
       init_exp(v, VNONRELOC, result_reg);
-      fs->freereg = cast_byte(result_reg + 1);
+      fs->freereg = (result_reg + 1);
       break;
     }
 
@@ -1848,27 +1959,12 @@ static void codegen_expr(CodegenState *cg, AstExpr *e, expdesc *v) {
     }
 
     case AST_EXPR_SUPER: {
-      /* super 表达式：编译为 self.__super（父类表）
-       * 通过 self 局部变量查找 __super 字段访问父类
-       * 后续的 .method 或 :method(args) 通过 AST_EXPR_INDEX/AST_EXPR_METHOD_CALL 处理
-       */
-      TString *self_name = luaS_newliteral(cg->L, "self");
-      expdesc self_exp;
-      cg_singlevaraux(cg, fs, self_name, &self_exp, 1);
-      if (self_exp.k == VVOID) {
-        cg_error(cg, "'super' can only be used inside class methods");
-      }
-      /* 将 self 放入寄存器 */
-      luaK_exp2anyreg(fs, &self_exp);
-      int self_reg = self_exp.u.info;
-      /* 分配结果寄存器 */
-      int result_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-      /* 生成 self.__super 访问：OP_GETFIELD result_reg, self_reg, __super_key */
-      TString *super_key = luaS_newliteral(cg->L, "__super");
-      int super_k = luaK_stringK(fs, super_key);
-      luaK_codeABC(fs, OP_GETFIELD, result_reg, self_reg, super_k);
-      init_exp(v, VNONRELOC, result_reg);
+      /* super 只能通过以下形式使用：
+       *   super(args)           → 构造函数调用（在CALL中特殊处理）
+       *   super:method(args)    → 父类方法调用（在METHOD_CALL中特殊处理）
+       *   super.method          → 父类成员访问（在INDEX中特殊处理）
+       * 裸 super 作为普通值是非法的，因为父类方法查找依赖当前调用帧 */
+      cg_error(cg, "'super' can only be used as 'super(...)', 'super:method(...)' or 'super.method'");
       break;
     }
 
@@ -2250,8 +2346,323 @@ static void codegen_match_body(CodegenState *cg, AstStmt *s, expdesc *v) {
       luaK_codeABC(fs, OP_MOVE, target_reg, result_reg, 0);
     }
     init_exp(v, VNONRELOC, target_reg);
-    fs->freereg = cast_byte(target_reg + 1);
+    fs->freereg = (target_reg + 1);
   }
+}
+
+/**
+ * @brief 生成类/嵌套类的成员代码
+ * @param cg 代码生成状态
+ * @param members 成员数组
+ * @param nmembers 成员数量
+ * @param class_reg 类表所在寄存器
+ * @return 是否存在静态构造函数 static function init
+ */
+/*
+** 辅助函数：生成字节码获取 class_reg[tbl_name] 子表到新寄存器
+** 返回子表所在寄存器
+*/
+static int codegen_get_subtable(CodegenState *cg, int class_reg, const char *tbl_name) {
+  FuncState *fs = cg_fs(cg);
+  int t_k = luaK_stringK(fs, luaS_new(cg->L, tbl_name));
+  int sub_reg = fs->freereg;
+  luaK_reserveregs(fs, 1);
+  luaK_codeABC(fs, OP_GETFIELD, sub_reg, class_reg, t_k);
+  return sub_reg;
+}
+
+/*
+** 辅助函数：生成字节码设置 class 的 __flags |= flag_bits
+*/
+static void codegen_set_class_flag(CodegenState *cg, int class_reg, int flag_bits) {
+  FuncState *fs = cg_fs(cg);
+  int flags_k = luaK_stringK(fs, luaS_newliteral(cg->L, "__flags"));
+  int flags_reg = fs->freereg;
+  luaK_reserveregs(fs, 1);
+  luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
+  int bit_reg = fs->freereg;
+  luaK_reserveregs(fs, 1);
+  luaK_int(fs, bit_reg, flag_bits);
+  luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, bit_reg);
+  luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
+  luaK_codeABC(fs, OP_SETFIELD, class_reg, flags_k, flags_reg);
+  fs->freereg -= 2;
+}
+
+/*
+** 生成类成员的字节码
+** @param cg 代码生成状态
+** @param members 成员数组
+** @param nmembers 成员数量
+** @param class_reg 类表所在寄存器
+** @return 是否存在静态构造函数 static function init
+*/
+static int codegen_class_members(CodegenState *cg, AstClassMember *members, int nmembers, int class_reg) {
+  FuncState *fs = cg_fs(cg);
+  int has_static_init = 0;
+  int has_abstract = 0;
+  int j;
+
+  for (j = 0; j < nmembers; j++) {
+    AstClassMember *m = &members[j];
+    int name_k = luaK_stringK(fs, m->name);
+
+    switch (m->kind) {
+      case AST_MEMBER_ABSTRACT: {
+        /* 抽象方法：记录到 __abstracts 表，标记类为抽象类 */
+        /* m->u.method_func 可能为 NULL（纯签名），param_count 在 func->num_params 中 */
+        int param_count = 0;
+        if (m->u.method_func != NULL) {
+          param_count = m->u.method_func->nparams;
+        }
+        int abs_sub = codegen_get_subtable(cg, class_reg, "__abstracts");
+        int pc_reg = fs->freereg;
+        luaK_reserveregs(fs, 1);
+        luaK_int(fs, pc_reg, param_count);
+        luaK_codeABC(fs, OP_SETFIELD, abs_sub, name_k, pc_reg);
+        fs->freereg -= 2;
+        has_abstract = 1;
+        break;
+      }
+
+      case AST_MEMBER_METHOD:
+      case AST_MEMBER_FINAL:
+      case AST_MEMBER_GETTER:
+      case AST_MEMBER_SETTER: {
+        if (m->u.method_func != NULL) {
+          Proto *p = codegen_func(cg, m->u.method_func);
+          int bx = fs->np++;
+          int oldsize;
+          if (bx >= fs->f->sizep) {
+            oldsize = fs->f->sizep;
+            luaM_growvector(cg->L, fs->f->p, bx + 1, fs->f->sizep,
+                            Proto *, MAXARG_Bx, "functions");
+            while (oldsize < fs->f->sizep)
+              fs->f->p[oldsize++] = NULL;
+          }
+          fs->f->p[bx] = p;
+          luaC_objbarrier(cg->L, fs->f, p);
+          expdesc v;
+          init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
+          luaK_exp2nextreg(fs, &v);
+
+          /* 应用成员装饰器：从最后一个开始依次包裹（与原版 apply_decorators_inline 一致） */
+          if (m->ndecorators > 0) {
+            int di;
+            int target_reg = v.u.info;
+            for (di = m->ndecorators - 1; di >= 0; di--) {
+              expdesc dec;
+              codegen_expr(cg, m->decorators[di], &dec);
+              luaK_exp2nextreg(fs, &dec);
+              int dec_reg = dec.u.info;
+              int call_base = fs->freereg;
+              luaK_reserveregs(fs, 2);
+              luaK_codeABC(fs, OP_MOVE, call_base, dec_reg, 0);
+              luaK_codeABC(fs, OP_MOVE, call_base + 1, target_reg, 0);
+              luaK_codeABC(fs, OP_CALL, call_base, 2, 2);
+              luaK_codeABC(fs, OP_MOVE, target_reg, call_base, 0);
+              fs->freereg -= 2;
+              fs->freereg--;  /* 释放装饰器寄存器 */
+            }
+            init_exp(&v, VNONRELOC, target_reg);
+          }
+
+          /* override 检查 */
+          if (m->is_override) {
+            luaK_codeABC(fs, OP_CHECKOVERRIDE, class_reg, name_k, 0);
+          }
+
+          if (m->kind == AST_MEMBER_GETTER) {
+            /* getter 存储到 __getters/__private_getters/__protected_getters */
+            const char *tbl;
+            if (m->access == AST_ACCESS_PRIVATE) tbl = "__private_getters";
+            else if (m->access == AST_ACCESS_PROTECTED) tbl = "__protected_getters";
+            else tbl = "__getters";
+            int sub_reg = codegen_get_subtable(cg, class_reg, tbl);
+            luaK_codeABC(fs, OP_SETFIELD, sub_reg, name_k, v.u.info);
+            fs->freereg--;
+          } else if (m->kind == AST_MEMBER_SETTER) {
+            /* setter 存储到 __setters/__private_setters/__protected_setters */
+            const char *tbl;
+            if (m->access == AST_ACCESS_PRIVATE) tbl = "__private_setters";
+            else if (m->access == AST_ACCESS_PROTECTED) tbl = "__protected_setters";
+            else tbl = "__setters";
+            int sub_reg = codegen_get_subtable(cg, class_reg, tbl);
+            luaK_codeABC(fs, OP_SETFIELD, sub_reg, name_k, v.u.info);
+            fs->freereg--;
+          } else if (m->is_static) {
+            /* 静态方法 → OP_SETSTATIC 存入 __statics */
+            luaK_codeABC(fs, OP_SETSTATIC, class_reg, name_k, v.u.info);
+            if (strcmp(getstr(m->name), "init") == 0) {
+              has_static_init = 1;
+            }
+          } else {
+            /* 实例方法 → OP_SETMETHOD 存入 __methods */
+            luaK_codeABC(fs, OP_SETMETHOD, class_reg, name_k, v.u.info);
+          }
+
+          /* final 方法：添加到 __finals 表 */
+          if (m->kind == AST_MEMBER_FINAL) {
+            int fin_sub = codegen_get_subtable(cg, class_reg, "__finals");
+            int true_reg = fs->freereg;
+            luaK_reserveregs(fs, 1);
+            luaK_codeABC(fs, OP_LOADTRUE, true_reg, 0, 0);
+            luaK_codeABC(fs, OP_SETFIELD, fin_sub, name_k, true_reg);
+            fs->freereg -= 2;
+          }
+
+          fs->freereg--;
+        }
+        break;
+      }
+
+      case AST_MEMBER_PROPERTY: {
+        if (m->u.property_value != NULL) {
+          expdesc val;
+          codegen_expr(cg, m->u.property_value, &val);
+          luaK_exp2nextreg(fs, &val);
+
+          /* 根据静态性和访问级别选择存储表（与旧版 class_property 一致） */
+          const char *tbl;
+          if (m->is_static) {
+            tbl = "__statics";
+          } else if (m->access == AST_ACCESS_PRIVATE) {
+            tbl = "__privates";
+          } else if (m->access == AST_ACCESS_PROTECTED) {
+            tbl = "__protected";
+          } else {
+            tbl = "__statics";  /* 公开实例属性也存到 __statics（类级别默认值） */
+          }
+          int sub_reg = codegen_get_subtable(cg, class_reg, tbl);
+          luaK_codeABC(fs, OP_SETFIELD, sub_reg, name_k, val.u.info);
+          fs->freereg -= 2;
+        }
+        break;
+      }
+
+      case AST_MEMBER_NESTED_CLASS: {
+        if (m->u.nested_class != NULL) {
+          AstStmt *nested = m->u.nested_class;
+          int nested_class_flags = nested->u.classstmt.class_flags;
+          TString *nested_name = nested->u.classstmt.name;
+          int nested_class_reg;
+          int ni;
+
+          nested_class_reg = fs->freereg;
+          luaK_reserveregs(fs, 1);
+          {
+            int nk = luaK_stringK(fs, nested_name);
+            luaK_codeABx(fs, OP_NEWCLASS, nested_class_reg, nk);
+          }
+
+          /* 处理类修饰符 */
+          if (nested_class_flags != 0) {
+            TString *flags_ts = luaS_newliteral(cg->L, "__flags");
+            int flags_k = luaK_stringK(fs, flags_ts);
+            int flags_reg = fs->freereg;
+            luaK_reserveregs(fs, 1);
+            luaK_codeABC(fs, OP_GETFIELD, flags_reg, nested_class_reg, flags_k);
+            luaK_int(fs, fs->freereg, nested_class_flags);
+            luaK_reserveregs(fs, 1);
+            luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
+            luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
+            luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, flags_k, flags_reg);
+            fs->freereg = nested_class_reg + 1;
+          }
+
+          /* 处理泛型参数 */
+          if (nested->u.classstmt.generic_params && nested->u.classstmt.ngeneric_params > 0) {
+            int ng = nested->u.classstmt.ngeneric_params;
+            TString *tp_ts = luaS_newliteral(cg->L, "__typeparams");
+            int tp_k = luaK_stringK(fs, tp_ts);
+            int tp_reg = fs->freereg;
+            luaK_reserveregs(fs, 1);
+            int tp_table_pc = luaK_codeABC(fs, OP_NEWTABLE, tp_reg, 0, 0);
+            luaK_settablesize(fs, tp_table_pc, tp_reg, ng, 0);
+            fs->pc++;
+            for (int gi = 0; gi < ng; gi++) {
+              int gname_k = luaK_stringK(fs, nested->u.classstmt.generic_params[gi]);
+              luaK_codeABx(fs, OP_LOADK, fs->freereg, gname_k);
+              luaK_reserveregs(fs, 1);
+              luaK_codeABC(fs, OP_SETI, tp_reg, gi + 1, fs->freereg - 1);
+              fs->freereg--;
+            }
+            luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, tp_k, tp_reg);
+            fs->freereg = nested_class_reg + 1;
+          }
+
+          /* 处理继承 */
+          if (nested->u.classstmt.nextends == 1) {
+            expdesc parent_exp;
+            cg_singlevar(cg, nested->u.classstmt.extends_names[0], &parent_exp);
+            luaK_exp2nextreg(fs, &parent_exp);
+            luaK_codeABC(fs, OP_INHERIT, nested_class_reg, parent_exp.u.info, 0);
+            fs->freereg--;
+          } else if (nested->u.classstmt.nextends > 1) {
+            int parents_reg = fs->freereg;
+            luaK_reserveregs(fs, 1);
+            int table_pc = luaK_codeABC(fs, OP_NEWTABLE, parents_reg, 0, 0);
+            luaK_settablesize(fs, table_pc, parents_reg, nested->u.classstmt.nextends, 0);
+            fs->pc++;
+            for (ni = 0; ni < nested->u.classstmt.nextends; ni++) {
+              expdesc parent_exp;
+              cg_singlevar(cg, nested->u.classstmt.extends_names[ni], &parent_exp);
+              luaK_exp2nextreg(fs, &parent_exp);
+              luaK_codeABC(fs, OP_SETI, parents_reg, ni + 1, parent_exp.u.info);
+              fs->freereg--;
+            }
+            luaK_codeABC(fs, OP_MULTIINHERIT, nested_class_reg, parents_reg, 0);
+            fs->freereg = nested_class_reg + 1;
+          }
+
+          /* 处理接口实现 */
+          for (ni = 0; ni < nested->u.classstmt.nimplements; ni++) {
+            expdesc iface_exp;
+            cg_singlevar(cg, nested->u.classstmt.implements[ni], &iface_exp);
+            luaK_exp2nextreg(fs, &iface_exp);
+            luaK_codeABC(fs, OP_IMPLEMENT, nested_class_reg, iface_exp.u.info, 0);
+            fs->freereg--;
+          }
+
+          /* 处理 trait 混入 */
+          for (ni = 0; ni < nested->u.classstmt.nuse_traits; ni++) {
+            expdesc trait_exp;
+            cg_singlevar(cg, nested->u.classstmt.use_traits[ni], &trait_exp);
+            luaK_exp2nextreg(fs, &trait_exp);
+            luaK_codeABC(fs, OP_USETRAIT, nested_class_reg, trait_exp.u.info, 0);
+            fs->freereg--;
+          }
+
+          /* 递归处理嵌套类成员（支持任意深度嵌套） */
+          if (nested->u.classstmt.members != NULL) {
+            codegen_class_members(cg, nested->u.classstmt.members,
+                                  nested->u.classstmt.nmembers, nested_class_reg);
+          }
+
+          /* 嵌套类存储到父类 __statics */
+          luaK_codeABC(fs, OP_SETSTATIC, class_reg, name_k, nested_class_reg);
+
+          /* 嵌套类注册到全局作用域，使 is 运算符能找到 */
+          {
+            expdesc v, nested_exp;
+            cg_singlevar(cg, nested_name, &v);
+            init_exp(&nested_exp, VNONRELOC, nested_class_reg);
+            luaK_storevar(fs, &v, &nested_exp);
+          }
+
+          fs->freereg = class_reg + 1;
+        }
+        break;
+      }
+    }
+  }
+
+  /* 如果存在抽象方法，设置类的 CLASS_FLAG_ABSTRACT 标志 */
+  if (has_abstract) {
+    codegen_set_class_flag(cg, class_reg, CLASS_FLAG_ABSTRACT);
+  }
+
+  return has_static_init;
 }
 
 /**
@@ -2388,7 +2799,7 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
         Instruction *inst = &getinstruction(fs, &v);
         int base = GETARG_A(*inst);
         SETARG_C(*inst, 1);
-        fs->freereg = cast_byte(base + 1);
+        fs->freereg = (base + 1);
         /* 检查 <nodiscard> 函数，丢弃返回值时发出警告 */
         if (v.nodiscard) {
           luaX_warning(&cg->ls,
@@ -3729,7 +4140,7 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
 
         /* 调用 error(expr) */
         luaK_codeABC(fs, OP_CALL, base, 2, 1);
-        fs->freereg = cast_byte(base + 1);
+        fs->freereg = (base + 1);
       }
       break;
     }
@@ -3780,9 +4191,10 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
         /* 读取当前 flags: R[flags_reg] = R[class_reg].__flags */
         luaK_codeABC(fs, OP_GETFIELD, flags_reg, class_reg, flags_k);
         /* flags |= class_flags */
-        luaK_codeABx(fs, OP_LOADI, fs->freereg, class_flags);
+        luaK_int(fs, fs->freereg, class_flags);
         luaK_reserveregs(fs, 1);
         luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
+        luaK_codeABC(fs, OP_MMBIN, flags_reg, flags_reg, TM_BOR);
         /* 写回 flags: R[class_reg].__flags = R[flags_reg] */
         luaK_codeABC(fs, OP_SETFIELD, class_reg, flags_k, flags_reg);
         fs->freereg = class_reg + 1;  /* 释放临时寄存器 */
@@ -3862,247 +4274,13 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
       /* 6. 生成类体代码：处理结构化成员 */
       int has_static_init = 0;  /* 是否有静态构造函数 */
       if (s->u.classstmt.members != NULL) {
-        int j;
-        for (j = 0; j < s->u.classstmt.nmembers; j++) {
-          AstClassMember *m = &s->u.classstmt.members[j];
-          int name_k = luaK_stringK(fs, m->name);
-
-          switch (m->kind) {
-            case AST_MEMBER_METHOD:
-            case AST_MEMBER_FINAL:
-            case AST_MEMBER_ABSTRACT:
-            case AST_MEMBER_GETTER:
-            case AST_MEMBER_SETTER: {
-              /* 生成方法闭包 */
-              if (m->u.method_func != NULL) {
-                Proto *p = codegen_func(cg, m->u.method_func);
-                int bx = fs->np++;
-                int oldsize;
-                if (bx >= fs->f->sizep) {
-                  oldsize = fs->f->sizep;
-                  luaM_growvector(cg->L, fs->f->p, bx + 1, fs->f->sizep,
-                                  Proto *, MAXARG_Bx, "functions");
-                  while (oldsize < fs->f->sizep)
-                    fs->f->p[oldsize++] = NULL;
-                }
-                fs->f->p[bx] = p;
-                luaC_objbarrier(cg->L, fs->f, p);
-                expdesc v;
-                init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
-                luaK_exp2nextreg(fs, &v);
-                /* 静态方法使用 OP_SETSTATIC 存储到 __statics 表 */
-                if (m->is_static) {
-                  luaK_codeABC(fs, OP_SETSTATIC, class_reg, name_k, v.u.info);
-                  /* 标记静态构造函数，稍后在类存储到全局变量后调用 */
-                  if (strcmp(getstr(m->name), "init") == 0) {
-                    has_static_init = 1;
-                  }
-                } else {
-                  luaK_codeABC(fs, OP_SETFIELD, class_reg, name_k, v.u.info);
-                }
-                fs->freereg--;
-              }
-              break;
-            }
-
-            case AST_MEMBER_PROPERTY: {
-              /* 属性初始化 */
-              if (m->u.property_value != NULL) {
-                expdesc val;
-                codegen_expr(cg, m->u.property_value, &val);
-                luaK_exp2nextreg(fs, &val);
-                /* 静态属性使用 OP_SETSTATIC 存储到 __statics 表 */
-                if (m->is_static) {
-                  luaK_codeABC(fs, OP_SETSTATIC, class_reg, name_k, val.u.info);
-                } else {
-                  luaK_codeABC(fs, OP_SETFIELD, class_reg, name_k, val.u.info);
-                }
-                fs->freereg--;
-              }
-              break;
-            }
-
-            case AST_MEMBER_NESTED_CLASS: {
-              /* 嵌套类（内部类）：递归生成类代码，存储到父类的 __statics 表 */
-              if (m->u.nested_class != NULL) {
-                AstStmt *nested = m->u.nested_class;
-                int nested_class_flags = nested->u.classstmt.class_flags;
-                TString *nested_name = nested->u.classstmt.name;
-                int nested_class_reg;
-                int ni;
-
-                /* 创建嵌套类表 */
-                nested_class_reg = fs->freereg;
-                luaK_reserveregs(fs, 1);
-                {
-                  int nk = luaK_stringK(fs, nested_name);
-                  luaK_codeABx(fs, OP_NEWCLASS, nested_class_reg, nk);
-                }
-
-                /* 处理类修饰符 */
-                if (nested_class_flags != 0) {
-                  TString *flags_ts = luaS_newliteral(cg->L, "__flags");
-                  int flags_k = luaK_stringK(fs, flags_ts);
-                  int flags_reg = fs->freereg;
-                  luaK_reserveregs(fs, 1);
-                  luaK_codeABC(fs, OP_GETFIELD, flags_reg, nested_class_reg, flags_k);
-                  luaK_codeABx(fs, OP_LOADI, fs->freereg, nested_class_flags);
-                  luaK_reserveregs(fs, 1);
-                  luaK_codeABC(fs, OP_BOR, flags_reg, flags_reg, fs->freereg - 1);
-                  luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, flags_k, flags_reg);
-                  fs->freereg = nested_class_reg + 1;
-                }
-
-                /* 处理泛型参数（嵌套类） */
-                if (nested->u.classstmt.generic_params && nested->u.classstmt.ngeneric_params > 0) {
-                  int ng = nested->u.classstmt.ngeneric_params;
-                  TString *tp_ts = luaS_newliteral(cg->L, "__typeparams");
-                  int tp_k = luaK_stringK(fs, tp_ts);
-                  int tp_reg = fs->freereg;
-                  luaK_reserveregs(fs, 1);
-                  int tp_table_pc = luaK_codeABC(fs, OP_NEWTABLE, tp_reg, 0, 0);
-                  luaK_settablesize(fs, tp_table_pc, tp_reg, ng, 0);
-                  fs->pc++;
-                  for (int gi = 0; gi < ng; gi++) {
-                    int name_k = luaK_stringK(fs, nested->u.classstmt.generic_params[gi]);
-                    luaK_codeABx(fs, OP_LOADK, fs->freereg, name_k);
-                    luaK_reserveregs(fs, 1);
-                    luaK_codeABC(fs, OP_SETI, tp_reg, gi + 1, fs->freereg - 1);
-                    fs->freereg--;
-                  }
-                  luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, tp_k, tp_reg);
-                  fs->freereg = nested_class_reg + 1;
-                }
-
-                /* 处理继承 */
-                if (nested->u.classstmt.nextends == 1) {
-                  /* 单父类继承：使用 OP_INHERIT（向后兼容） */
-                  expdesc parent_exp;
-                  cg_singlevar(cg, nested->u.classstmt.extends_names[0], &parent_exp);
-                  luaK_exp2nextreg(fs, &parent_exp);
-                  luaK_codeABC(fs, OP_INHERIT, nested_class_reg, parent_exp.u.info, 0);
-                  fs->freereg--;
-                } else if (nested->u.classstmt.nextends > 1) {
-                  /* 多父类继承：构建父类数组表，使用 OP_MULTIINHERIT */
-                  int parents_reg = fs->freereg;
-                  luaK_reserveregs(fs, 1);
-                  int table_pc = luaK_codeABC(fs, OP_NEWTABLE, parents_reg, 0, 0);
-                  luaK_settablesize(fs, table_pc, parents_reg, nested->u.classstmt.nextends, 0);
-                  fs->pc++;  /* 跳过 luaK_settablesize 写入的 EXTRAARG 占位指令 */
-                  for (ni = 0; ni < nested->u.classstmt.nextends; ni++) {
-                    expdesc parent_exp;
-                    cg_singlevar(cg, nested->u.classstmt.extends_names[ni], &parent_exp);
-                    luaK_exp2nextreg(fs, &parent_exp);
-                    luaK_codeABC(fs, OP_SETI, parents_reg, ni + 1, parent_exp.u.info);
-                    fs->freereg--;
-                  }
-                  luaK_codeABC(fs, OP_MULTIINHERIT, nested_class_reg, parents_reg, 0);
-                  fs->freereg = nested_class_reg + 1;
-                }
-
-                /* 处理接口实现 */
-                for (ni = 0; ni < nested->u.classstmt.nimplements; ni++) {
-                  expdesc iface_exp;
-                  cg_singlevar(cg, nested->u.classstmt.implements[ni], &iface_exp);
-                  luaK_exp2nextreg(fs, &iface_exp);
-                  luaK_codeABC(fs, OP_IMPLEMENT, nested_class_reg, iface_exp.u.info, 0);
-                  fs->freereg--;
-                }
-
-                /* 处理 trait 混入 */
-                for (ni = 0; ni < nested->u.classstmt.nuse_traits; ni++) {
-                  expdesc trait_exp;
-                  cg_singlevar(cg, nested->u.classstmt.use_traits[ni], &trait_exp);
-                  luaK_exp2nextreg(fs, &trait_exp);
-                  luaK_codeABC(fs, OP_USETRAIT, nested_class_reg, trait_exp.u.info, 0);
-                  fs->freereg--;
-                }
-
-                /* 递归处理嵌套类的成员 */
-                if (nested->u.classstmt.members != NULL) {
-                  int nj;
-                  for (nj = 0; nj < nested->u.classstmt.nmembers; nj++) {
-                    AstClassMember *nm = &nested->u.classstmt.members[nj];
-                    int nm_name_k = luaK_stringK(fs, nm->name);
-
-                    switch (nm->kind) {
-                      case AST_MEMBER_METHOD:
-                      case AST_MEMBER_FINAL:
-                      case AST_MEMBER_ABSTRACT:
-                      case AST_MEMBER_GETTER:
-                      case AST_MEMBER_SETTER: {
-                        if (nm->u.method_func != NULL) {
-                          Proto *p = codegen_func(cg, nm->u.method_func);
-                          int bx = fs->np++;
-                          int oldsize;
-                          if (bx >= fs->f->sizep) {
-                            oldsize = fs->f->sizep;
-                            luaM_growvector(cg->L, fs->f->p, bx + 1, fs->f->sizep,
-                                            Proto *, MAXARG_Bx, "functions");
-                            while (oldsize < fs->f->sizep)
-                              fs->f->p[oldsize++] = NULL;
-                          }
-                          fs->f->p[bx] = p;
-                          luaC_objbarrier(cg->L, fs->f, p);
-                          expdesc v;
-                          init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
-                          luaK_exp2nextreg(fs, &v);
-                          if (nm->is_static) {
-                            luaK_codeABC(fs, OP_SETSTATIC, nested_class_reg, nm_name_k, v.u.info);
-                          } else {
-                            luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, nm_name_k, v.u.info);
-                          }
-                          fs->freereg--;
-                        }
-                        break;
-                      }
-                      case AST_MEMBER_PROPERTY: {
-                        if (nm->u.property_value != NULL) {
-                          expdesc val;
-                          codegen_expr(cg, nm->u.property_value, &val);
-                          luaK_exp2nextreg(fs, &val);
-                          if (nm->is_static) {
-                            luaK_codeABC(fs, OP_SETSTATIC, nested_class_reg, nm_name_k, val.u.info);
-                          } else {
-                            luaK_codeABC(fs, OP_SETFIELD, nested_class_reg, nm_name_k, val.u.info);
-                          }
-                          fs->freereg--;
-                        }
-                        break;
-                      }
-                      case AST_MEMBER_NESTED_CLASS: {
-                        /* 深层嵌套类：递归处理 */
-                        /* 由于深层嵌套比较少见，这里简化处理：标记为静态存储在父类 */
-                        /* 实际会通过递归调用本函数处理 */
-                        break;
-                      }
-                    }
-                  }
-                }
-
-                /* 将嵌套类存储到父类的 __statics 表 */
-                luaK_codeABC(fs, OP_SETSTATIC, class_reg, name_k, nested_class_reg);
-
-                /* 将嵌套类注册到全局作用域，使 is 运算符能通过类名找到它 */
-                {
-                  expdesc v, nested_exp;
-                  cg_singlevar(cg, nested_name, &v);
-                  init_exp(&nested_exp, VNONRELOC, nested_class_reg);
-                  luaK_storevar(fs, &v, &nested_exp);
-                }
-
-                fs->freereg = class_reg + 1;  /* 释放嵌套类寄存器 */
-              }
-              break;
-            }
-          }
-        }
+        has_static_init = codegen_class_members(cg, s->u.classstmt.members,
+                                                s->u.classstmt.nmembers, class_reg);
       } else if (s->u.classstmt.body.items != NULL) {
         /* 兼容旧格式：从 body 中提取方法 */
         int i;
         for (i = 0; i < s->u.classstmt.body.count; i++) {
           AstStmt *stmt = s->u.classstmt.body.items[i];
-          /* 提取方法名和函数体（支持 LOCAL_FUNC 和 ASSIGN 两种形式） */
           TString *method_name = NULL;
           AstFunc *method_func = NULL;
           if (stmt->kind == AST_STMT_LOCAL_FUNC) {
@@ -4117,10 +4295,8 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
             method_func = stmt->u.assign.values[0]->u.func.func;
           }
           if (method_name != NULL) {
-            /* 类方法：生成函数闭包并存储到类表 */
             int name_k = luaK_stringK(fs, method_name);
             expdesc v;
-            /* 生成子函数闭包 */
             {
               Proto *p = codegen_func(cg, method_func);
               int bx = fs->np++;
@@ -4137,11 +4313,9 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
               init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
               luaK_exp2nextreg(fs, &v);
             }
-            /* 存储到类表：R[class_reg].method_name = closure */
-            luaK_codeABC(fs, OP_SETFIELD, class_reg, name_k, v.u.info);
-            fs->freereg--;  /* 释放闭包寄存器 */
+            luaK_codeABC(fs, OP_SETMETHOD, class_reg, name_k, v.u.info);
+            fs->freereg--;
           } else {
-            /* 其他语句：正常生成 */
             codegen_stmt(cg, stmt);
           }
         }
@@ -4181,20 +4355,60 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
     }
     case AST_STMT_TRAIT: {
       /* trait 代码生成
-       * 创建 trait 表，生成方法体，然后存储到全局变量
-       * 参考: lparser.c:traitstat
+       * 使用 OP_NEWCLASS 创建 trait 表（与旧版一致），设置 trait 标志，
+       * 生成方法体和 require 声明，存储到全局变量
        */
       {
         int trait_reg = fs->freereg;
-        /* 创建 trait 表 */
-        luaK_codeABC(fs, OP_NEWTABLE, trait_reg, 0, 0);
-        luaK_code(fs, 0);
         luaK_reserveregs(fs, 1);
+
+        /* 使用 OP_NEWCLASS 创建 trait（带有类元数据结构） */
+        int traitname_k = luaK_stringK(fs, s->u.nsstruct.name);
+        luaK_codeABx(fs, OP_NEWCLASS, trait_reg, traitname_k);
 
         /* 设置 trait 标志 */
         luaK_codeABC(fs, OP_SETTRAITFLAG, trait_reg, 0, 0);
 
-        /* 生成 trait 体代码：方法定义存储为 trait 表字段 */
+        /* 生成 trait 方法 */
+        if (s->u.nsstruct.methods != NULL) {
+          int i;
+          for (i = 0; i < s->u.nsstruct.nmethods; i++) {
+            AstClassMember *m = &s->u.nsstruct.methods[i];
+            int name_k = luaK_stringK(fs, m->name);
+            if (m->u.method_func != NULL) {
+              Proto *p = codegen_func(cg, m->u.method_func);
+              int bx = fs->np++;
+              int oldsize;
+              if (bx >= fs->f->sizep) {
+                oldsize = fs->f->sizep;
+                luaM_growvector(cg->L, fs->f->p, bx + 1, fs->f->sizep,
+                                Proto *, MAXARG_Bx, "functions");
+                while (oldsize < fs->f->sizep)
+                  fs->f->p[oldsize++] = NULL;
+              }
+              fs->f->p[bx] = p;
+              luaC_objbarrier(cg->L, fs->f, p);
+              expdesc v;
+              init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
+              luaK_exp2nextreg(fs, &v);
+              /* trait 方法使用 OP_SETMETHOD 存储到 __methods */
+              luaK_codeABC(fs, OP_SETMETHOD, trait_reg, name_k, v.u.info);
+              fs->freereg--;
+            }
+          }
+        }
+
+        /* 生成 require 方法声明 */
+        if (s->u.nsstruct.sigs != NULL) {
+          int i;
+          for (i = 0; i < s->u.nsstruct.nsigs; i++) {
+            AstMethodSig *sig = &s->u.nsstruct.sigs[i];
+            int name_k = luaK_stringK(fs, sig->name);
+            luaK_codeABC(fs, OP_SETTRAITREQUIRE, trait_reg, name_k, sig->param_count);
+          }
+        }
+
+        /* 兼容旧格式：从 body 中提取方法 */
         if (s->u.nsstruct.body.items != NULL) {
           int i;
           for (i = 0; i < s->u.nsstruct.body.count; i++) {
@@ -4213,7 +4427,6 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
               method_func = stmt->u.assign.values[0]->u.func.func;
             }
             if (method_name != NULL) {
-              /* trait 方法：生成函数闭包并存储到 trait 表 */
               int name_k = luaK_stringK(fs, method_name);
               expdesc v;
               {
@@ -4232,7 +4445,7 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
                 init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
                 luaK_exp2nextreg(fs, &v);
               }
-              luaK_codeABC(fs, OP_SETFIELD, trait_reg, name_k, v.u.info);
+              luaK_codeABC(fs, OP_SETMETHOD, trait_reg, name_k, v.u.info);
               fs->freereg--;
             } else {
               codegen_stmt(cg, stmt);
@@ -4252,27 +4465,20 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
     }
     case AST_STMT_INTERFACE: {
       /* interface 代码生成
-       * 创建接口表，生成方法体，然后存储到全局变量
+       * 创建接口表（OP_NEWCLASS），设置接口标志，处理继承，
+       * 使用 OP_ADDMETHOD 添加方法签名，存储到全局变量
        * 参考: lparser.c:interfacestat
        */
       {
         int iface_reg = fs->freereg;
-        /* 创建接口表 */
-        luaK_codeABC(fs, OP_NEWTABLE, iface_reg, 0, 0);
-        luaK_code(fs, 0);
         luaK_reserveregs(fs, 1);
+
+        /* 使用 OP_NEWCLASS 创建接口（自动设置 __classname） */
+        int ifacename_k = luaK_stringK(fs, s->u.nsstruct.name);
+        luaK_codeABx(fs, OP_NEWCLASS, iface_reg, ifacename_k);
 
         /* 设置接口标志 */
         luaK_codeABC(fs, OP_SETIFACEFLAG, iface_reg, 0, 0);
-
-        /* 设置接口名（__classname） */
-        {
-          int name_k = luaK_stringK(fs, s->u.nsstruct.name);
-          /* 用 OP_LOADK 将接口名加载到寄存器 */
-          luaK_codeABx(fs, OP_LOADK, fs->freereg, name_k);
-          luaK_codeABC(fs, OP_SETFIELD, iface_reg,
-            luaK_stringK(fs, luaS_newliteral(cg->L, "__classname")), fs->freereg);
-        }
 
         /* 处理接口继承（extends）→ OP_EXTENDIFACE */
         {
@@ -4281,13 +4487,50 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
             expdesc parent_iface_exp;
             cg_singlevar(cg, s->u.nsstruct.extends_names[i], &parent_iface_exp);
             luaK_exp2nextreg(fs, &parent_iface_exp);
-            /* OP_EXTENDIFACE: R[iface_reg].__parent := R[parent_reg] */
             luaK_codeABC(fs, OP_EXTENDIFACE, iface_reg, parent_iface_exp.u.info, 0);
-            fs->freereg--;  /* 释放父接口寄存器 */
+            fs->freereg--;
           }
         }
 
-        /* 生成接口体代码：方法定义存储为接口表字段 */
+        /* 生成结构化方法签名（sigs）→ OP_ADDMETHOD */
+        if (s->u.nsstruct.sigs != NULL) {
+          int i;
+          for (i = 0; i < s->u.nsstruct.nsigs; i++) {
+            AstMethodSig *sig = &s->u.nsstruct.sigs[i];
+            int name_k = luaK_stringK(fs, sig->name);
+            luaK_codeABC(fs, OP_ADDMETHOD, iface_reg, name_k, sig->param_count);
+          }
+        }
+
+        /* 生成默认方法实现（methods）→ OP_SETMETHOD */
+        if (s->u.nsstruct.methods != NULL) {
+          int i;
+          for (i = 0; i < s->u.nsstruct.nmethods; i++) {
+            AstClassMember *m = &s->u.nsstruct.methods[i];
+            int name_k = luaK_stringK(fs, m->name);
+            if (m->u.method_func != NULL) {
+              Proto *p = codegen_func(cg, m->u.method_func);
+              int bx = fs->np++;
+              int oldsize;
+              if (bx >= fs->f->sizep) {
+                oldsize = fs->f->sizep;
+                luaM_growvector(cg->L, fs->f->p, bx + 1, fs->f->sizep,
+                                Proto *, MAXARG_Bx, "functions");
+                while (oldsize < fs->f->sizep)
+                  fs->f->p[oldsize++] = NULL;
+              }
+              fs->f->p[bx] = p;
+              luaC_objbarrier(cg->L, fs->f, p);
+              expdesc v;
+              init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
+              luaK_exp2nextreg(fs, &v);
+              luaK_codeABC(fs, OP_SETMETHOD, iface_reg, name_k, v.u.info);
+              fs->freereg--;
+            }
+          }
+        }
+
+        /* 兼容旧格式：从 body 中提取方法 */
         if (s->u.nsstruct.body.items != NULL) {
           int i;
           for (i = 0; i < s->u.nsstruct.body.count; i++) {
@@ -4306,7 +4549,6 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
               method_func = stmt->u.assign.values[0]->u.func.func;
             }
             if (method_name != NULL) {
-              /* 接口方法：生成函数闭包并存储到接口表 */
               int name_k = luaK_stringK(fs, method_name);
               expdesc v;
               {
@@ -4325,7 +4567,7 @@ static void codegen_stmt(CodegenState *cg, AstStmt *s) {
                 init_exp(&v, VRELOC, luaK_codeABx(fs, OP_CLOSURE, 0, bx));
                 luaK_exp2nextreg(fs, &v);
               }
-              luaK_codeABC(fs, OP_SETFIELD, iface_reg, name_k, v.u.info);
+              luaK_codeABC(fs, OP_SETMETHOD, iface_reg, name_k, v.u.info);
               fs->freereg--;
             } else {
               codegen_stmt(cg, stmt);

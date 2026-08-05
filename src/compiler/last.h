@@ -504,17 +504,27 @@ typedef enum {
   AST_MEMBER_NESTED_CLASS, /**< 嵌套类（内部类） */
 } AstMemberKind;
 
+/* ---------- 方法签名（用于 interface 方法声明和 trait require） ---------- */
+typedef struct AstMethodSig {
+  TString *name;     /**< 方法名 */
+  int param_count;   /**< 参数个数（含 self） */
+  int line;          /**< 定义行号 */
+} AstMethodSig;
+
 /* ---------- 类成员 ---------- */
 typedef struct AstClassMember {
   AstMemberKind kind;
   AstAccessLevel access;   /**< 访问级别 */
   int is_static;           /**< 是否是静态成员 */
+  int is_override;         /**< 是否标记 override */
   TString *name;           /**< 成员名 */
   union {
     AstFunc *method_func;      /**< 方法/抽象方法/final方法的函数体 */
     AstExpr *property_value;   /**< 属性初始值 */
     AstStmt *nested_class;     /**< 嵌套类定义的 AST 语句节点 */
   } u;
+  AstExpr **decorators;    /**< 成员装饰器表达式列表（可为 NULL） */
+  int ndecorators;         /**< 装饰器个数 */
   int line;
 } AstClassMember;
 
@@ -754,14 +764,19 @@ struct AstStmt {
       int is_enum_class;       /**< 是否为 enum class */
     } enumstmt;
 
-    /* AST_STMT_NAMESPACE / AST_STMT_STRUCT / AST_STMT_SUPERSTRUCT */
+    /* AST_STMT_NAMESPACE / AST_STMT_STRUCT / AST_STMT_SUPERSTRUCT / AST_STMT_TRAIT / AST_STMT_INTERFACE */
     struct {
       TString *name;
       AstBlock body;
       AstKVPair *entries;   /**< struct/superstruct 字段数组 */
       int nentries;          /**< 字段数量 */
-      TString **extends_names;  /**< 接口继承的父接口名数组（仅interface使用） */
-      int nextends;             /**< 父接口数量 */
+      TString **extends_names;  /**< 接口/类继承的父名数组 */
+      int nextends;             /**< 父数量 */
+      /* trait/interface 专用字段 */
+      AstClassMember *methods;   /**< 方法数组（含函数体的默认实现） */
+      int nmethods;              /**< 方法数量 */
+      AstMethodSig *sigs;        /**< 方法签名数组（interface声明/trait require） */
+      int nsigs;                 /**< 签名数量 */
     } nsstruct;
 
     /* AST_STMT_CLASS */

@@ -1,0 +1,37 @@
+=== Test 1: 通配符 _ ===
+any
+=== Test 2: 字面量匹配 ===
+two
+=== Test 3: 字符串匹配 ===
+yes
+=== Test 4: 守卫条件 ===
+big
+=== Test 5: 变量绑定 ===
+20
+=== Test 6: 多 case 臂 ===
+three
+=== Test 7: then 分隔符 ===
+answer
+=== Test 8: 花括号语法 ===
+one
+=== Test 9: 多个守卫条件 ===
+mid
+=== Test 10: nil 匹配 ===
+nil
+=== Test 11: bool 匹配 ===
+yes
+=== Test 12: 浮点数匹配 ===
+pi
+=== Test 13: 守卫条件 and/or/not ===
+range
+five
+nonneg
+=== Test 14: 守卫条件字符串长度 ===
+long
+=== Test 15: 守卫条件算术运算 ===
+big
+=== Test 16: 块体形式 ===
+10
+=== Test 17: 守卫条件子表达式 ===
+twelve
+=== All match tests completed ===

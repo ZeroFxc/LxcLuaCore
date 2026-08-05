@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/f02_final.lua:7: cannot inherit final class
+stack traceback:
+	[C]: in function 'assert'
+	build/f02_final.lua:7: in function <build/f02_final.lua:1>
+	[C]: in ?

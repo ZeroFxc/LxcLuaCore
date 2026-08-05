@@ -1,0 +1,9 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/tmp_sealed.lua:3: cannot add new field 'val' to sealed class 'Immutable'
+stack traceback:
+	[C]: in metamethod 'newindex'
+	test/tmp_sealed.lua:3: in function <test/tmp_sealed.lua:2>
+	[C]: in global 'Immutable'
+	test/tmp_sealed.lua:6: in main chunk
+	[C]: in ?

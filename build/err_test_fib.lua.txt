@@ -1,0 +1,4 @@
+E:\Soft\Proje\LXCLUA-NCore\lua\lxclua.exe: E:\Soft\Proje\LXCLUA-NCore\lua\test\test_fib.lua:14: attempt to index a nil value (global 'jit')
+stack traceback:
+	E:\Soft\Proje\LXCLUA-NCore\lua\test\test_fib.lua:14: in function <E:\Soft\Proje\LXCLUA-NCore\lua\test\test_fib.lua:1>
+	[C]: in ?

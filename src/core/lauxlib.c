@@ -1321,6 +1321,7 @@ LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
 */
 LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
                                lua_CFunction openf, int glb) {
+  LUA_LOGD("[REQUIRE] luaL_requiref: modname='%s' glb=%d openf=%p", modname, glb, (void*)openf);
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
   /* 使用 rawget 避免默认table元表(__index=table)干扰模块加载检查 */
   lua_pushstring(L, modname);
@@ -1329,7 +1330,9 @@ LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
     lua_pop(L, 1);  /* remove field */
     lua_pushcfunction(L, openf);
     lua_pushstring(L, modname);  /* argument to open function */
+    LUA_LOGD("[REQUIRE] calling lua_call for openf of '%s'", modname);
     lua_call(L, 1, 1);  /* call 'openf' to open module */
+    LUA_LOGD("[REQUIRE] lua_call returned for '%s'", modname);
     lua_pushvalue(L, -1);  /* make copy of module (call result) */
     lua_setfield(L, -3, modname);  /* LOADED[modname] = module */
   }

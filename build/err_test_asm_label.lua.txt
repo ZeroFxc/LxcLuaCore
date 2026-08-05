@@ -1,0 +1,5 @@
+E:\Soft\Proje\LXCLUA-NCore\lua\lxclua.exe: E:\Soft\Proje\LXCLUA-NCore\lua\test\test_asm_label.lua:39: vm.asm: undefined label ':sk' at line near PC 2
+stack traceback:
+	[C]: in function 'vmcustom.asm'
+	E:\Soft\Proje\LXCLUA-NCore\lua\test\test_asm_label.lua:39: in function <E:\Soft\Proje\LXCLUA-NCore\lua\test\test_asm_label.lua:1>
+	[C]: in ?

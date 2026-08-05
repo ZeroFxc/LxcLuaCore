@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/f08_superfield.lua:7: assertion failed!
+stack traceback:
+	[C]: in function 'assert'
+	build/f08_superfield.lua:7: in function <build/f08_superfield.lua:1>
+	[C]: in ?

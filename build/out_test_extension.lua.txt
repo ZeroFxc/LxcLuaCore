@@ -1,0 +1,8 @@
+=== 1. string:double ===
+hellohello
+=== 2. table:keys ===
+3
+=== 3. string:repeat_n ===
+aaa
+=== 4. string:wrap ===
+<b>hello</b>

@@ -82,11 +82,6 @@ int luaopen_quickjs(lua_State *L);
 /* 声明asyncio库的初始化函数 */
 int luaopen_asyncio(lua_State *L);
 
-/* 声明jit库的初始化函数 */
-#ifndef LUA_NOJIT
-int luaopen_jit(lua_State *L);
-#endif
-
 /* 声明自定义 opcode 库的初始化函数 */
 int luaopen_vmcustom(lua_State *L);
 
@@ -158,9 +153,6 @@ static const luaL_Reg stdlibs[] = {
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
-#ifndef LUA_NOJIT
-  {"jit", luaopen_jit},
-#endif
   {"vmcustom", luaopen_vmcustom},
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
@@ -241,9 +233,6 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
-#ifndef LUA_NOJIT
-  {"jit", luaopen_jit},
-#endif
   {"vmcustom", luaopen_vmcustom},
   {"nativevm", luaopen_nativevm},
   {"nativeparser", luaopen_nativeparser},
@@ -270,10 +259,18 @@ static const luaL_Reg loadedlibs[] = {
 
 LUALIB_API void luaL_openlibs (lua_State *L) {
   const luaL_Reg *lib;
+  int count = 0, total = 0;
+  /* 先统计总库数 */
+  for (total = 0; loadedlibs[total].func; total++);
+  LUA_LOGI("=== luaL_openlibs START, total=%d libraries ===", total);
   /* "require" functions from 'loadedlibs' and set results to global table */
   for (lib = loadedlibs; lib->func; lib++) {
+    count++;
+    LUA_LOGI("[%d/%d] Opening library: %s", count, total, lib->name);
     luaL_requiref(L, lib->name, lib->func, 1);
     lua_pop(L, 1);  /* remove lib */
+    LUA_LOGI("[%d/%d] Completed library: %s", count, total, lib->name);
   }
+  LUA_LOGI("=== luaL-openlibs DONE, loaded=%d/%d ===", count, total);
 }
 

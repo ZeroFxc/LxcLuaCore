@@ -1040,7 +1040,7 @@ void lasm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int line) {
       if (reg_dest >= fs->freereg) {
         int needed = reg_dest + 1 - fs->freereg;
         luaK_checkstack(fs, needed);
-        fs->freereg = cast_byte(reg_dest + 1);
+        fs->freereg = (reg_dest + 1);
       }
       testnext(ls, ';');
       continue;
@@ -1756,7 +1756,7 @@ void lasm_parse_body (LexState *ls, FuncState *fs, AsmContext *ctx, int line) {
       if (a >= fs->freereg) {
         int needed = a + 1 - fs->freereg;
         luaK_checkstack(fs, needed);
-        fs->freereg = cast_byte(a + 1);
+        fs->freereg = (a + 1);
       }
     }
 

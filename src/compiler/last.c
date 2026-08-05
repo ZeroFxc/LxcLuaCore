@@ -688,6 +688,8 @@ AstClassMember *ast_new_class_member(AstPool *p, AstMemberKind kind, AstAccessLe
   m->is_static = is_static;
   m->name = name;
   m->u.method_func = NULL;
+  m->decorators = NULL;
+  m->ndecorators = 0;
   m->line = line;
   return m;
 }

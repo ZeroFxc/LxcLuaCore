@@ -19,8 +19,8 @@ struct Dyndata;
 struct Mbuffer;
 
 
-/* 最大局部变量数 */
-#define MAXVARS_LP	200
+/* 最大局部变量数（LXCLUA:扩展寄存器到512） */
+#define MAXVARS_LP	512
 
 /* 作用域局部名初始容量 */
 #define SCOPE_NAMES_INIT 8

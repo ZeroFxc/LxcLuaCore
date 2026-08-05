@@ -1,0 +1,6 @@
+=== RC=3221225477 timeout=False ===
+--- STDOUT ---
+=== 2-level init ===
+--- STDERR ---
+[LUA_LOAD] bind _ENV: f=0000000001503b20 nupvalues=1 proto=00000000014fa000 proto_ups=1 top=6
+[LUA_LOAD] _ENV bound to global table 00000000014f6f10

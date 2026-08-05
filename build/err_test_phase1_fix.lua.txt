@@ -1,0 +1,3 @@
+E:\Soft\Proje\LXCLUA-NCore\lua\lxclua.exe: E:\Soft\Proje\LXCLUA-NCore\lua\test\test_phase1_fix.lua:385: too many local variables
+    385 |     local v210,v211,v212,v213,v214,v215,v216,v217,v218,v219 = 210,211,212,213,214,215,216,217,218,219
+      | ^ here

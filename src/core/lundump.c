@@ -498,7 +498,7 @@ static void loadUpvalues (LoadState *S, Proto *f) {
     f->upvalues[i].name = NULL;
   for (i = 0; i < n; i++) {  /* following calls can raise errors */
     f->upvalues[i].instack = loadByte(S);
-    f->upvalues[i].idx = loadByte(S);
+    f->upvalues[i].idx = (unsigned short)loadInt(S);
     f->upvalues[i].kind = loadByte(S);
   }
   
@@ -764,9 +764,9 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
     size_t off_debug = loadSize(S);
 
     loadVar(S, S->timestamp);
-    f->numparams = loadByte(S);
+    f->numparams = (unsigned short)loadInt(S);
     f->is_vararg = loadByte(S);
-    f->maxstacksize = loadByte(S);
+    f->maxstacksize = (unsigned short)loadInt(S);
     f->difierline_mode = loadInt(S);
     f->difierline_pad = loadInt(S);
     f->linedefined = loadInt(S);
@@ -1179,7 +1179,7 @@ static void loadUpvalues_Standard (LoadState *S, Proto *f) {
     f->upvalues[i].name = NULL;
   for (i = 0; i < n; i++) {  /* following calls can raise errors */
     f->upvalues[i].instack = loadByte_Standard(S);
-    f->upvalues[i].idx = loadByte_Standard(S);
+    f->upvalues[i].idx = (unsigned short)loadInt_Standard(S);
     f->upvalues[i].kind = loadByte_Standard(S);
   }
 }

@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/lbctc/008_class.lua:6: '=' expected
+    6 |   static species = "Human"
+      |         ^ here

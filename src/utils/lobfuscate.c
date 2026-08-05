@@ -4074,6 +4074,39 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       case OP_IMPLEMENT: { TValue *rb = s2v(base + b); ci->u.l.savedpc = (const Instruction *)(f->code + pc); setobj2s(L, L->top.p, s2v(base + a)); L->top.p++; setobj2s(L, L->top.p, rb); L->top.p++; luaC_implement(L, -2, -1); L->top.p -= 2; break; }
       case OP_SETIFACEFLAG: { if (ttistable(s2v(base + a))) { Table *t = hvalue(s2v(base + a)); TValue key, val; setsvalue(L, &key, luaS_newliteral(L, "__flags")); const TValue *oldflags = luaH_getstr(t, tsvalue(&key)); lua_Integer fl = ttisinteger(oldflags) ? ivalue(oldflags) : 0; fl |= CLASS_FLAG_INTERFACE; setivalue(&val, fl); luaH_set(L, t, &key, &val); } break; }
       case OP_ADDMETHOD: { TString *method_name = tsvalue(&k[b]); int param_count = c; if (ttistable(s2v(base + a))) { Table *t = hvalue(s2v(base + a)); TValue key; setsvalue(L, &key, luaS_newliteral(L, "__methods")); const TValue *methods_tv = luaH_getstr(t, tsvalue(&key)); if (ttistable(methods_tv)) { Table *methods = hvalue(methods_tv); TValue method_key, method_val; setsvalue(L, &method_key, method_name); setivalue(&method_val, param_count); luaH_set(L, methods, &method_key, &method_val); } } break; }
+      case OP_EXTENDIFACE: {
+        /* 接口继承父接口：R[A].__parent := R[B] */
+        TValue *ra = s2v(base + a);
+        TValue *rb = s2v(base + b);
+        if (ttistable(ra) && ttistable(rb)) {
+          Table *t = hvalue(ra);
+          TValue key;
+          setsvalue(L, &key, luaS_newliteral(L, "__parent"));
+          luaH_set(L, t, &key, rb);
+        }
+        break;
+      }
+      case OP_ASCLASS: {
+        /* as 运算符：安全类型转换 R[A] := (R[B] instanceof R[C]) ? R[B] : nil
+           功能：与 instanceof 不同，不返回 boolean，成功返回原对象，失败返回 nil。
+           调用 luaC_instanceof 前后无需重算 base，因为混淆 VM 中栈不会重分配。 */
+        luaD_checkstack(L, 2);
+        ci->u.l.savedpc = (const Instruction *)(f->code + pc);
+        TValue *rb = s2v(base + b);
+        TValue *rc = s2v(base + c);
+        setobj2s(L, L->top.p, rb);
+        L->top.p++;
+        setobj2s(L, L->top.p, rc);
+        L->top.p++;
+        int result = luaC_instanceof(L, -2, -1);
+        L->top.p -= 2;
+        if (result) {
+          setobj2s(L, base + a, rb);
+        } else {
+          setnilvalue(s2v(base + a));
+        }
+        break;
+      }
       case OP_CASE: { StkId ra = base + a; TValue rb; setobj(L, &rb, s2v(base + b)); TValue rc; setobj(L, &rc, s2v(base + c)); Table *t; L->top.p = ra + 1; t = luaH_new(L); sethvalue2s(L, ra, t); luaH_setint(L, t, 1, &rb); luaH_setint(L, t, 2, &rc); checkGC(L, ra + 1); break; }
       case OP_CALL: {
         StkId ra = base + a;

@@ -1,0 +1,95 @@
+=== RC=1 timeout=False ===
+--- STDOUT ---
+=== 2-level init ===
+--- STDERR ---
+[LUA_LOAD] bind _ENV: f=0000100880028ad0 nupvalues=1 proto=0000102080022140 proto_ups=1 top=6
+[LUA_LOAD] _ENV bound to global table 00001006800261a0
+=================================================================
+==36624==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1006800283c8 at pc 0x00000fb63c73 bp 0x0000013fec60 sp 0x0000013feca8
+READ of size 8 at 0x1006800283c8 thread T0
+    #0 0x00000fb63c72 in l_rwlock_rdlock E:/Soft/Proje/LXCLUA-NCore/lua/src/utils/lthread.c:138:7
+    #1 0x00000fa6a89c in lua_rawget E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lapi.c:1222:3
+    #2 0x00000fa880d3 in luaC_setmethod E:/Soft/Proje/LXCLUA-NCore/lua/src/stdlib/lclass.c:2503:5
+    #3 0x00000fb7ec2e in luaV_execute E:/Soft/Proje/LXCLUA-NCore/lua/src/vm/lvm.c:3995:9
+    #4 0x00000fab37a7 in ccall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:971:5
+    #5 0x00000fab37a7 in luaD_callnoyield E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:998:3
+    #6 0x00000faaf7d9 in luaD_rawrunprotected E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:185:5
+    #7 0x00000fab4d3e in luaD_pcall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:1343:12
+    #8 0x00000fa6f0f4 in lua_pcallk E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lapi.c:1812:14
+    #9 0x00000fb678e3 in docall E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:168:12
+    #10 0x00000fb678e3 in handle_script E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:272:14
+    #11 0x00000fb678e3 in pmain E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:759:9
+    #12 0x00000fab2248 in precallC E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:749:7
+    #13 0x00000fab2b43 in luaD_precall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c
+    #14 0x00000fab3779 in ccall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:969:13
+    #15 0x00000fab3779 in luaD_callnoyield E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:998:3
+    #16 0x00000faaf7d9 in luaD_rawrunprotected E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:185:5
+    #17 0x00000fab4d3e in luaD_pcall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:1343:12
+    #18 0x00000fa6f0f4 in lua_pcallk E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lapi.c:1812:14
+    #19 0x00000fb669ce in main E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:790:12
+    #20 0x00000fa610fd in __tmainCRTStartup /home/runner/work/llvm-mingw/llvm-mingw/mingw-w64/mingw-w64-crt/build-x86_64/../crt/crtexe.c:276:11
+    #21 0x7ff87ef2e956  (C:\Windows\System32\KERNEL32.DLL+0x18002e956)
+    #22 0x7ff8803cad6b  (C:\Windows\SYSTEM32\ntdll.dll+0x1800aad6b)
+
+0x1006800283c8 is located 40 bytes after 32-byte region [0x100680028380,0x1006800283a0)
+allocated by thread T0 here:
+    #0 0x7fff1ae8dcc6 in realloc /home/runner/work/llvm-mingw/llvm-mingw/llvm-project/compiler-rt/lib/asan/asan_malloc_win.cpp:110:3
+    #1 0x00000fae2cc2 in luaM_malloc_ E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lmem.c:257:22
+    #2 0x00000fabf896 in luaC_newobjdt E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lgc.c:304:24
+    #3 0x00000fabf896 in luaC_newobj E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lgc.c:325:10
+    #4 0x00000fabc82c in luaF_newLclosure E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lfunc.c:52:17
+    #5 0x00000fb7e281 in luaV_pushclosure E:/Soft/Proje/LXCLUA-NCore/lua/src/vm/lvm.c:1934:19
+    #6 0x00000fb7e281 in luaV_execute E:/Soft/Proje/LXCLUA-NCore/lua/src/vm/lvm.c:3740:21
+    #7 0x00000fab37a7 in ccall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:971:5
+    #8 0x00000fab37a7 in luaD_callnoyield E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:998:3
+    #9 0x00000faaf7d9 in luaD_rawrunprotected E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:185:5
+    #10 0x00000fab4d3e in luaD_pcall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:1343:12
+    #11 0x00000fa6f0f4 in lua_pcallk E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lapi.c:1812:14
+    #12 0x00000fb678e3 in docall E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:168:12
+    #13 0x00000fb678e3 in handle_script E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:272:14
+    #14 0x00000fb678e3 in pmain E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:759:9
+    #15 0x00000fab2248 in precallC E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:749:7
+    #16 0x00000fab2b43 in luaD_precall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c
+    #17 0x00000fab3779 in ccall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:969:13
+    #18 0x00000fab3779 in luaD_callnoyield E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:998:3
+    #19 0x00000faaf7d9 in luaD_rawrunprotected E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:185:5
+    #20 0x00000fab4d3e in luaD_pcall E:/Soft/Proje/LXCLUA-NCore/lua/src/core/ldo.c:1343:12
+    #21 0x00000fa6f0f4 in lua_pcallk E:/Soft/Proje/LXCLUA-NCore/lua/src/core/lapi.c:1812:14
+    #22 0x00000fb669ce in main E:/Soft/Proje/LXCLUA-NCore/lua/src/bin/lua.c:790:12
+    #23 0x00000fa610fd in __tmainCRTStartup /home/runner/work/llvm-mingw/llvm-mingw/mingw-w64/mingw-w64-crt/build-x86_64/../crt/crtexe.c:276:11
+    #24 0x7ff87ef2e956  (C:\Windows\System32\KERNEL32.DLL+0x18002e956)
+    #25 0x7ff8803cad6b  (C:\Windows\SYSTEM32\ntdll.dll+0x1800aad6b)
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow E:/Soft/Proje/LXCLUA-NCore/lua/src/utils/lthread.c:138:7 in l_rwlock_rdlock
+Shadow bytes around the buggy address:
+  0x100680028100: fa fa 00 00 00 03 fa fa 00 00 00 00 fa fa 00 00
+  0x100680028180: 00 02 fa fa 00 00 00 06 fa fa fd fd fd fd fa fa
+  0x100680028200: 00 00 00 00 fa fa 00 00 00 03 fa fa fd fd fd fd
+  0x100680028280: fa fa fd fd fd fa fa fa 00 00 00 00 fa fa fd fd
+  0x100680028300: fd fa fa fa fd fd fd fa fa fa 00 00 00 06 fa fa
+=>0x100680028380: 00 00 00 00 fa fa fa fa fa[fa]fa fa fa fa fa fa
+  0x100680028400: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x100680028480: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x100680028500: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x100680028580: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x100680028600: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==36624==ABORTING

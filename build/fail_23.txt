@@ -1,0 +1,11 @@
+=== RC=-999 timeout=True ===
+--- STDOUT ---
+=== 2-level init ===
+--- STDERR ---
+[ASTPARSER] luaY_parser START(ast), name='@test_2lv.lua', firstchar=0x70
+[ASTPARSER] parse done, chunk=0000000001515b48 main_func=0000000001515b80
+[ASTPARSER] codegen done: proto=0000000001509600 sizeupvalues=1 cl->nupvalues=1 is_vararg=1 numparams=0 sizecode=32 sizep=2
+[ASTPARSER]   upval[0]: name='_ENV' instack=1 kind=0
+[ASTPARSER] luaY_parser END(ast)
+[LUA_LOAD] bind _ENV: f=00000000014f9200 nupvalues=1 proto=0000000001509600 proto_ups=1 top=6
+[LUA_LOAD] _ENV bound to global table 00000000015054a0

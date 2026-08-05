@@ -1789,6 +1789,9 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   struct CallS c;
   int status;
   ptrdiff_t func;
+  LUA_LOGD("[API] lua_pcallk nargs=%d nresults=%d errfunc=%d ci=%p ci_func=%p",
+          nargs, nresults, errfunc, (void*)L->ci,
+          L->ci ? (void*)L->ci->func.p : NULL);
   lapi_vmp_hook_point();
   lua_lock(L);
   api_check(L, k == NULL || !isLua(L->ci),
@@ -1825,9 +1828,9 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   }
   adjustresults(L, nresults);
   lua_unlock(L);
+  LUA_LOGD("[API] lua_pcallk END, status=%d", status);
   return status;
 }
-
 
 /**
  * @brief Loads a Lua chunk.
@@ -1843,10 +1846,12 @@ LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
                       const char *chunkname, const char *mode) {
   ZIO z;
   int status;
+  LUA_LOGD("[API] lua_load: chunkname='%s' mode='%s'", chunkname, mode);
   lua_lock(L);
   if (!chunkname) chunkname = "?";
   luaZ_init(L, &z, reader, data);
   status = luaD_protectedparser(L, &z, chunkname, mode);
+  LUA_LOGD("[API] lua_load END: chunkname='%s' status=%d", chunkname, status);
   if (status == LUA_OK) {  /* no errors? */
     LClosure *f = clLvalue(s2v(L->top.p - 1));  /* get new function */
     if (f->nupvalues >= 1) {  /* does it have an upvalue? */

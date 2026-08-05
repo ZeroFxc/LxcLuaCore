@@ -1,0 +1,3 @@
+msg =	Sum: 30
+type =	string
+PASS

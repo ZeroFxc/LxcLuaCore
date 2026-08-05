@@ -668,11 +668,14 @@ static const luaL_Reg stringmetamethods[] = {
 ** ============================================
 */
 
-/* PCRE2 特殊字符 */
+/* PCRE2 特殊字符（先 undef 避免与原版 Lua 引擎宏冲突） */
+#undef SPECIALS
 #define SPECIALS	"\\^$.*+?()[]{}|"
 
 /* 捕获常量 */
+#undef CAP_POSITION
 #define CAP_POSITION	(-2)
+#undef L_ESC
 #define L_ESC		'%'
 
 /* 前向声明：纯文本查找 */
