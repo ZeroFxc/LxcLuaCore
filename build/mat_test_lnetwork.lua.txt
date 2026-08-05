@@ -1,0 +1,34 @@
+--- STDOUT ---
+========================================
+  LNetwork 完整网络库验证
+========================================
+
+[模块1] URL 编码/解码
+  [FAIL] url_encode ASCII: test/luatest\test_lnetwork.lua:34: attempt to index a nil value (field 'url')
+  [FAIL] url_encode UTF-8: test/luatest\test_lnetwork.lua:38: attempt to index a nil value (field 'url')
+  [FAIL] url_decode roundtrip: test/luatest\test_lnetwork.lua:43: attempt to index a nil value (field 'url')
+
+[模块2] URL 解析
+  [FAIL] parseUrl full URL: test/luatest\test_lnetwork.lua:54: attempt to index a nil value (field 'url')
+  [FAIL] parseUrl simple URL: test/luatest\test_lnetwork.lua:63: attempt to index a nil value (field 'url')
+
+[模块3] Base64 编码/解码
+  [FAIL] base64 encode/decode: test/luatest\test_lnetwork.lua:75: attempt to index a nil value (field 'base64')
+  [FAIL] base64 empty: test/luatest\test_lnetwork.lua:80: attempt to index a nil value (field 'base64')
+
+[模块4] MIME 类型
+  [FAIL] mime_type html: test/luatest\test_lnetwork.lua:89: attempt to index a nil value (field 'mime')
+  [FAIL] mime_type json: test/luatest\test_lnetwork.lua:92: attempt to index a nil value (field 'mime')
+  [FAIL] mime_type png: test/luatest\test_lnetwork.lua:95: attempt to index a nil value (field 'mime')
+  [FAIL] mime_type unknown: test/luatest\test_lnetwork.lua:98: attempt to index a nil value (field 'mime')
+
+[模块5] Cookie 解析
+  [FAIL] cookie_parse: test/luatest\test_lnetwork.lua:107: attempt to index a nil value (field 'cookie')
+
+[模块6] HTTP 服务器 + 客户端自测
+--- STDERR ---
+./lxclua.exe: test/luatest\test_lnetwork.lua:119: bad argument #1 to 'server' (number expected, got no value)
+stack traceback:
+	[C]: in function 'http.server'
+	test/luatest\test_lnetwork.lua:119: in function <test/luatest\test_lnetwork.lua:1>
+	[C]: in ?

@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s05_expr.lua:6: '->' expected
+    6 |   case 1 then "mon"
+      |         ^ here

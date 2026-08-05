@@ -1,0 +1,10 @@
+--- STDOUT ---
+=== 中缀函数调用测试 ===
+
+PASS 1: 基本中缀调用 test add 5 => 15
+--- STDERR ---
+./lxclua.exe: test/luatest\test_infix.lua:22: Test 2 failed: infix call return value
+stack traceback:
+	[C]: in function 'assert'
+	test/luatest\test_infix.lua:22: in function <test/luatest\test_infix.lua:1>
+	[C]: in ?

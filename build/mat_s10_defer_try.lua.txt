@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s10_defer_try.lua:8: ''('' expected
+    8 |   catch e
+      |        ^ here

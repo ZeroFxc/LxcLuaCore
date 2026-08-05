@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/luatest\test_label_infix.lua:43: '')'' expected
+    43 | check_eq(Outer::Inner::deep(7), 70, "A7: Outer::Inner::deep(7) nested namespace call")
+      | ^ here

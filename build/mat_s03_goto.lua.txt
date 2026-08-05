@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s03_goto.lua:16: ''end'' expected
+    16 | 
+      | ^ here

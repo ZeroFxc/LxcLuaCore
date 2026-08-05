@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/luatest\test_mini.lua:4: attempt to call a nil value (method 'get')
+stack traceback:
+	test/luatest\test_mini.lua:4: in function <test/luatest\test_mini.lua:1>
+	[C]: in ?
