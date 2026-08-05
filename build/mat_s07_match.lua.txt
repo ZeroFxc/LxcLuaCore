@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s07_match.lua:3: ''}'' expected
+    3 |   1 => "one",
+      |       ^ here

@@ -1,0 +1,35 @@
+--- STDOUT ---
+============================================================
+测试 <const> 属性
+============================================================
+  [PASS] <const> variable cannot be reassigned (compile-time) (compile error: tokenpos: 9, Line: 1, LastToken: '''', description: [string "  local x <const> = 42..."]:1: '<name>' expected)
+  [FAIL] <const> compiles: tokenpos: 11, Line: 1, LastToken: '''', description: [string "    local x <const> = 42..."]:1: '<name>' expected
+  [PASS] <const> in multi-assignment: cannot modify (compile error: tokenpos: 12, Line: 1, LastToken: '''', description: [string "  local a, b <const>, c = 1, 2, 3..."]:1: '<name>' expected)
+  [FAIL] non-const in multi-assignment compiles: tokenpos: 14, Line: 1, LastToken: '''', description: [string "    local a, b <const>, c = 1, 2, 3..."]:1: '<name>' expected
+  [FAIL] for-loop variable 'i' is read-only (compile-time) (expected compile error containing 'const', got: true / nil)
+  [PASS] for loop compiles: OK
+  [PASS] for loop sum = 15 (got: 15)
+  [FAIL] generic for first variable 'k' is read-only (expected compile error containing 'const', got: true / nil)
+  [PASS] generic for second variable modifiable compiles: OK
+  [PASS] generic for: 1+10 + 2+10 + 3+10 = 36 (got: 36)
+
+============================================================
+测试 <toclose> 属性
+============================================================
+  [FAIL] <toclose> compiles: tokenpos: 109, Line: 4, LastToken: '''', description: [string "    local closed = false..."]:4: '<name>' expected
+  [FAIL] <toclose> early return compiles: tokenpos: 128, Line: 4, LastToken: '''', description: [string "    local closed = false..."]:4: '<name>' expected
+  [FAIL] multiple <toclose> compiles: tokenpos: 185, Line: 8, LastToken: '''', description: [string "    local order = {}..."]:8: '<name>' expected
+  [FAIL] <toclose> error close compiles: tokenpos: 139, Line: 4, LastToken: '''', description: [string "    local closed = false..."]:4: '<name>' expected
+  [FAIL] <toclose> without __close raises error (compile error: tokenpos: 9, Line: 1, LastToken: '''', description: [string "  local x <toclose> = {}..."]:1: '<name>' expected)
+
+============================================================
+测试 global 声明 (Lua 5.5)
+============================================================
+  [PASS] global declaration compiles: OK
+  [PASS] global usage works (got: number)
+  [FAIL] global <const> * compiles: tokenpos: 10, Line: 1, LastToken: ''global'', description: [string "    global <const> *..."]:1: '<name>' expected
+
+============================================================
+总计: PASSED = 8, FAILED = 10
+============================================================
+--- STDERR ---

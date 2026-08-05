@@ -1,0 +1,10 @@
+--- STDOUT ---
+=== Test 1: Key Generation ===
+Key1 priv:	64ec8fe2c730fdcffbc0e85b8641a93cea26fb7c48378075d748b64af971bcd6
+Key1 pub:	0423c533ef61aec83b8b957ff612e31e8b3ab562f4fea612aa46c911fef8d93fb3b145f21490239b2e07e9629aa704e2511ca4d72c9f1c1e7fe87baa36c3a52767
+Key2 priv:	1ac81b66ce8d86b7f84d8bd5ca8dbed0670a841874837816f140c11941a3dda4
+Key2 pub:	04cfb9ca39a7815b2bac0d4a0657cb086ccebc747439c919a1b0cdb41e87412cb60e6f1b5ad19832dcd16ff59f70c9a92ef6e8a73f11f5472d3cd86c6838fa1448
+PASS: Key generation works
+
+=== Test 2: ECDSA Sign + Verify (valid) ===
+--- STDERR ---
