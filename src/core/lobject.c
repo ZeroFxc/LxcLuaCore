@@ -556,9 +556,6 @@ void luaO_tostring (lua_State *L, TValue *obj) {
   } else if (ttisbigint(obj)) {
     luaB_tostring(L, obj);
   } else {
-    if (ttisnumber(obj) && !ttisinteger(obj) && !ttisfloat(obj)) {
-        printf("DEBUG: luaO_tostring unknown number variant. rawtt=%d LUA_VNUMBIG=%d\n", rawtt(obj), LUA_VNUMBIG);
-    }
     char buff[LUA_N2SBUFFSZ];
     unsigned len = luaO_tostringbuff(obj, buff);
     setsvalue(L, obj, luaS_newlstr(L, buff, len));
