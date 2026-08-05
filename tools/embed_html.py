@@ -50,7 +50,7 @@ def embed_js_to_html():
     返回值说明：无，直接写入文件
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    js_path = os.path.join(script_dir, 'lxclua.js')
+    js_path = os.path.join(script_dir, '../lxclua.js')
     output_path = os.path.join(script_dir, 'lxclua_standalone.html')
     
     with open(js_path, 'r', encoding='utf-8') as f:

@@ -1030,16 +1030,9 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
         /* 未找到 key，检查 data 表的 __index 元表（回退到全局表） */
         {
           Table *first_data = nsvalue(t)->data;
-          printf("[DEBUG] luaV_finishget ns: first_data=%p, metatable=%p, key='%s'\n",
-                 (void*)first_data, first_data ? (void*)first_data->metatable : NULL,
-                 key ? getstr(tsvalue(key)) : "???");
           if (first_data && first_data->metatable) {
             GCObject *mt = first_data->metatable;
-            printf("[DEBUG] luaV_finishget ns: mt->tt=%d, flags=0x%x, TM_INDEX=%d, bit=%d\n",
-                   mt->tt, ((Table*)mt)->flags, TM_INDEX, (int)(((Table*)mt)->flags & (1u<<TM_INDEX)));
             const TValue *tm = fasttm(L, first_data->metatable, TM_INDEX);
-            printf("[DEBUG] luaV_finishget ns: tm=%p, ttistable=%d\n",
-                   (void*)tm, tm ? ttistable(tm) : 0);
             if (tm != NULL) {
               if (ttisfunction(tm)) {
                 luaT_callTMres(L, tm, t, key, val);

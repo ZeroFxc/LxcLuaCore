@@ -49,8 +49,6 @@ Namespace *luaN_new (lua_State *L, TString *name) {
     mt->flags &= ~cast_byte(1u << TM_INDEX);  /* 清除 TM_INDEX 缓存标志，使 fasttm 能够找到 __index */
   }
   ns->data->metatable = (GCObject *)mt;
-  printf("[DEBUG] luaN_new: ns->data=%p, mt=%p, ns->data->metatable=%p, __index points to global table\n",
-         (void*)ns->data, (void*)mt, (void*)ns->data->metatable);
   L->top.p--; /* 弹出 mt */
   
   /* The table is not reachable yet, but ns is anchored.

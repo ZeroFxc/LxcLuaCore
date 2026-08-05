@@ -8637,9 +8637,12 @@ static void localstat (LexState *ls, int isexport) {
     /* 管道/调用结果寄存器优化：
        RHS 为单值 VNONRELOC 且结果在 >= nvarstack 的寄存器时
        （如 local a = 3 |> f |> g，管道结果在 func_reg+1 远高于 nvarstack），
-       直接移入目标寄存器，跳过 adjust_assign 避免多余的 exp2nextreg 操作。 */
+       直接移入目标寄存器，跳过 adjust_assign 避免多余的 exp2nextreg 操作。
+       注意：带有条件跳转列表的表达式（and/or/??）不能走此路径，
+       因为需要通过 luaK_exp2reg/luaK_storevar 正确 patch TESTSET 的目标寄存器和跳转地址。 */
     if (nvars == 1 && nexps == 1 && e.k != VVOID && !hasmultret(e.k) &&
-        e.k == VNONRELOC && e.u.info >= luaY_nvarstack(fs)) {
+        e.k == VNONRELOC && e.u.info >= luaY_nvarstack(fs) &&
+        e.t == NO_JUMP && e.f == NO_JUMP) {
       int target_reg = luaY_nvarstack(fs);  /* 新局部变量的寄存器 */
       if (e.u.info != target_reg) {
         /* 管道结果在非目标寄存器，移入目标寄存器 */
