@@ -85,18 +85,6 @@ extern "C" {
 /* [70] VM core */
 #include "src/vm/lvm.h"
 
-/* [80] JIT (core / IR / frontend / codegen / regalloc / opt / sljit) */
-#include "src/vm/jit/core/ljit.h"
-#include "src/vm/jit/core/ljit_debug.h"
-#include "src/vm/jit/core/ljit_internal.h"
-#include "src/vm/jit/ir/ljit_ir.h"
-#include "src/vm/jit/frontend/ljit_analyze.h"
-#include "src/vm/jit/codegen/ljit_codegen.h"
-#include "src/vm/jit/regalloc/ljit_regalloc.h"
-#include "src/vm/jit/optimize/ljit_opt.h"
-#include "src/vm/jit/sljit/ljit_sljit.h"
-#include "src/vm/jit/sljit/ljit_sljit_mac.h"
-
 /* [99] Special headers (cannot be directly included, listed for reference) */
 /* special: src/compiler/lbctc_api_list.h -- X-macro list: requires external X() macro context */
 /* special: src/lspsrv/lspsrv.h -- LSP server has its own duplicate AST enum/struct definitions (conflicts with last.h) */

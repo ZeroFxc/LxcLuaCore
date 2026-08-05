@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s20_typed_when_take.lua:4: unexpected symbol
+    4 | when x == 1 then
+      |            ^ here

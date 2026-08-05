@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/dbg_pipe.lua:1: attempt to perform arithmetic on a function value (local 'x')
+stack traceback:
+	build/dbg_pipe.lua:1: in local 'inc'
+	build/dbg_pipe.lua:3: in main chunk
+	[C]: in ?

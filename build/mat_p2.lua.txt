@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/p2.lua:1: attempt to perform arithmetic on a function value (local 'x')
+stack traceback:
+	build/p2.lua:1: in local 'inc'
+	build/p2.lua:3: in main chunk
+	[C]: in ?

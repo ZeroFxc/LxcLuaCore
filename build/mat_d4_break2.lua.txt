@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/d4_break2.lua:3: unexpected symbol
+    3 |     if j == 2 then break 2 end
+      |                         ^ here

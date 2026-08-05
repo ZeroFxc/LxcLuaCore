@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/s16_interp_lambda.lua:7: attempt to perform arithmetic on a nil value (global 'x')
+stack traceback:
+	build/s16_interp_lambda.lua:7: in main chunk
+	[C]: in ?

@@ -2159,90 +2159,24 @@ static int finaltarget (Instruction *code, int i) {
 */
 void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int func_reg, arg_reg;
-  int e1_reg = -1;
   int nargs = 1;  /* 默认1个参数 */
   int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
-  /* 在 dischange 前判断 e1 是否为链式管道（前一次管道的结果） */
-  int e1_is_chain = (e1->k == VCALL);
 
   if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
 
-  /* 步骤1：记录 e1 的当前寄存器位置 */
-  luaK_dischargevars(fs, e1);
-  if (e1->k == VNONRELOC) {
-    e1_reg = e1->u.info;
-  }
-
-  /* 步骤2：方法引用不使用链式优化，避免 SELF 指令的寄存器冲突 */
+  /* 方法引用不使用标准布局，避免 SELF 指令的寄存器冲突 */
   if (is_self) {
-    /*
-     * 方法引用：e2 已在固定寄存器中（由 OP_SELF 分配）
-     * e2 占用 func_reg（方法）和 func_reg+1（self）
-     * 管道参数放在 func_reg+2
-     * 调用后将结果移回 e1 的原始寄存器，确保赋值（如 local result = ...）正确
-     */
     luaK_dischargevars(fs, e2);
     func_reg = e2->u.info;
-    /* 确保 func_reg + 2 可用（e2 已占 func_reg 和 func_reg+1） */
     if (fs->freereg <= func_reg + 2) {
       fs->freereg = func_reg + 3;
     }
     arg_reg = func_reg + 2;
     luaK_exp2reg(fs, e1, arg_reg);
-  } else if (e1_is_chain && e1_reg >= 0) {
-    /*
-     * 链式管道：e1 已经在寄存器 R[e1_reg] 中
-     * 结果应该也在 R[e1_reg]，这样链式调用的最终结果
-     * 会在第一次调用的位置
-     */
-    func_reg = e1_reg;
-    arg_reg = e1_reg + 1;
-    
-    /* 确保 arg_reg 可用 */
-    if (fs->freereg <= arg_reg) {
-      fs->freereg = arg_reg + 1;
-    }
-    
-    /*
-     * 检测冲突：e2（如 lambda 闭包）可能已在 arg_reg 中
-     * 因为 codeclosure 在解析时已调用了 luaK_exp2nextreg
-     * 如果直接用 OP_MOVE arg_reg, e1_reg 会覆盖 e2，导致调用失败
-     * 
-     * 注意：先生成 MOVE 再 discharge e2，避免 e2 的 GETTABUP 等指令
-     * 插入到 MOVE 之前，导致 MOVE 时 e1_reg 已被覆盖
-     */
-    int e2_at_arg = 0;
-    if (e2->k == VNONRELOC && e2->u.info == arg_reg) {
-      e2_at_arg = 1;
-    } else if (e2->k == VLOCAL && e2->u.var.ridx == arg_reg) {
-      e2_at_arg = 1;
-    }
-    
-    if (e2_at_arg) {
-      /* 冲突：e2 在 arg_reg，三步操作 */
-      int temp_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-      luaK_codeABC(fs, OP_MOVE, temp_reg, e1_reg, 0);  /* 保存 e1 到临时寄存器 */
-      luaK_exp2reg(fs, e2, func_reg);  /* 移动 e2 从 arg_reg 到 func_reg */
-      luaK_codeABC(fs, OP_MOVE, arg_reg, temp_reg, 0);  /* 恢复 e1 到 arg_reg */
-    } else if (e2->k == VRELOC) {
-      /* VRELOC：指令已在字节码流中，修复其目标寄存器到 func_reg 会覆盖 e1_reg
-       * 需要先保存 e1 到临时寄存器，再修复 VRELOC，最后移动管道值到 arg_reg */
-      int temp_reg = fs->freereg;
-      luaK_reserveregs(fs, 1);
-      luaK_codeABC(fs, OP_MOVE, temp_reg, e1_reg, 0);  /* 保存管道值到临时寄存器 */
-      luaK_exp2reg(fs, e2, func_reg);  /* 修复 VRELOC 到 func_reg（覆盖 e1_reg） */
-      luaK_codeABC(fs, OP_MOVE, arg_reg, temp_reg, 0);  /* 管道值移动到 arg_reg */
-    } else {
-      /* 无冲突：先保存 e1 到 arg_reg，再加载 e2 到 func_reg */
-      luaK_codeABC(fs, OP_MOVE, arg_reg, e1_reg, 0);
-      luaK_exp2reg(fs, e2, func_reg);
-    }
-    
   } else {
     /*
-     * 首次管道：e1 不在寄存器中（如字符串常量）
-     * 使用标准布局
+     * 标准管道布局：e2（函数）在 func_reg，e1（管道输入）在 arg_reg=func_reg+1
+     * 步骤4 将结果落在 func_reg+1，确保链式管道每段使用独立寄存器
      */
     luaK_exp2nextreg(fs, e2);
     func_reg = fs->freereg - 1;
@@ -2253,30 +2187,19 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
     luaK_exp2reg(fs, e1, arg_reg);
   }
   
-  /* 步骤3：生成函数调用指令
-   * OP_CALL A B C：
-   *   A = 函数寄存器，也是结果存储位置
-   *   B = 参数数量+1（nargs+1）
-   *   C = 返回值数量+1（2表示1个返回值）
-   */
+  /* 生成函数调用指令 */
   e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
   e1->k = VCALL;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;
-  e1->is_pipe_self = 0;  /* 清除标志 */
+  e1->is_pipe_self = 0;
 
-  /* 步骤4：如果 e1 有原始寄存器且与 func_reg 不同，将结果移回原始寄存器
-   * 这对于方法引用（is_self）尤为重要：SELF 指令使用了不同的寄存器，
-   * 管道结果必须移回原始寄存器，否则赋值（如 local result = ...）会拿到旧值
-   */
-  if (e1_reg >= 0 && e1_reg != func_reg) {
-    luaK_codeABC(fs, OP_MOVE, e1_reg, func_reg, 0);
-    e1->u.info = e1_reg;
-    e1->k = VNONRELOC;  /* 结果在固定寄存器中，便于链式管道 */
-  }
-
-  /* 调用后释放参数寄存器，保留结果寄存器 */
-  fs->freereg = func_reg + 1;
+  /* 结果始终落在 func_reg+1，防止链式管道下一段覆盖值寄存器 */
+  if (fs->freereg <= func_reg + 1) fs->freereg = func_reg + 1;
+  luaK_codeABC(fs, OP_MOVE, fs->freereg, func_reg, 0);
+  e1->u.info = fs->freereg;
+  e1->k = VNONRELOC;
+  fs->freereg++;
 }
 
 /*
@@ -2631,8 +2554,8 @@ void luaK_switchexpression (LexState *ls, expdesc *v) {
       /* 记录 default 标签位置 */
       default_label = luaK_getlabel(fs);
 
-      /* 解析 default body */
-      if (testnext(ls, TK_MEAN)) {
+      /* 解析 default body（支持 => 与 -> 两种箭头，与 case 分支对齐） */
+      if (testnext(ls, TK_MEAN) || testnext(ls, TK_ARROW)) {
         /* => 箭头形式 */
         expdesc body_exp;
         expr(ls, &body_exp);

@@ -1,0 +1,18 @@
+--- STDOUT ---
+=== 012 enum START ===
+OPT_1: 1
+OPT_2: 2
+OPT_A: 0
+OPT_B: 1
+OPT_C: 5
+OPT_D: 6
+by_name_OPT_A: 0
+SCOPED_S1: 1
+SCOPED_S2: 2
+B_3: 10
+B_4: 11
+--- STDERR ---
+./lxclua.exe: test/lbctc\012_enum.lua:48: attempt to call a nil value (method 'names')
+stack traceback:
+	test/lbctc\012_enum.lua:48: in main chunk
+	[C]: in ?

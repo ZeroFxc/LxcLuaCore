@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/lbctc\013_switch.lua:21: unexpected symbol
+    21 |     default -> "unknown"
+      |            ^ here

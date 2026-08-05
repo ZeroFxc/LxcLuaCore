@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+[PARSE] guard_stat: after skip 'guard', token=361
+[PARSE] guard_stat: TK_LET=318, TK_NAME=362, about to test...
+./lxclua.exe: build/s15_guard.lua:2: ''{'' expected
+    2 |   print("unreachable")
+      | ^ here

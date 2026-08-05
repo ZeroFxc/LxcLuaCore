@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: test/lbctc\011_namespace.lua:22: ';' expected
+    22 | print("using_add: " .. add(3, 4))
+      | ^ here
