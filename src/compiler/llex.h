@@ -204,6 +204,9 @@ typedef struct LexState {
 
   /* Expression parsing flags */
   int expr_flags;
+
+  /* 循环深度跟踪：支持 break N 多层级跳转（与 AST 解析器对齐） */
+  int loop_depth;
 } LexState;
 
 

@@ -1,2 +1,5 @@
 --- STDOUT ---
 --- STDERR ---
+./lxclua.exe: test/lbctc\ext_struct.lua:3: <name> expected
+    3 |   x: 0
+      |     ^ here

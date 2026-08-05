@@ -1459,6 +1459,12 @@ static AstExpr *parse_primary(ParserState *ps) {
           if (luaX_lookahead2(ls) == TK_MEAN)
             is_arrow = 1;
         }
+        /* 多参箭头检测: (a, b, ...) => —— 首个参数名后跟 ',' 即判定为箭头
+           （与原版 parser 同一启发式） */
+        if (!is_arrow && (is_nametoken(la1) || la1 == TK_DOTS) &&
+            luaX_lookahead2(ls) == ',') {
+          is_arrow = 1;
+        }
         if (is_arrow) {
           /* (params) => expr 箭头函数 */
           int fline = ls->linenumber;
@@ -1819,7 +1825,7 @@ static AstExpr *parse_primary(ParserState *ps) {
       f->params = params;
       f->nlocals = nparams;
 
-      /* 解析函数体 { body } */
+      /* 解析函数体：{ body }（大括号）或普通块（end 结束） */
       AstFunc *oldfunc = ps->curfunc;
       ps->curfunc = f;
       scope_push(ps, 0);
@@ -1829,7 +1835,14 @@ static AstExpr *parse_primary(ParserState *ps) {
           scope_add_local(ps, params[i].name, params[i].attr);
         }
       }
-      parse_block(ps, &f->body);
+      if (lp_testnext(ps, '{')) {
+        /* ->(args) { body } 大括号体 */
+        parse_block(ps, &f->body);
+        lp_checknext(ps, '}');
+      } else {
+        parse_block(ps, &f->body);
+        lp_checknext(ps, TK_END);
+      }
       scope_pop(ps);
       ps->curfunc = oldfunc;
 
@@ -2178,7 +2191,13 @@ static AstExpr *parse_suffixedexpr(ParserState *ps, AstExpr *v) {
         }
       }
     }
-    else if (lp_testnext(ps, ':')) {
+    else if (ls->t.token == ':' && is_nametoken(lp_lookahead(ps)) &&
+             (lp_lookahead2(ps) == '(' || lp_lookahead2(ps) == TK_STRING ||
+              lp_lookahead2(ps) == TK_RAWSTRING || lp_lookahead2(ps) == TK_INTERPSTRING ||
+              lp_lookahead2(ps) == '{')) {
+      /* ':' method 调用：要求方法名后跟实际调用实参（( / 字符串 / 表），
+         避免与三元运算符的 ':' 冲突（如 c ? a : b，与原版 parser 对齐） */
+      lp_next(ps); /* 跳过 ':' */
       TString *method = lp_checkfieldname(ps);
       if (lp_testnext(ps, '(')) {
         int nargs = 0;
@@ -2205,8 +2224,9 @@ static AstExpr *parse_suffixedexpr(ParserState *ps, AstExpr *v) {
         args[0] = t;
         v = ast_new_expr_methodcall(ps->pool, v, method, args, 1, line);
       } else {
-        /* 方法引用（无括号）：obj:method 作为函数值使用 */
-        v = ast_new_expr_methodref(ps->pool, v, method, line);
+        /* 方法名后无调用实参：不作为方法后缀（避免吞掉三元 ':'），
+           停止后缀解析 */
+        break;
       }
     }
     else if (lp_testnext(ps, '(')) {
@@ -2386,6 +2406,44 @@ static AstExpr *parse_subexpr(ParserState *ps, int min_prec) {
  */
 static AstExpr *parse_expr(ParserState *ps) {
   AstExpr *r = parse_subexpr(ps, 0);
+  LexState *ls = ps->ls;
+
+  /* 单参数箭头函数: x => expr（与原版 parser 对齐） */
+  if (ls->t.token == TK_MEAN && r->kind == AST_EXPR_IDENT) {
+    int fline = ls->linenumber;
+    TString *pname = r->u.strval;
+    int func_idx = ps->func_idx_counter++;
+    int parent_idx = ps->curfunc ? ps->curfunc->func_idx : -1;
+    lp_next(ps); /* 跳过 '=>' */
+    AstExpr *body_expr = parse_expr(ps);
+    AstFunc *f = ast_new_func(ps->pool, func_idx, parent_idx, fline);
+    f->source = ls->source;
+    f->is_vararg = 0;
+    AstFuncParam *params = cast(AstFuncParam *,
+      ast_pool_alloc(ps->pool, sizeof(AstFuncParam)));
+    params[0].name = pname;
+    params[0].default_value = NULL;
+    params[0].attr = AST_ATTR_NONE;
+    params[0].type_hint = NULL;
+    f->nparams = 1;
+    f->params = params;
+    f->nlocals = 1;
+    AstStmt *ret = ast_new_stmt_return(ps->pool, 1, fline);
+    ret->u.retstmt.values[0] = body_expr;
+    ast_block_add_stmt(ps->pool, &f->body, ret);
+    return ast_new_expr_func(ps->pool, f, 1, fline);
+  }
+
+  /* 三元运算符: cond ? e2 : e3（与原版 parser 对齐） */
+  if (ls->t.token == '?') {
+    int tline = ls->linenumber;
+    lp_next(ps); /* 跳过 '?' */
+    AstExpr *thn = parse_subexpr(ps, 0);
+    lp_checknext(ps, ':');
+    AstExpr *els = parse_expr(ps);  /* 右结合：允许嵌套三元 */
+    return ast_new_expr_condexpr(ps->pool, r, thn, els, tline);
+  }
+
   return r;
 }
 
@@ -4279,15 +4337,9 @@ static AstStmt *parse_guard_stat(ParserState *ps) {
   LexState *ls = ps->ls;
   int line = ls->linenumber;
   lp_next(ps); /* skip 'guard' */
-  fprintf(stderr, "[PARSE] guard_stat: after skip 'guard', token=%d\n", ls->t.token);
-  fflush(stderr);
 
   /* guard let name = expr else { ... } */
-  fprintf(stderr, "[PARSE] guard_stat: TK_LET=%d, TK_NAME=%d, about to test...\n", TK_LET, TK_NAME);
-  fflush(stderr);
   if (lp_testnext(ps, TK_LET)) {
-    fprintf(stderr, "[PARSE] guard_stat: TK_LET matched!\n");
-    fflush(stderr);
     TString *name = lp_checkname(ps);
     lp_checknext(ps, '=');
     AstExpr *value = parse_expr(ps);
@@ -4320,8 +4372,6 @@ static AstStmt *parse_guard_stat(ParserState *ps) {
 
   /* 创建 guard 语句 */
   AstStmt *s = ast_new_stmt_guard(ps->pool, cond, NULL, NULL, &else_block, line);
-  fprintf(stderr, "[PARSE] guard_stat: done, returning stmt\n");
-  fflush(stderr);
   return s;
 }
 
@@ -4578,8 +4628,29 @@ static AstStmt *parse_struct_stat(ParserState *ps) {
         fname = lp_checkname(ps);
         if (lp_testnext(ps, '=')) {
           val = parse_expr(ps);
+        } else if (lp_testnext(ps, ':')) {
+          /* 字段默认值语法: name: value（与原版 parser 对齐） */
+          val = parse_expr(ps);
         }
         /* 无值则默认为 nil */
+      } else if (ls->t.token == '[') {
+        /* 计算键: [expr] = value */
+        lp_next(ps);
+        AstExpr *kexpr = parse_expr(ps);
+        lp_checknext(ps, ']');
+        fname = NULL;
+        if (lp_testnext(ps, '=') || lp_testnext(ps, ':')) {
+          val = parse_expr(ps);
+        }
+        AstExpr *key2 = kexpr;
+        pairs[nentries].key = key2;
+        pairs[nentries].value = val;
+        nentries++;
+        if (ls->t.token == ',' || ls->t.token == ';') lp_next(ps);
+        continue;
+      } else {
+        /* 无法识别的字段：报错避免死循环 */
+        lp_error(ps, "struct field name expected");
       }
 
       AstExpr *key = ast_new_expr_str(ps->pool, fname ? fname : luaS_newliteral(ls->L, ""), AST_EXPR_STRING, line);

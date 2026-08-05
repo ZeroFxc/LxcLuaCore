@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+@build/s25_iface_extends.lua:3: warning: unused local variable 'self' [unused]
+./lxclua.exe: build/s25_iface_extends.lua:6: only method declarations allowed in interface
+    6 | print("IX created OK")
+      | ^ here

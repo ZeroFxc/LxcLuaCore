@@ -1,0 +1,10 @@
+--- STDOUT ---
+=== 015 pipe START ===
+skipped_revpipe: 1
+skipped_safepipe: 1
+--- STDERR ---
+./lxclua.exe: test/lbctc/015_pipe.lua:16: attempt to perform arithmetic on a function value (local 'x')
+stack traceback:
+	test/lbctc/015_pipe.lua:16: in local 'inc'
+	test/lbctc/015_pipe.lua:20: in main chunk
+	[C]: in ?

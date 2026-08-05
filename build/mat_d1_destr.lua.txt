@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/d1_destr.lua:3: destruct failed
+stack traceback:
+	[C]: in function 'assert'
+	build/d1_destr.lua:3: in function <build/d1_destr.lua:1>
+	[C]: in ?

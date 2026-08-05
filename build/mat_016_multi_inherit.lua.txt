@@ -1,0 +1,32 @@
+--- STDOUT ---
+=== 016 multi_inherit START ===
+c_fa: A
+c_fb: B
+c_fc: C
+c_common: A_common
+d_fa: A
+d_fd: D
+e_fa: A
+e_fb: B
+e_fe: E
+g_fa: A
+g_fb: B
+g_ff: F
+g_fg: G
+--- STDERR ---
+@test/lbctc\016_multi_inherit.lua:10: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:13: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:19: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:22: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:28: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:44: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:54: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:65: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:70: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:83: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:88: warning: unused local variable 'self' [unused]
+@test/lbctc\016_multi_inherit.lua:93: warning: unused local variable 'self' [unused]
+./lxclua.exe: test/lbctc\016_multi_inherit.lua:177: attempt to call a nil value (method 'fia')
+stack traceback:
+	test/lbctc\016_multi_inherit.lua:177: in main chunk
+	[C]: in ?

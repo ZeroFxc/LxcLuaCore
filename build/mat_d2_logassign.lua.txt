@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/d2_logassign.lua:2: syntax error
+    2 | x &&= true
+      |      ^ here

@@ -3278,14 +3278,6 @@ static void parse_generic_arrow_body(LexState *ls, FuncState *factory_fs, expdes
 static void primaryexp (LexState *ls, expdesc *v) {
   /* primaryexp -> NAME | '(' expr ')' | STRING | constructor | NEW | SUPER */
   LUA_LOGD("[PARSER] primaryexp entry token=%d line=%d", ls->t.token, ls->linenumber);
-  {
-    FILE *fl = fopen("C:\\lex_trace_primary.txt", "a");
-    if (fl) {
-      fprintf(fl, "[PRIMARYEXP] entry token=%d TK_ASTPARSER=%d TK_NAME=%d TK_RAWSTRING=%d\n",
-        ls->t.token, (int)TK_ASTPARSER, (int)TK_NAME, (int)TK_RAWSTRING);
-      fflush(fl); fclose(fl);
-    }
-  }
   switch (ls->t.token) {
     case '(': {
       int line = ls->linenumber;
@@ -4031,66 +4023,10 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         funcargs(ls, v, line);
         break;
       }
-      case TK_PIPE: {  /* '|>' */
-        luaX_next(ls);
-        expdesc e;
-        /* 支持管道符右侧直接使用字面量和匿名函数 */
-        switch (ls->t.token) {
-          case TK_FUNCTION: {  /* 匿名函数 */
-            body(ls, &e, 0, ls->linenumber);
-            break;
-          }
-          case TK_LAMBDA: {  /* lambda表达式 */
-            lambda_body(ls, &e, ls->linenumber);
-            break;
-          }
-          case TK_INT: {  /* 整数常量 */
-            init_exp(&e, VKINT, 0);
-            e.u.ival = ls->t.seminfo.i;
-            luaX_next(ls);
-            break;
-          }
-          case TK_FLT: {  /* 浮点数常量 */
-            init_exp(&e, VKFLT, 0);
-            e.u.nval = ls->t.seminfo.r;
-            luaX_next(ls);
-            break;
-          }
-          case TK_STRING:
-          case TK_RAWSTRING: {  /* 字符串常量 */
-            codestring(&e, ls->t.seminfo.ts);
-            luaX_next(ls);
-            break;
-          }
-          case TK_TRUE: {  /* true常量 */
-            init_exp(&e, VTRUE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_FALSE: {  /* false常量 */
-            init_exp(&e, VFALSE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_NIL: {  /* nil常量 */
-            init_exp(&e, VNIL, 0);
-            luaX_next(ls);
-            break;
-          }
-          case '{': {  /* 表常量作为函数（返回自身的函数） */
-            constructor(ls, &e);
-            break;
-          }
-          default: {
-            /* 解析函数表达式（不递归处理管道，确保左关联） */
-            pipe_funcexp(ls, &e);
-            break;
-          }
-        }
-        /* 生成管道运算符代码 */
-        luaK_pipe(fs, v, &e);
-        break;
-      }
+      /* 注意：'|>' 管道不在此处处理。suffixedexp 不感知 subexpr 的
+         优先级上下文，若在此消费管道会破坏链式管道的左结合性
+         （如 a |> f |> g 会被解析成 a |> (f |> g)）。
+         管道统一由 subexpr 二元运算符路径处理（getbinopr/OPR_PIPE）。 */
       case TK_REVPIPE: {  /* '<|' 反向管道 */
         luaX_next(ls);
         expdesc e;
@@ -4398,14 +4334,6 @@ static void simpleexp (LexState *ls, expdesc *v) {
   /* simpleexp -> FLT | INT | NIL | TRUE | FALSE | ... |
                   constructor | FUNCTION body | suffixedexp */
   LUA_LOGD("[PARSER] simpleexp entry token=%d line=%d", ls->t.token, ls->linenumber);
-  {
-    FILE *fl = fopen("C:\\lex_trace_simple.txt", "a");
-    if (fl) {
-      fprintf(fl, "[SIMPLEEXP] entry token=%d TK_ASTPARSER=%d TK_NAME=%d TK_RAWSTRING=%d\n",
-        ls->t.token, (int)TK_ASTPARSER, (int)TK_NAME, (int)TK_RAWSTRING);
-      fflush(fl); fclose(fl);
-    }
-  }
   switch (ls->t.token) {
     case TK_IF: {
       ifexpr(ls, v);
@@ -5385,7 +5313,7 @@ static const struct {
    {6, 6}, {4, 4}, {5, 5},   /* '&' '|' '~' */
    {7, 7}, {7, 7},           /* '<<' '>>' */
    {9, 8},                   /* '..' (right associative) */
-   {8, 7},                   /* '|>' (right associative) */
+   {8, 8},                   /* '|>' 管道（左结合：a |> f |> g == g(f(a))） */
    {3, 3}, {3, 3}, {3, 3},   /* ==, <, <= */
    {3, 3}, {3, 3}, {3, 3},   /* ~=, >, >= */
    {3, 3},                   /* <=> (spaceship) */
@@ -5733,6 +5661,31 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
 
 void expr (LexState *ls, expdesc *v) {
   LUA_LOGD("[PARSER] expr START, token=%d line=%d", ls->t.token, ls->linenumber);
+  /* 裸单参箭头函数: x => expr（与 AST 解析器对齐）
+     TK_MEAN 不是 TK_NAME，不会与中缀调用检测冲突 */
+  if (ls->t.token == TK_NAME && luaX_lookahead(ls) == TK_MEAN) {
+    int line = ls->linenumber;
+    TString *pname = ls->t.seminfo.ts;
+    luaX_next(ls); /* 跳过参数名 */
+    luaX_next(ls); /* 跳过 '=>' */
+    FuncState new_fs;
+    BlockCnt bl;
+    new_fs.f = addprototype(ls);
+    new_fs.f->linedefined = line;
+    open_func(ls, &new_fs, &bl);
+    new_localvar(ls, pname);
+    adjustlocalvars(ls, 1);
+    new_fs.f->numparams = 1;
+    luaK_reserveregs(&new_fs, 1);
+    enterlevel(ls);
+    retstat(ls);  /* 表达式体作为 return 值 */
+    new_fs.freereg = new_fs.nactvar;
+    leavelevel(ls);
+    new_fs.f->lastlinedefined = ls->linenumber;
+    codeclosure(ls, v);
+    close_func(ls);
+    return;
+  }
   subexpr(ls, v, 0);
   LUA_LOGD("[PARSER] expr END, token=%d", ls->t.token);
   if (ls->t.token == '?') {
@@ -6316,11 +6269,58 @@ static void breakstat (LexState *ls) {
   int line = ls->linenumber;
   int temp = ls->t.token;
   luaX_next(ls);  /* skip break */
+  /* 多层级 break N / continue N（与 AST 解析器对齐） */
+  int level = 1;
+  if (ls->t.token == TK_INT) {
+    level = (int)ls->t.seminfo.i;
+    if (level < 1) level = 1;
+    luaX_next(ls);
+  }
+  if (level > 1) {
+    if (level > ls->loop_depth) {
+      luaK_semerror(ls, luaO_pushfstring(ls->L,
+        "%s level %d exceeds loop depth %d",
+        (temp == TK_BREAK) ? "break" : "continue", level, ls->loop_depth));
+    }
+    if (temp == TK_BREAK) {
+      /* 目标循环的绝对深度；跳转到其隐藏标签 __lpbrk<D>（由该循环结束时创建） */
+      int target_depth = ls->loop_depth - level + 1;
+      const char *fmt = luaO_pushfstring(ls->L, "__lpbrk%d", target_depth);
+      TString *name = luaS_new(ls->L, fmt);
+      ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
+      newgotoentry(ls, name, line, luaK_jump(ls->fs));
+    } else {
+      /* continue N：跳转到目标循环体内的 continue 标签（由循环体创建） */
+      newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(ls->fs));
+    }
+    return;
+  }
   if(temp==TK_BREAK) {
       newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, luaK_jump(ls->fs));
   }else if(temp==TK_CONTINUE){
       newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(ls->fs));
   }
+}
+
+
+/*
+** 循环结束时注册该层循环的隐藏 break 标签 __lpbrk<depth>，
+** 仅当存在指向它的待定 goto 时才创建，解析 break N 跳转
+*/
+static void lp_exit_loop (LexState *ls) {
+  int depth = ls->loop_depth;
+  const char *fmt = luaO_pushfstring(ls->L, "__lpbrk%d", depth);
+  TString *name = luaS_new(ls->L, fmt);
+  ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
+  Labellist *gl = &ls->dyd->gt;
+  int i;
+  for (i = 0; i < gl->n; i++) {
+    if (gl->arr[i].name == name) {
+      createlabel(ls, name, 0, 0);
+      break;
+    }
+  }
+  ls->loop_depth--;
 }
 
 /*
@@ -6363,6 +6363,7 @@ static void whilestat (LexState *ls, int line) {
     luaX_next(ls);  /* skip WHILE */
     luaX_next(ls);  /* skip let */
     
+    ls->loop_depth++;  /* break N 循环深度跟踪 */
     whileinit = luaK_getlabel(fs);
     
     /* Open loop block encompassing let condition + loop body */
@@ -6401,9 +6402,11 @@ static void whilestat (LexState *ls, int line) {
         }
     }
     check_match(ls, TK_END, TK_WHILE, line);
+    lp_exit_loop(ls);
     leaveblock(fs);  /* leaves loop block, discarding locals */
   } else {
     luaX_next(ls);  /* skip WHILE */
+    ls->loop_depth++;  /* break N 循环深度跟踪 */
     whileinit = luaK_getlabel(fs);
     condexit = cond(ls);
     enterblock(fs, &bl, 1);
@@ -6416,6 +6419,7 @@ static void whilestat (LexState *ls, int line) {
         block(ls);
     }
     check_match(ls, TK_END, TK_WHILE, line);
+    lp_exit_loop(ls);
     leaveblock(fs);
   }
 }
@@ -6427,6 +6431,7 @@ static void repeatstat (LexState *ls, int line) {
   FuncState *fs = ls->fs;
   int repeat_init = luaK_getlabel(fs);
   BlockCnt bl1, bl2;
+  ls->loop_depth++;  /* break N 循环深度跟踪 */
   enterblock(fs, &bl1, 1);  /* loop block */
   enterblock(fs, &bl2, 0);  /* scope block */
   luaX_next(ls);  /* skip REPEAT */
@@ -6443,6 +6448,7 @@ static void repeatstat (LexState *ls, int line) {
     luaK_patchtohere(fs, exit);  /* normal exit comes to here */
   }
   luaK_patchlist(fs, condexit, repeat_init);  /* close the loop */
+  lp_exit_loop(ls);
   leaveblock(fs);  /* finish loop */
 }
 
@@ -6561,6 +6567,7 @@ static void forstat (LexState *ls, int line) {
   FuncState *fs = ls->fs;
   TString *varname;
   BlockCnt bl;
+  ls->loop_depth++;  /* break N 循环深度跟踪 */
   enterblock(fs, &bl, 1);  /* scope for loop and control variables */
   luaX_next(ls);  /* skip 'for' */
   varname = str_checkname(ls);  /* first variable name */
@@ -6573,6 +6580,7 @@ static void forstat (LexState *ls, int line) {
     block(ls);
   }
   check_match(ls, TK_END, TK_FOR, line);
+  lp_exit_loop(ls);
   leaveblock(fs);  /* loop scope ('break' jumps to this point) */
 }
 
@@ -6684,9 +6692,32 @@ static int test_then_block (LexState *ls, int *escapelist) {
     int line = ls->linenumber;
     luaK_goiffalse(ls->fs, &v);  /* will jump if condition is true */
     if(ls->t.token==TK_BREAK) {
+      int is_breakkw = 1;
       luaX_next(ls);  /* skip 'break' */
       enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-      newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
+      /* 支持 break N 多层级跳转（与 AST 解析器对齐） */
+      if (is_breakkw && ls->t.token == TK_INT) {
+        int level = (int)ls->t.seminfo.i;
+        if (level < 1) level = 1;
+        luaX_next(ls);
+        if (level > 1) {
+          if (level > ls->loop_depth) {
+            luaK_semerror(ls, luaO_pushfstring(ls->L,
+              "break level %d exceeds loop depth %d", level, ls->loop_depth));
+          }
+          {
+            int target_depth = ls->loop_depth - level + 1;
+            const char *fmt = luaO_pushfstring(ls->L, "__lpbrk%d", target_depth);
+            TString *name = luaS_new(ls->L, fmt);
+            ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
+            newgotoentry(ls, name, line, v.t);
+          }
+        } else {
+          newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
+        }
+      } else {
+        newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
+      }
     }else{
       enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
       newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, v.t);
@@ -6796,6 +6827,7 @@ static void single_test_then_block (LexState *ls, int *escapelist) {
     luaX_next(ls);  /* skip IF or ELSEIF */
     cond_expr(ls, &v);  /* read condition (使用 cond_expr 避免 { 被误解为函数调用) */
     line = ls->linenumber;
+    testnext(ls, TK_THEN);  /* 可选的 'then'（与 AST 解析器对齐：when/case cond then ...） */
     if (ls->t.token == TK_GOTO || ls->t.token == TK_BREAK || ls->t.token == TK_CONTINUE) {
         luaK_goiffalse(ls->fs, &v);  /* will jump to label if condition is true */
         enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
@@ -6808,7 +6840,12 @@ static void single_test_then_block (LexState *ls, int *escapelist) {
         enterblock(fs, &bl, 0);
         jf = v.f;
     }
-    statement(ls);
+    /* 分支体：语句列表，直到 case/else/end（与 AST 解析器的块语义对齐） */
+    while (ls->t.token != TK_CASE && ls->t.token != TK_ELSE &&
+           ls->t.token != TK_END && ls->t.token != TK_EOS &&
+           !block_follow(ls, 1)) {
+      statement(ls);
+    }
     leaveblock(fs);
     if (ls->t.token == TK_ELSE || ls->t.token == TK_CASE ||
         ls->t.token == TK_WHEN)  /* followed by 'else'/'elseif'? */
@@ -7123,16 +7160,16 @@ static void match_body (LexState *ls, expdesc *v, int is_expr) {
       /* 修补成功跳转：模式匹配成功后跳转到分支体（守卫条件之前） */
       luaK_patchtohere(fs, success_jump);
 
-      /* 可选守卫条件 */
+      /* 可选守卫条件（用 expr_nocase 防止把分支的 => 当成 OPR_CASE 消费） */
       if (testnext(ls, TK_IF)) {
          expdesc cond;
-         expr(ls, &cond);
+         expr_nocase(ls, &cond);
          luaK_goiftrue(fs, &cond);
          luaK_concat(fs, &next_check_jump, cond.f);
       }
 
-      /* 分支体 */
-      if (testnext(ls, TK_ARROW)) {
+      /* 分支体（支持 -> 与 => 两种箭头，与 AST 解析器对齐） */
+      if (testnext(ls, TK_ARROW) || testnext(ls, TK_MEAN)) {
          expdesc e;
          expr(ls, &e);
          if (is_expr) {
@@ -7302,8 +7339,8 @@ static void switchstat (LexState *ls, int line) {
       luaK_patchtohere(fs, to_body_jump);
 
 
-      /* Parse Body */
-      if (testnext(ls, TK_ARROW)) {
+      /* Parse Body（支持 -> 与 => 两种箭头，与 AST 解析器对齐） */
+      if (testnext(ls, TK_ARROW) || testnext(ls, TK_MEAN)) {
          expdesc e;
          expr(ls, &e);
          luaK_exp2nextreg(fs, &e);
@@ -7341,7 +7378,7 @@ static void switchstat (LexState *ls, int line) {
 
       luaX_next(ls); /* skip DEFAULT */
 
-      if (testnext(ls, TK_ARROW)) {
+      if (testnext(ls, TK_ARROW) || testnext(ls, TK_MEAN)) {
          expdesc e;
          expr(ls, &e);
          luaK_exp2nextreg(fs, &e);
@@ -8597,8 +8634,23 @@ static void localstat (LexState *ls, int isexport) {
     fs->nactvar++;  /* but count it */
   }
   else {
-    adjust_assign(ls, nvars, nexps, &e);
-    adjustlocalvars(ls, nvars);
+    /* 管道/调用结果寄存器优化：
+       RHS 为单值 VNONRELOC 且结果在 >= nvarstack 的寄存器时
+       （如 local a = 3 |> f |> g，管道结果在 func_reg+1 远高于 nvarstack），
+       直接移入目标寄存器，跳过 adjust_assign 避免多余的 exp2nextreg 操作。 */
+    if (nvars == 1 && nexps == 1 && e.k != VVOID && !hasmultret(e.k) &&
+        e.k == VNONRELOC && e.u.info >= luaY_nvarstack(fs)) {
+      int target_reg = luaY_nvarstack(fs);  /* 新局部变量的寄存器 */
+      if (e.u.info != target_reg) {
+        /* 管道结果在非目标寄存器，移入目标寄存器 */
+        luaK_codeABC(fs, OP_MOVE, target_reg, e.u.info, 0);
+      }
+      adjustlocalvars(ls, nvars);  /* 激活局部变量 */
+      fs->freereg = target_reg + nvars;
+    } else {
+      adjust_assign(ls, nvars, nexps, &e);
+      adjustlocalvars(ls, nvars);
+    }
   }
   checktoclose(fs, toclose);
   LUA_LOGD("[PARSER] localstat END, nvars=%d", nvars);
@@ -12406,6 +12458,14 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport, int
     /* 嵌套类：存储到父类的 __statics 表 */
     int name_k = luaK_stringK(fs, classname);
     luaK_codeABC(fs, OP_SETSTATIC, parent_class_reg, name_k, class_reg);
+    /* 同时注册到全局作用域（与 AST 解析器对齐）：
+       使兄弟嵌套类可作为 extends 父类被解析，且 is 运算符能找到 */
+    {
+      expdesc gv, cv;
+      buildglobal(ls, classname, &gv);
+      init_exp(&cv, VNONRELOC, class_reg);
+      luaK_storevar(fs, &gv, &cv);
+    }
   }
   /* 检查是在全局还是局部作用域 */
   else if (isexport) {
@@ -12594,7 +12654,8 @@ static void interfacestat(LexState *ls, int line, int isexport) {
   if (softkw_testnext(ls, SKW_EXTENDS, SOFTKW_CTX_CLASS_INHERIT)) {
     do {
       expdesc parent_iface_exp;
-      expr(ls, &parent_iface_exp);
+      /* 用 pipe_funcexp（仅字段访问）避免把接口体 '{' 当成调用实参 */
+      pipe_funcexp(ls, &parent_iface_exp);
       luaK_exp2nextreg(fs, &parent_iface_exp);
       /* 生成 OP_EXTENDIFACE 指令: R[iface_reg].__parent := R[parent_reg] */
       luaK_codeABC(fs, OP_EXTENDIFACE, iface_reg, parent_iface_exp.u.info, 0);
@@ -12933,14 +12994,27 @@ static void structstat (LexState *ls, int line, int isexport) {
               }
           }
       } else if (ls->t.token == TK_NAME) {
-          /* Field = Value syntax */
+          /* Field = Value 语法；另支持 Field: Value 默认值语法（与 AST 解析器对齐） */
           fname = str_checkname(ls);
           if (testnext(ls, ':')) {
-              TypeHint *th = typehint_new(ls);
-              checktypehint(ls, th);
+              /* 区分 'name: Type [= value]' 与 'name: value'：
+                 冒号后跟类型注解 token 且其后是 '='/','/'}' 时视为类型注解，
+                 否则把冒号后的内容当作默认值表达式 */
+              int la = luaX_lookahead(ls);
+              int is_typehint = is_type_token(ls->t.token) &&
+                                (la == '=' || la == ',' || la == '}' || la == ';');
+              if (is_typehint) {
+                  TypeHint *th = typehint_new(ls);
+                  checktypehint(ls, th);
+                  checknext(ls, '=');
+                  expr(ls, &val_exp);
+              } else {
+                  expr(ls, &val_exp);  /* name: value → 默认值 */
+              }
+          } else {
+              checknext(ls, '=');
+              expr(ls, &val_exp);
           }
-          checknext(ls, '=');
-          expr(ls, &val_exp);
       } else {
           error_expected(ls, TK_NAME);
       }
@@ -13037,10 +13111,23 @@ static void enumstat(LexState *ls, int line, int isexport) {
   TString *enumname;
   int enum_reg;
   int use_brace = 0;
-  lua_Integer auto_value = 0;  /* 自动递增的枚举值，从0开始 */
+  lua_Integer auto_value = 1;  /* 自动递增的枚举值，从1开始（与 AST 解析器对齐） */
   int nh = 0;  /* 枚举成员数量 */
+  /* 成员名/值收集（供反射方法生成，与 AST 解析器对齐） */
+  TString **member_names = NULL;
+  lua_Integer *member_values = NULL;
+  int member_cap = 0;
+  int member_cap2 = 0;
   
   luaX_next(ls);  /* 跳过 'enum' */
+  
+  /* 支持 'enum class Name' 形式（与 AST 解析器对齐）：
+     带 class 的作用域枚举不注入成员到全局 */
+  int is_scoped = 0;
+  if (ls->t.token == TK_NAME && strcmp(getstr(ls->t.seminfo.ts), "class") == 0) {
+    is_scoped = 1;
+    luaX_next(ls);
+  }
   
   /* 获取枚举名 */
   enumname = str_checkname(ls);
@@ -13095,37 +13182,64 @@ static void enumstat(LexState *ls, int line, int isexport) {
     /* 设置键为成员名 */
     codestring(&key, member_name);
     
-    /* 检查是否有显式赋值 */
+    /* 解析成员值（显式赋值或自动递增） */
+    expdesc value_exp;
+    lua_Integer rec_val;  /* 记录成员值（用于反射表） */
     if (testnext(ls, '=')) {
       /* 显式赋值 */
-      expdesc value_exp;
       expr(ls, &value_exp);
-      
       /* 尝试获取常量值用于自动递增 */
       if (value_exp.k == VKINT) {
+        rec_val = value_exp.u.ival;
         auto_value = value_exp.u.ival + 1;
       } else if (value_exp.k == VKFLT) {
+        rec_val = (lua_Integer)value_exp.u.nval;
         auto_value = (lua_Integer)value_exp.u.nval + 1;
       } else {
         /* 非常量表达式，无法确定下一个自动值 */
+        rec_val = auto_value;
         auto_value++;
       }
-      
-      /* 将值放入表中 */
-      expdesc tab;
-      init_exp(&tab, VNONRELOC, enum_reg);
-      luaK_indexed(fs, &tab, &key);
-      luaK_storevar(fs, &tab, &value_exp);
     } else {
       /* 自动赋值 */
-      init_exp(&val, VKINT, 0);
-      val.u.ival = auto_value++;
-      
-      /* 将值放入表中 */
-      expdesc tab;
-      init_exp(&tab, VNONRELOC, enum_reg);
-      luaK_indexed(fs, &tab, &key);
-      luaK_storevar(fs, &tab, &val);
+      rec_val = auto_value;
+      init_exp(&value_exp, VKINT, 0);
+      value_exp.u.ival = auto_value++;
+      (void)val;
+    }
+    
+    /* 记录成员名/值 */
+    if (nh >= member_cap) {
+      luaM_growvector(ls->L, member_names, nh, member_cap,
+                      TString *, MAX_INT, "enum members");
+    }
+    if (nh >= member_cap2) {
+      luaM_growvector(ls->L, member_values, nh, member_cap2,
+                      lua_Integer, MAX_INT, "enum values");
+    }
+    member_names[nh] = member_name;
+    member_values[nh] = rec_val;
+    
+    /* 物化值到寄存器（供枚举表存储与全局注入共用） */
+    luaK_exp2nextreg(fs, &value_exp);
+    {
+      int val_reg = value_exp.u.info;
+      /* 存入枚举表 */
+      {
+        expdesc tab, vreg;
+        init_exp(&tab, VNONRELOC, enum_reg);
+        luaK_indexed(fs, &tab, &key);
+        init_exp(&vreg, VNONRELOC, val_reg);
+        luaK_storevar(fs, &tab, &vreg);
+      }
+      /* 非作用域枚举：成员同时注入全局（与 AST 解析器对齐） */
+      if (!is_scoped) {
+        expdesc gv, vreg;
+        buildglobal(ls, member_name, &gv);
+        init_exp(&vreg, VNONRELOC, val_reg);
+        luaK_storevar(fs, &gv, &vreg);
+      }
+      fs->freereg = enum_reg + 1;  /* 释放值寄存器 */
     }
     
     nh++;
@@ -13147,6 +13261,125 @@ static void enumstat(LexState *ls, int line, int isexport) {
   
   /* 设置表大小 */
   luaK_settablesize(fs, pc, enum_reg, 0, nh);
+  
+  /* 创建反射机制：_names/_values/_vkmap 表与 names/values/kvmap/vkmap 方法
+     （与 AST 解析器对齐） */
+  {
+    int names_reg = enum_reg + 1;
+    int names_pc = luaK_codeABC(fs, OP_NEWTABLE, names_reg, 0, 0);
+    luaK_code(fs, 0);
+    luaK_reserveregs(fs, 1);
+    int values_reg = enum_reg + 2;
+    int values_pc = luaK_codeABC(fs, OP_NEWTABLE, values_reg, 0, 0);
+    luaK_code(fs, 0);
+    luaK_reserveregs(fs, 1);
+    int vkmap_reg = enum_reg + 3;
+    int vkmap_pc = luaK_codeABC(fs, OP_NEWTABLE, vkmap_reg, 0, 0);
+    luaK_code(fs, 0);
+    luaK_reserveregs(fs, 1);
+    int i2;
+    for (i2 = 0; i2 < nh; i2++) {
+      expdesc key_idx, item_val, t2;
+      /* _names[i+1] = 成员名 */
+      init_exp(&key_idx, VKINT, 0); key_idx.u.ival = i2 + 1;
+      codestring(&item_val, member_names[i2]);
+      init_exp(&t2, VNONRELOC, names_reg);
+      luaK_indexed(fs, &t2, &key_idx);
+      luaK_storevar(fs, &t2, &item_val);
+      fs->freereg = enum_reg + 4;
+      /* _values[i+1] = 成员值 */
+      init_exp(&key_idx, VKINT, 0); key_idx.u.ival = i2 + 1;
+      init_exp(&item_val, VKINT, 0); item_val.u.ival = member_values[i2];
+      init_exp(&t2, VNONRELOC, values_reg);
+      luaK_indexed(fs, &t2, &key_idx);
+      luaK_storevar(fs, &t2, &item_val);
+      fs->freereg = enum_reg + 4;
+      /* _vkmap[成员值] = 成员名 */
+      init_exp(&key_idx, VKINT, 0); key_idx.u.ival = member_values[i2];
+      codestring(&item_val, member_names[i2]);
+      init_exp(&t2, VNONRELOC, vkmap_reg);
+      luaK_indexed(fs, &t2, &key_idx);
+      luaK_storevar(fs, &t2, &item_val);
+      fs->freereg = enum_reg + 4;
+    }
+    luaK_settablesize(fs, names_pc, names_reg, nh, 0);
+    luaK_settablesize(fs, values_pc, values_reg, nh, 0);
+    luaK_settablesize(fs, vkmap_pc, vkmap_reg, 0, nh);
+    /* 将反射表与 _nmembers 存到枚举表 */
+    {
+      expdesc ek, ev, et;
+      codestring(&ek, luaS_newliteral(ls->L, "_names"));
+      init_exp(&et, VNONRELOC, enum_reg);
+      luaK_indexed(fs, &et, &ek);
+      init_exp(&ev, VNONRELOC, names_reg);
+      luaK_storevar(fs, &et, &ev);
+      codestring(&ek, luaS_newliteral(ls->L, "_values"));
+      init_exp(&et, VNONRELOC, enum_reg);
+      luaK_indexed(fs, &et, &ek);
+      init_exp(&ev, VNONRELOC, values_reg);
+      luaK_storevar(fs, &et, &ev);
+      codestring(&ek, luaS_newliteral(ls->L, "_vkmap"));
+      init_exp(&et, VNONRELOC, enum_reg);
+      luaK_indexed(fs, &et, &ek);
+      init_exp(&ev, VNONRELOC, vkmap_reg);
+      luaK_storevar(fs, &et, &ev);
+      codestring(&ek, luaS_newliteral(ls->L, "_nmembers"));
+      init_exp(&et, VNONRELOC, enum_reg);
+      luaK_indexed(fs, &et, &ek);
+      init_exp(&ev, VKINT, 0); ev.u.ival = nh;
+      luaK_storevar(fs, &et, &ev);
+      fs->freereg = enum_reg + 4;
+    }
+    /* 创建方法闭包: names/values/kvmap/vkmap */
+    {
+      static const char *method_names[4] = {"names", "values", "kvmap", "vkmap"};
+      static const char *field_names[4] = {"_names", "_values", NULL, "_vkmap"};
+      int j;
+      for (j = 0; j < 4; j++) {
+        Proto *mp = luaF_newproto(ls->L);
+        mp->numparams = 1;
+        mp->is_vararg = 0;
+        mp->source = fs->f->source;
+        mp->linedefined = line;
+        mp->lastlinedefined = line;
+        if (field_names[j] == NULL) {
+          /* kvmap: function(self) return self end */
+          mp->maxstacksize = 1;
+          mp->sizecode = 1;
+          mp->code = luaM_newvector(ls->L, 1, Instruction);
+          mp->code[0] = CREATE_ABCk(OP_RETURN, 0, 2, 0, 0);
+        } else {
+          /* names/values/vkmap: function(self) return self._XXX end */
+          TString *fname = luaS_new(ls->L, field_names[j]);
+          mp->maxstacksize = 2;
+          mp->sizecode = 2;
+          mp->code = luaM_newvector(ls->L, 2, Instruction);
+          mp->code[0] = CREATE_ABCk(OP_GETFIELD, 1, 0, 0, 1);
+          mp->code[1] = CREATE_ABCk(OP_RETURN, 1, 2, 0, 0);
+          mp->sizek = 1;
+          mp->k = luaM_newvector(ls->L, 1, TValue);
+          setsvalue(ls->L, &mp->k[0], fname);
+        }
+        /* 添加到父函数的 proto 数组 */
+        int bx = fs->np++;
+        luaM_growvector(ls->L, fs->f->p, bx, fs->f->sizep, Proto *, MAX_INT, "functions");
+        fs->f->p[bx] = mp;
+        /* 创建闭包并存储到枚举表 */
+        expdesc mcl;
+        init_exp(&mcl, VRELOC, luaK_codeABx(fs, OP_CLOSURE, enum_reg + 4, bx));
+        luaK_exp2nextreg(fs, &mcl);
+        expdesc mk, et2;
+        codestring(&mk, luaS_new(ls->L, method_names[j]));
+        init_exp(&et2, VNONRELOC, enum_reg);
+        luaK_indexed(fs, &et2, &mk);
+        luaK_storevar(fs, &et2, &mcl);
+        fs->freereg = enum_reg + 4;
+      }
+    }
+    fs->freereg = enum_reg + 1;
+  }
+  luaM_freearray(ls->L, member_names, member_cap);
+  luaM_freearray(ls->L, member_values, member_cap2);
   
   /* 将枚举表存储到全局变量中 */
   if (isexport) {
@@ -13376,7 +13609,9 @@ static BinOpr getcompoundop (int token) {
     case TK_SHLEQ:    return OPR_SHL;     /* <<= */
     case TK_CONCATEQ: return OPR_CONCAT;  /* ..= */
     case TK_NULLCOALEQ: return OPR_NULLCOAL; /* ??= */
-    case TK_POWEQ:    return OPR_POW;      /* ^= */
+    case TK_ANDANDEQ: return OPR_AND;     /* &&= 逻辑与赋值（与 AST 解析器对齐） */
+    case TK_OROREQ:   return OPR_OR;      /* ||= 逻辑或赋值（与 AST 解析器对齐） */
+    case TK_POWEQ:    return OPR_POW;     /* ^= */
     case TK_NE:       return OPR_BXOR;    /* ~= 在赋值上下文中作为位异或赋值 */
     default:          return OPR_NOBINOPR;
   }
@@ -13442,7 +13677,7 @@ static void incrementstat (LexState *ls, expdesc *var) {
   check_condition(ls, vkisvar(var->k), "syntax error");
   check_readonly(ls, var);
   
-  /* 跳过 ++ 运算符 */
+  /* 跳过 ++ 运算符（前缀形式已由调用方消费） */
   luaX_next(ls);
   
   /* 复制变量表达式用于读取当前值 */
@@ -13465,6 +13700,26 @@ static void incrementstat (LexState *ls, expdesc *var) {
   luaK_exp2anyreg(fs, &e1);
   
   /* 将结果存储回变量 */
+  luaK_storevar(fs, var, &e1);
+}
+
+
+/*
+** 前缀自增 ++var（++ 已由调用方消费，不再跳过操作符）
+*/
+static void prefixincrementstat (LexState *ls, expdesc *var) {
+  FuncState *fs = ls->fs;
+  expdesc e1, e2;
+  int line = ls->linenumber;
+  check_condition(ls, vkisvar(var->k), "syntax error");
+  check_readonly(ls, var);
+  e1 = *var;
+  luaK_exp2nextreg(fs, &e1);
+  init_exp(&e2, VKINT, 0);
+  e2.u.ival = 1;
+  luaK_infix(fs, OPR_ADD, &e1);
+  luaK_posfix(fs, OPR_ADD, &e1, &e2, line);
+  luaK_exp2anyreg(fs, &e1);
   luaK_storevar(fs, var, &e1);
 }
 
@@ -14565,7 +14820,7 @@ static void usingstat(LexState *ls) {
      init_var(ls->fs, &v, vidx);
      luaK_storevar(ls->fs, &v, &e);
   }
-  checknext(ls, ';');
+  testnext(ls, ';');  /* 结尾分号可选（与 AST 解析器对齐） */
 }
 
 void statement (LexState *ls) {
@@ -14988,6 +15243,14 @@ void statement (LexState *ls) {
         matchstat(ls, line);
         break;
       }
+      /* 前缀自增 ++x（与 AST 解析器对齐） */
+      if (ls->t.token == TK_PLUSPLUS) {
+        luaX_next(ls);  /* 跳过 ++ */
+        struct LHS_assign pv;
+        suffixedexp(ls, &pv.v);
+        prefixincrementstat(ls, &pv.v);
+        break;
+      }
       exprstat(ls);
       break;
     }
@@ -15035,7 +15298,7 @@ static void mainfunc (LexState *ls, FuncState *fs) {
 
 LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                        Dyndata *dyd, const char *name, int firstchar) {
-#if  1 /* 使用 AST 解析器 (last_parse.c)：正确处理 astparser() 语法 */
+#if  0 /* 使用 AST 解析器 (last_parse.c)：正确处理 astparser() 语法 */
   /* AST-based parser: parse into LAST AST, then codegen to Proto */
   lparser_vmp_hook_point();
   LUA_LOGD("[ASTPARSER] luaY_parser START(ast), name='%s'", name);
@@ -15084,6 +15347,7 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lexstate.dyd = dyd;
   lexstate.curpos = 0;
   lexstate.tokpos = 0;
+  lexstate.loop_depth = 0;
   dyd->actvar.n = dyd->gt.n = dyd->label.n = 0;
   luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar);
   mainfunc(&lexstate, &funcstate);
