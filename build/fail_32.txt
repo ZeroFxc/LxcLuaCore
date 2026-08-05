@@ -1,0 +1,15 @@
+=== RC=3221225477 timeout=False ===
+--- STDOUT ---
+=== 2-level init ===
+--- STDERR ---
+[ASTPARSER] luaY_parser START(ast), name='@test_2lv.lua', firstchar=0x70
+[ASTPARSER] parse done, chunk=00000000015367a8 main_func=00000000015367e0
+[ASTPARSER] codegen done: proto=0000000001529710 sizeupvalues=1 cl->nupvalues=1 is_vararg=1 numparams=0 sizecode=32 sizep=2
+[ASTPARSER]   upval[0]: name='_ENV' instack=1 kind=0
+[ASTPARSER] luaY_parser END(ast)
+[LUA_LOAD] bind _ENV: f=0000000001534670 nupvalues=1 proto=0000000001529710 proto_ups=1 top=6
+[LUA_LOAD] _ENV bound to global table 0000000001527ad0
+./lxclua.exe: test_2lv.lua:2: attempt to index a nil value (upvalue '_ENV')
+stack traceback:
+	test_2lv.lua:2: in function <test_2lv.lua:1>
+	[C]: in ?

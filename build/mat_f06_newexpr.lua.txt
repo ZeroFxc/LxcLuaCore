@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: attempt to instantiate a non-class value
+stack traceback:
+	build/f06_newexpr.lua:4: in function <build/f06_newexpr.lua:1>
+	[C]: in ?

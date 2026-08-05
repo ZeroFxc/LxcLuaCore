@@ -1728,7 +1728,7 @@ static void generate_code(IRNode *node, luaL_Buffer *B, int indent) {
         else luaL_addstring(B, "namespace ");
         if (node->str_val) luaL_addstring(B, node->str_val);
         if (node->children[0]) {
-            luaL_addstring(B, " < ");
+            luaL_addstring(B, " : ");
             generate_code(node->children[0], B, 0);
         }
         luaL_addstring(B, "\n");
@@ -1870,6 +1870,30 @@ static void generate_code(IRNode *node, luaL_Buffer *B, int indent) {
             }
         }
         luaL_addstring(B, ")");
+    } else if (node->type == IR_EXPR_ASCLASS) {
+        /* as 运算符安全转换 fallback：生成 Lua 等价表达式
+         * children[0]=lhs, children[1]=rhs；
+         * 与字节码 OP_ASCLASS 语义一致：instanceof=true 时返回 lhs，否则返回 nil
+         */
+        luaL_addstring(B, "(((");
+        generate_code(node->children[0], B, 0);
+        luaL_addstring(B, ") instanceof (");
+        generate_code(node->children[1], B, 0);
+        luaL_addstring(B, ")) and (");
+        generate_code(node->children[0], B, 0);
+        luaL_addstring(B, ") or nil)");
+    } else if (node->type == IR_OP_MULTIINHERIT) {
+        /* 多重继承父类列表 fallback：生成 "P1, P2, P3..." 片段
+         * 与 src/stdlib/lclass.c 中 class 父类列表解析顺序一致（从左到右 MRO）
+         */
+        int first = 1;
+        for (int i = 0; i < 4; i++) {
+            if (node->children[i]) {
+                if (!first) luaL_addstring(B, ", ");
+                generate_code(node->children[i], B, 0);
+                first = 0;
+            }
+        }
     }
 
     /* Now that we use IR_STMT_EXPR for statements, any IR_EXPR node should NOT traverse its `next` pointer here. */

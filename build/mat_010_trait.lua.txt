@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+@test/lbctc/010_trait.lua:7: warning: unused local variable 'self' [unused]
+@test/lbctc/010_trait.lua:8: warning: unused local variable 'self' [unused]
+./lxclua.exe: test/lbctc/010_trait.lua:16: '(' expected
+    16 |   function init(self, w, h)
+      |           ^ here

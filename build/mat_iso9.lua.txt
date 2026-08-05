@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/iso9.lua:4: attempt to index a nil value (global 'Config')
+stack traceback:
+	build/iso9.lua:4: in function <build/iso9.lua:3>
+	build/iso9.lua:5: in main chunk
+	[C]: in ?

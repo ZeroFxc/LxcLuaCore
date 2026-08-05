@@ -1,0 +1,7 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/f05_private.lua:8: private method should not be accessible from outside
+stack traceback:
+	[C]: in function 'assert'
+	build/f05_private.lua:8: in function <build/f05_private.lua:1>
+	[C]: in ?

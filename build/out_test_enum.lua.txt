@@ -1,0 +1,24 @@
+=== 1. 基本数值枚举 ===
+OPTION_1:	1	 OK
+=== 2. 带显式赋值的枚举 ===
+OPT_A=0 OPT_B=1 OPT_C=5 OPT_D=6 OK
+=== 3. 枚举名访问成员 ===
+MyEnum2.OPT_A:	0	 OK
+=== 4. 匿名枚举 ===
+ANON_1:	1	 OK
+=== 5. enum class（scoped enum）===
+S_OPT_1 is nil:	true	 ScopedEnum.S_OPT_1:	1	 OK
+=== 6. 大括号语法 ===
+B_1=1 B_2=2 B_3=10 B_4=11 OK
+=== 7. 反射方法 :names() ===
+names:	OPT_A	OPT_B	OPT_C	OPT_D	 OK
+=== 8. 反射方法 :values() ===
+values:	0	1	5	6	 OK
+=== 9. 反射方法 :kvmap() 遍历 ===
+kvmap遍历 OK
+=== 10. 反射方法 :vkmap() ===
+vkmap[0]:	OPT_A	 vkmap[1]:	OPT_B	 vkmap[5]:	OPT_C	 OK
+=== 11. 成员数量 _nmembers ===
+MyEnum2._nmembers:	4	 OK
+
+全部测试通过！

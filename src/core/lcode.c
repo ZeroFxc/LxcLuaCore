@@ -38,8 +38,8 @@ void lcode_vmp_hook_point(void) {
 }
 
 
-/* Maximum number of registers in a Lua function (must fit in 8 bits) */
-#define MAXREGS		255
+/* Maximum number of registers in a Lua function (LXCLUA extended to 512, fits in 15-bit operand) */
+#define MAXREGS		512
 
 
 /* (note that expressions VJMP also have jumps.) */
@@ -487,7 +487,7 @@ void luaK_checkstack (FuncState *fs, int n) {
       luaX_syntaxerror(fs->ls,
         "function or expression needs too many registers");
     }
-    fs->f->maxstacksize = cast_byte(newstack);
+    fs->f->maxstacksize = cast(unsigned short, newstack);
   }
 }
 
@@ -497,7 +497,7 @@ void luaK_checkstack (FuncState *fs, int n) {
 */
 void luaK_reserveregs (FuncState *fs, int n) {
   luaK_checkstack(fs, n);
-  fs->freereg =  cast_byte(fs->freereg + n);
+  fs->freereg =  (fs->freereg + n);
 }
 
 

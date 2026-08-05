@@ -853,9 +853,15 @@ CallInfo *luaD_precall (lua_State *L, StkId func, int nresults) {
           if (uv->instack != 0 && uv->instack != 1) {
             luaG_runerror(L, "invalid upvalue instack value");
           }
-          // Check idx value range (lu_byte max 255)
-          if (uv->idx > 255) {
-            luaG_runerror(L, "invalid upvalue idx value");
+          // Check idx value range
+          if (uv->instack) {
+            // instack=true: idx is a register slot, up to MAXREGS-1
+            if (uv->idx >= 512)
+              luaG_runerror(L, "invalid upvalue idx (reg) value");
+          } else {
+            // instack=false: idx indexes outer function's upvalue list, up to MAXUPVAL-1
+            if (uv->idx > 255)
+              luaG_runerror(L, "invalid upvalue idx (upval) value");
           }
           // Check kind value
           if (uv->kind < 0 || uv->kind > 2) {
@@ -908,9 +914,15 @@ CallInfo *luaD_precall (lua_State *L, StkId func, int nresults) {
           if (uv->instack != 0 && uv->instack != 1) {
             luaG_runerror(L, "invalid upvalue instack value");
           }
-          // Check idx value range (lu_byte max 255)
-          if (uv->idx > 255) {
-            luaG_runerror(L, "invalid upvalue idx value");
+          // Check idx value range
+          if (uv->instack) {
+            // instack=true: idx is a register slot, up to MAXREGS-1
+            if (uv->idx >= 512)
+              luaG_runerror(L, "invalid upvalue idx (reg) value");
+          } else {
+            // instack=false: idx indexes outer function's upvalue list, up to MAXUPVAL-1
+            if (uv->idx > 255)
+              luaG_runerror(L, "invalid upvalue idx (upval) value");
           }
           // Check kind value
           if (uv->kind < 0 || uv->kind > 2) {
@@ -1447,9 +1459,10 @@ static void f_parser (lua_State *L, void *ud) {
  * @return The status code.
  */
 TStatus luaD_protectedparser (lua_State *L, ZIO *z, const char *name,
-                                            const char *mode) {
+                              const char *mode) {
   struct SParser p;
   TStatus status;
+  LUA_LOGD("[PARSER] protectedparser START, name='%s' mode='%s'", name, mode);
   incnny(L);  /* cannot yield during parsing */
   p.z = z; p.name = name; p.mode = mode;
   p.dyd.actvar.arr = NULL; p.dyd.actvar.size = 0;
@@ -1457,10 +1470,12 @@ TStatus luaD_protectedparser (lua_State *L, ZIO *z, const char *name,
   p.dyd.label.arr = NULL; p.dyd.label.size = 0;
   luaZ_initbuffer(L, &p.buff);
   status = luaD_pcall(L, f_parser, &p, savestack(L, L->top.p), L->errfunc);
+  LUA_LOGD("[PARSER] protectedparser f_parser returned, status=%d", status);
   luaZ_freebuffer(L, &p.buff);
   luaM_freearray(L, p.dyd.actvar.arr, p.dyd.actvar.size);
   luaM_freearray(L, p.dyd.gt.arr, p.dyd.gt.size);
   luaM_freearray(L, p.dyd.label.arr, p.dyd.label.size);
   decnny(L);
+  LUA_LOGD("[PARSER] protectedparser END, name='%s' status=%d", name, status);
   return status;
 }

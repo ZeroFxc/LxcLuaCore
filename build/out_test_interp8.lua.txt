@@ -1,0 +1,4 @@
+=== 测试8: f"..." 混合插值 ===
+t3 = 'value: 10'
+  通过: f"value: {t(5)}" =	value: 10
+ALL PASS

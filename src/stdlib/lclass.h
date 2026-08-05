@@ -109,6 +109,7 @@ LUAI_FUNC void luaC_newclass(lua_State *L, TString *name);
  * @param parent_idx Stack index of the parent class.
  */
 LUAI_FUNC void luaC_inherit(lua_State *L, int child_idx, int parent_idx);
+LUAI_FUNC void luaC_staticinit(lua_State *L, int class_idx);
 
 /**
  * @brief Computes C3 linearization MRO for a class.

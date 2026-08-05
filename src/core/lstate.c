@@ -14,6 +14,76 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
+#include <time.h>
+
+#if defined(__ANDROID__)
+FILE *gLuaLogFile = NULL;
+
+void lua_log_init(void) {
+  if (gLuaLogFile) return;
+  static const char *paths[] = {
+    "/data/local/tmp/a.log",
+    "/data/data/com.luaforge.studio.lxclua/files/a.log",
+    "/data/user/0/com.luaforge.studio.lxclua/files/a.log",
+    "/sdcard/Android/data/com.luaforge.studio.lxclua/files/a.log",
+    "/sdcard/a.log",
+    NULL
+  };
+  for (int i = 0; paths[i]; i++) {
+    gLuaLogFile = fopen(paths[i], "w");
+    if (gLuaLogFile) {
+      setbuf(gLuaLogFile, NULL); /* unbuffered */
+      time_t now = time(NULL);
+      struct tm *t = localtime(&now);
+      fprintf(gLuaLogFile, "=== LXCLua Debug Log %04d-%02d-%02d %02d:%02d:%02d (path: %s) ===\n",
+              t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, paths[i]);
+      fflush(gLuaLogFile);
+      return;
+    }
+  }
+  /* 所有路径都失败，日志功能静默禁用 */
+}
+
+void lua_log_write(const char *prefix, const char *fmt, ...) {
+  if (!gLuaLogFile) return;
+  va_list ap;
+  va_start(ap, fmt);
+  fprintf(gLuaLogFile, "%s ", prefix);
+  vfprintf(gLuaLogFile, fmt, ap);
+  fprintf(gLuaLogFile, "\n");
+  fflush(gLuaLogFile);
+  va_end(ap);
+}
+
+/*
+** ARM64-safe 逐字节字符串比较
+** Android (ARM64) bionic libc 的 strcmp 使用 NEON 向量化优化，
+** 要求 8 字节对齐的数据。TString 字符数据不保证 8 字节对齐，
+** 导致 strcmp 在 ARM64 上触发 bus error / hang。
+** 此函数用纯字节操作替代标准 strcmp，避免未对齐访问。
+**
+** 放置在 lstate.c 中以确保在所有 .c 编译单元可见
+** （所有 .c 文件都 #include "lstate.h" 并通过它链接到 lstate.o）
+*/
+int safe_strcmp(const char *s1, const char *s2) {
+  if (s1 == s2) return 0;
+  if (!s1 || !s2) return 1;  /* NULL 视为不相等 */
+  while (*s1 && (*s1 == *s2)) { s1++; s2++; }
+  return (unsigned char)*s1 - (unsigned char)*s2;
+}
+
+int safe_strncmp(const char *s1, const char *s2, size_t n) {
+  if (n == 0) return 0;
+  if (s1 == s2) return 0;
+  if (!s1) return -1;
+  if (!s2) return 1;
+  while (n > 1 && *s1 && (*s1 == *s2)) {
+    s1++; s2++; n--;
+  }
+  return (unsigned char)*s1 - (unsigned char)*s2;
+}
+#endif
 
 #include "lua.h"
 
@@ -28,10 +98,6 @@
 #include "lstring.h"
 #include "ltable.h"
 #include "ltm.h"
-#ifndef LUA_NOJIT
-#include "../vm/jit/core/ljit.h"
-#endif
-
 
 
 /*
@@ -280,19 +346,23 @@ static void init_registry (lua_State *L, global_State *g) {
  * @param ud User data (unused).
  */
 static void f_luaopen (lua_State *L, void *ud) {
-  global_State *g = G(L);
-  UNUSED(ud);
-  stack_init(L, L);  /* init stack */
-  init_registry(L, g);
-  luaS_init(L);
-  luaT_init(L);
-  luaX_init(L);
-  g->gcstp = 0;  /* allow gc */
-  setnilvalue(&g->nilvalue);  /* now state is complete */
-  luai_userstateopen(L);
-#ifndef LUA_NOJIT
-  luaJIT_init(L);
-#endif
+	global_State *g = G(L);
+	UNUSED(ud);
+	LUA_LOGI("f_luaopen START");
+	stack_init(L, L);  /* init stack */
+	LUA_LOGI("f_luaopen: stack_init done");
+	init_registry(L, g);
+	LUA_LOGI("f_luaopen: init_registry done");
+	luaS_init(L);
+	LUA_LOGI("f_luaopen: luaS_init done (string cache)");
+	luaT_init(L);
+	LUA_LOGI("f_luaopen: luaT_init done (table array)");
+	luaX_init(L);
+	LUA_LOGI("f_luaopen: luaX_init done (lexer states)");
+	g->gcstp = 0;  /* allow gc */
+	setnilvalue(&g->nilvalue);  /* now state is complete */
+	luai_userstateopen(L);
+	LUA_LOGI("f_luaopen END");
 }
 
 
@@ -337,9 +407,6 @@ static void close_state (lua_State *L) {
     luaD_closeprotected(L, 1, LUA_OK);  /* close all upvalues */
     L->top.p = L->stack.p + 1;  /* empty the stack to run finalizers */
     luaC_freeallobjects(L);  /* collect all objects */
-#ifndef LUA_NOJIT
-  luaJIT_free(L);
-#endif
   luai_userstateclose(L);
   }
   luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size);
@@ -467,8 +534,16 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   int i;
   lua_State *L;
   global_State *g;
-  LG *l = cast(LG *, (*f)(ud, NULL, LUA_TTHREAD, sizeof(LG)));
-  if (l == NULL) return NULL;
+  LG *l;
+#if defined(__ANDROID__)
+  lua_log_init(); /* 确保日志文件已打开 */
+#endif
+  l = cast(LG *, (*f)(ud, NULL, LUA_TTHREAD, sizeof(LG)));
+  LUA_LOGI("lua_newstate: sizeof(LG)=%zu, alloc result=%p", sizeof(LG), (void*)l);
+  if (l == NULL) {
+    LUA_LOGE("lua_newstate: allocation failed!");
+    return NULL;
+  }
   L = &l->l.l;
   g = &l->g;
   L->tt = LUA_VTHREAD;
@@ -520,11 +595,14 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   g->custom_op_count = 0;
   luaM_poolinit(L);  /* initialize memory pool */
   l_mutex_init(&g->lock);
+  LUA_LOGI("lua_newstate: about to run f_luaopen...");
   if (luaD_rawrunprotected(L, f_luaopen, NULL) != LUA_OK) {
     /* memory allocation error: free partial state */
+    LUA_LOGE("lua_newstate: f_luaopen FAILED!");
     close_state(L);
     L = NULL;
   }
+  LUA_LOGI("lua_newstate: state creation DONE, L=%p", (void*)L);
   return L;
 }
 
@@ -535,9 +613,11 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
  * @param L The Lua state to close.
  */
 LUA_API void lua_close (lua_State *L) {
+  LUA_LOGI("lua_close: START L=%p", (void*)L);
   lua_lock(L);
   L = G(L)->mainthread;  /* only the main thread can be closed */
   close_state(L);
+  LUA_LOGI("lua_close: END");
 }
 
 

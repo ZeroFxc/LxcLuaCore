@@ -1,0 +1,44 @@
+[PASS] 空map字面量
+[PASS] map字面量 name sugar
+[PASS] map字面量 [expr] key
+[PASS] map字面量混合
+[PASS] map读写
+[PASS] map覆盖写入
+[PASS] map不存在的键返回nil
+[PASS] map用nil键
+[PASS] mpairs迭代
+[PASS] mpairs传入table报错
+[PASS] pairs对map仍然可用（回退到next）
+[PASS] ipairs对map报错
+[PASS] map.keys
+[PASS] map.values
+[PASS] map.size
+[PASS] map.has
+[PASS] map.get
+[PASS] map.set
+[PASS] map.remove
+[PASS] map.clear
+[PASS] map.copy
+[PASS] map.merge
+[PASS] map和table类型隔离
+[PASS] table库函数不接受map
+[PASS] map库函数不接受table
+[PASS] map中 [expr] key 与表访问不冲突
+[PASS] 嵌套map
+[PASS] map作为值的键
+[PASS] 各种类型作为键
+[PASS] map GC回收
+[PASS] map嵌套GC
+[PASS] map长度操作
+[PASS] 大量数据插入和读取
+[PASS] 大量数据删除和清空
+[PASS] 空字符串键
+[PASS] 数字0作为键
+[PASS] 负数键
+[PASS] 类型检查严格性
+[PASS] map引用作为键
+[PASS] JIT map读写循环
+[PASS] JIT map创建循环
+[PASS] map的tostring行为
+
+===== 结果: 42 通过, 0 失败 =====

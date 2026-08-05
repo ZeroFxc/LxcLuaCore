@@ -1,0 +1,3 @@
+[PARSE] guard_stat: after skip 'guard', token=362
+[PARSE] guard_stat: TK_LET=318, TK_NAME=362, about to test...
+[PARSE] guard_stat: done, returning stmt

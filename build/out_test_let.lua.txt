@@ -1,0 +1,11 @@
+测试1 (let x = 10):	10
+测试2 (let y = x * 2 + 5):	25
+测试3 (let a, b = 1, 2):	1	2
+测试4 (let 在函数内):	hello from let	42
+测试5 (if let 与 let 共存): val =	100
+测试6 (let 在 guard 之后):	10
+测试6 (let 在 guard 之后，guard 触发):	error
+测试7 (let 在循环中):	55
+测试8 (let t = table):	1	2
+
+所有独立 let 语句测试通过!

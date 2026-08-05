@@ -64,8 +64,7 @@ CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
 PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 
 LUA_A=	liblxclua.a
-CORE_O= $(addprefix $(BUILDDIR)/,sljitLir.o ljit.o ljit_ir.o ljit_ir_list.o ljit_ir_label.o ljit_ir_bb.o ljit_sljit.o ljit_codegen.o ljit_cg_arith.o ljit_cg_ctrl.o ljit_cg_table.o ljit_cg_conv.o ljit_cg_closure.o ljit_cg_oop.o ljit_regalloc.o ljit_reg_live.o ljit_reg_graph.o ljit_reg_color.o ljit_reg_spill.o ljit_reg_alloc.o ljit_opt.o ljit_opt_const.o ljit_opt_dce.o ljit_opt_peep.o ljit_opt_cse.o ljit_opt_inline.o ljit_translate.o ljit_analyze.o lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o last_serialize.o last_unparse.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o)
-CORE_O_NOJIT= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o last_serialize.o last_unparse.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
+CORE_O= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o last_serialize.o last_unparse.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
 # lua2wasm: Lua-to-WASM 编译器模块（编译进 liblxclua.a）
 # 核心编译管线：词法分析→语法分析→代码生成→WAT输出
@@ -360,34 +359,6 @@ gen-header:
 	@echo "#include \"src/vm/lvm.h\"" >> $(AGGREGATED_H).tmp
 	@# ljumptab.h：内含 && 标签 goto 跳转表，不能在函数外直接 include
 	@echo "/* ljumptab.h omitted (VM internal goto table) */" >> $(AGGREGATED_H).tmp
-	@# === 第七组：JIT 核心与优化器 ===
-	@echo "" >> $(AGGREGATED_H).tmp
-	@echo "/* 第七组：JIT 核心与优化器 */" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/core/ljit.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/core/ljit_debug.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/core/ljit_internal.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/ir/ljit_ir.h\"" >> $(AGGREGATED_H).tmp
-	@# 三个可选 IR 头：仅在文件存在时 include
-	@if [ -f "src/vm/jit/ir/ljit_ir_list.h" ]; then \
-		echo "#include \"src/vm/jit/ir/ljit_ir_list.h\"" >> $(AGGREGATED_H).tmp; \
-	else \
-		echo "/* skipped: src/vm/jit/ir/ljit_ir_list.h (not found) */" >> $(AGGREGATED_H).tmp; \
-	fi
-	@if [ -f "src/vm/jit/ir/ljit_ir_label.h" ]; then \
-		echo "#include \"src/vm/jit/ir/ljit_ir_label.h\"" >> $(AGGREGATED_H).tmp; \
-	else \
-		echo "/* skipped: src/vm/jit/ir/ljit_ir_label.h (not found) */" >> $(AGGREGATED_H).tmp; \
-	fi
-	@if [ -f "src/vm/jit/ir/ljit_ir_bb.h" ]; then \
-		echo "#include \"src/vm/jit/ir/ljit_ir_bb.h\"" >> $(AGGREGATED_H).tmp; \
-	else \
-		echo "/* skipped: src/vm/jit/ir/ljit_ir_bb.h (not found) */" >> $(AGGREGATED_H).tmp; \
-	fi
-	@echo "#include \"src/vm/jit/frontend/ljit_analyze.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/codegen/ljit_codegen.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/regalloc/ljit_regalloc.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/optimize/ljit_opt.h\"" >> $(AGGREGATED_H).tmp
-	@echo "#include \"src/vm/jit/sljit/ljit_sljit.h\"" >> $(AGGREGATED_H).tmp
 	@# === 第八组：其他通用工具 ===
 	@echo "" >> $(AGGREGATED_H).tmp
 	@echo "/* 第八组：其他通用工具 */" >> $(AGGREGATED_H).tmp
@@ -775,9 +746,9 @@ Darwin macos macosx:
 mingw:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_NOJIT -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -Wl,--stack,16777216" \
-	"CORE_O=$(CORE_O_NOJIT)" "PCRE2_O=$(PCRE2_O_NOJIT)" \
-	"MYOBJS=$(BUILDDIR)/ljit_stubs.o" lxclua.exe
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -Wl,--stack,16777216" \
+	"PCRE2_O=$(PCRE2_O_NOJIT)" \
+	"MYOBJS=$(BUILDDIR)/lpcre2_stubs.o" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
 	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
@@ -829,7 +800,7 @@ wasm:
 	$(MAKE) clean
 	PYTHONUTF8=1 $(MAKE) $(ALL) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions -DLUA_32BITS=0" \
-	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_NOJIT" \
+	"SYSCFLAGS=-DLUA_USE_LONGJMP -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN" \
 	"PCRE2_O=$(PCRE2_O_NOJIT)" \
 	"SYSLIBS=" \
 	"WASMTIME_INC=" \
@@ -842,9 +813,8 @@ wasm:
 	"WASM_EXPORT_NAME_LUA=-sEXPORT_NAME=LuaModule" \
 	"WASM_EXPORT_NAME_LUAC=-sEXPORT_NAME=LuacModule" \
 	"WASM_EXPORT_NAME_LUACCHECK=-sEXPORT_NAME=LuaccheckModule" \
-	"CORE_O=$(CORE_O_NOJIT)" \
 	"LIB_O_WASM=$(BUILDDIR)/lwasm3.o $(WASM3_O)" \
-	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/lmaplib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lnativevm.o $(BUILDDIR)/lnativeparser.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o  $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o $(BUILDDIR)/lcrypto.o $(BUILDDIR)/luuid.o $(BUILDDIR)/lrsa.o $(BUILDDIR)/lecc.o $(BUILDDIR)/ljit_stubs.o $(BUILDDIR)/lastlib.o" \
+	"LIB_O=$(BUILDDIR)/lauxlib.o $(BUILDDIR)/lpatchlib.o $(BUILDDIR)/lbaselib.o $(BUILDDIR)/lcorolib.o $(BUILDDIR)/ldblib.o $(BUILDDIR)/liolib.o $(BUILDDIR)/lmathlib.o $(BUILDDIR)/loadlib.o $(BUILDDIR)/loslib.o $(BUILDDIR)/lstrlib.o $(BUILDDIR)/ltablib.o $(BUILDDIR)/lutf8lib.o $(BUILDDIR)/lmaplib.o $(BUILDDIR)/linit.o $(BUILDDIR)/json_parser.o $(BUILDDIR)/lboolib.o $(BUILDDIR)/lbitlib.o $(BUILDDIR)/lptrlib.o $(BUILDDIR)/ludatalib.o $(BUILDDIR)/lvmlib.o $(BUILDDIR)/lnativevm.o $(BUILDDIR)/lnativeparser.o $(BUILDDIR)/lclass.o $(BUILDDIR)/ltranslator.o $(BUILDDIR)/llexerlib.o $(BUILDDIR)/llexer_compiler.o  $(BUILDDIR)/logtable.o $(BUILDDIR)/sha256.o $(BUILDDIR)/aes.o $(BUILDDIR)/crc.o $(BUILDDIR)/csprng.o $(BUILDDIR)/lthreadlib.o $(BUILDDIR)/libhttp.o $(BUILDDIR)/lfs.o $(BUILDDIR)/lproclib.o $(BUILDDIR)/lvmpro.o $(BUILDDIR)/lbctc.o $(BUILDDIR)/lbytecode.o $(BUILDDIR)/lquickjs.o $(BUILDDIR)/leventloop.o $(BUILDDIR)/lpromise.o $(BUILDDIR)/laio.o $(BUILDDIR)/lcrypto.o $(BUILDDIR)/luuid.o $(BUILDDIR)/lrsa.o $(BUILDDIR)/lecc.o $(BUILDDIR)/lpcre2_stubs.o $(BUILDDIR)/lastlib.o" \
 	"GUI_OBJS=" \
 	"LDFLAGS=-sWASM=1 -sSINGLE_FILE=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS -sMODULARIZE=1 -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=1 -sINVOKE_RUN=0 -sSTACK_SIZE=5MB -sINITIAL_MEMORY=32MB"
 
@@ -1085,12 +1055,6 @@ $(BUILDDIR)/lparser.o: lparser.c | $(BUILDDIR)
 $(BUILDDIR)/lasm.o: lasm.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
-$(BUILDDIR)/sljitLir.o: src/jit/sljitLir.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/jit/sljitLir.c -o $@
-
-$(BUILDDIR)/ljit.o: src/vm/jit/core/ljit.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/core/ljit.c -o $@
-
 $(BUILDDIR)/lcode.o: lcode.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
 
@@ -1176,69 +1140,6 @@ lzio.o: lzio.c lprefix.h lua.h luaconf.h lapi.h llimits.h lstate.h \
  lobject.h ltm.h lzio.h lmem.h
 
 # (end of Makefile)
-$(BUILDDIR)/ljit_ir.o: src/vm/jit/ir/ljit_ir.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir.c -o $@
-
-$(BUILDDIR)/ljit_ir_list.o: src/vm/jit/ir/ljit_ir_list.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir_list.c -o $@
-
-$(BUILDDIR)/ljit_ir_label.o: src/vm/jit/ir/ljit_ir_label.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir_label.c -o $@
-
-$(BUILDDIR)/ljit_sljit.o: src/vm/jit/sljit/ljit_sljit.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/sljit/ljit_sljit.c -o $@
-
-$(BUILDDIR)/ljit_ir_bb.o: src/vm/jit/ir/ljit_ir_bb.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/ir/ljit_ir_bb.c -o $@
-
-$(BUILDDIR)/ljit_analyze.o: src/vm/jit/frontend/ljit_analyze.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/frontend/ljit_analyze.c -o $@
-$(BUILDDIR)/ljit_translate.o: src/vm/jit/frontend/ljit_translate.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/frontend/ljit_translate.c -o $@
-$(BUILDDIR)/ljit_opt.o: src/vm/jit/optimize/ljit_opt.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt.c -o $@
-$(BUILDDIR)/ljit_opt_const.o: src/vm/jit/optimize/ljit_opt_const.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt_const.c -o $@
-$(BUILDDIR)/ljit_opt_dce.o: src/vm/jit/optimize/ljit_opt_dce.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt_dce.c -o $@
-$(BUILDDIR)/ljit_opt_peep.o: src/vm/jit/optimize/ljit_opt_peep.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt_peep.c -o $@
-$(BUILDDIR)/ljit_opt_cse.o: src/vm/jit/optimize/ljit_opt_cse.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt_cse.c -o $@
-$(BUILDDIR)/ljit_opt_inline.o: src/vm/jit/optimize/ljit_opt_inline.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/optimize/ljit_opt_inline.c -o $@
-$(BUILDDIR)/ljit_regalloc.o: src/vm/jit/regalloc/ljit_regalloc.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_regalloc.c -o $@
-$(BUILDDIR)/ljit_codegen.o: src/vm/jit/codegen/ljit_codegen.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_codegen.c -o $@
-$(BUILDDIR)/ljit_cg_arith.o: src/vm/jit/codegen/ljit_cg_arith.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_arith.c -o $@
-$(BUILDDIR)/ljit_cg_ctrl.o: src/vm/jit/codegen/ljit_cg_ctrl.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_ctrl.c -o $@
-$(BUILDDIR)/ljit_cg_table.o: src/vm/jit/codegen/ljit_cg_table.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_table.c -o $@
-$(BUILDDIR)/ljit_cg_conv.o: src/vm/jit/codegen/ljit_cg_conv.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_conv.c -o $@
-$(BUILDDIR)/ljit_reg_live.o: src/vm/jit/regalloc/ljit_reg_live.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_reg_live.c -o $@
-
-$(BUILDDIR)/ljit_reg_graph.o: src/vm/jit/regalloc/ljit_reg_graph.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_reg_graph.c -o $@
-
-$(BUILDDIR)/ljit_reg_color.o: src/vm/jit/regalloc/ljit_reg_color.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_reg_color.c -o $@
-
-$(BUILDDIR)/ljit_reg_spill.o: src/vm/jit/regalloc/ljit_reg_spill.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_reg_spill.c -o $@
-
-$(BUILDDIR)/ljit_reg_alloc.o: src/vm/jit/regalloc/ljit_reg_alloc.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/regalloc/ljit_reg_alloc.c -o $@
-
-$(BUILDDIR)/ljit_cg_closure.o: src/vm/jit/codegen/ljit_cg_closure.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_closure.c -o $@
-
-$(BUILDDIR)/ljit_cg_oop.o: src/vm/jit/codegen/ljit_cg_oop.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -I. -c src/vm/jit/codegen/ljit_cg_oop.c -o $@
 
 # Map容器类型（新增）
 lmap.o: lmap.c lprefix.h lua.h luaconf.h ldebug.h lstate.h lobject.h \

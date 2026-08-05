@@ -39,7 +39,9 @@
 
 __attribute__((noinline))
 void llex_vmp_hook_point(void) {
+  LUA_LOGD("[LEX] llex_vmp_hook_point ENTER");
   VMP_MARKER(llex_vmp);
+  LUA_LOGD("[LEX] llex_vmp_hook_point EXIT");
 }
 
 
@@ -1178,6 +1180,9 @@ static int read_regex (LexState *ls, SemInfo *seminfo) {
 
 
 static int llex (LexState *ls, SemInfo *seminfo) {
+  LUA_LOGD("[LEX] llex ENTER: current='%c' (%d) curpos=%d", 
+           (ls->current >= 32 && ls->current < 127) ? ls->current : '?', 
+           ls->current, ls->curpos);
   if (ls->pending_tokens) {
     if (ls->pending_idx < ls->npending) {
       Token *t = &ls->pending_tokens[ls->pending_idx++];
@@ -1600,6 +1605,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
       }
       case EOZ: {
         if (ls->inc_stack) {
+          LUA_LOGD("[LEX] llex: EOZ with inc_stack, popping include file");
           luaX_popincludefile(ls);
           continue;
         }
@@ -1659,7 +1665,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           seminfo->ts = ts;
           if (isreserved(ts)) {  /* reserved word? */
             int tk = ts->extra - 1 + FIRST_RESERVED;
-            
+            LUA_LOGD("[LEX] llex: reserved word '%s' -> token=%d", getstr(ts), tk);
             return tk;
           }
           else {
@@ -1679,6 +1685,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
               }
               a = a->next;
             }
+            LUA_LOGD("[LEX] llex: returning TK_NAME '%s'", getstr(ts));
             return TK_NAME;
           }
         }
@@ -1694,7 +1701,9 @@ static int llex (LexState *ls, SemInfo *seminfo) {
 
 
 void luaX_next (LexState *ls) {
+  LUA_LOGD("[LEX] luaX_next ENTER");
   llex_vmp_hook_point();
+  LUA_LOGD("[LEX] luaX_next: vmp_hook done");
   ls->lastline = ls->linenumber;
   ls->lasttoken = ls->t.token;
   ls->lastbuff = ls->buff;
@@ -1724,13 +1733,16 @@ void luaX_next (LexState *ls) {
                          c == '\n' || c == '\r');
     }
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
+    LUA_LOGD("[LEX] luaX_next: llex returned token=%d", ls->t.token);
     ls->t.linenumber = ls->linenumber;  /* 记录token所在行号 */
     
   }
+  LUA_LOGD("[LEX] luaX_next EXIT: new token=%d", ls->t.token);
 }
 
 
 int luaX_lookahead (LexState *ls) {
+  LUA_LOGD("[LEX] luaX_lookahead ENTRY: lookahead.token=%d", ls->lookahead.token);
   if (ls->lookahead.token != TK_EOS) {
     return ls->lookahead.token;
   }
@@ -1745,7 +1757,9 @@ int luaX_lookahead (LexState *ls) {
     ls->lookahead.nospace = !(c == ' ' || c == '\f' || c == '\t' || c == '\v' ||
                                c == '\n' || c == '\r');
   }
+  LUA_LOGD("[LEX] luaX_lookahead: calling llex...");
   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
+  LUA_LOGD("[LEX] luaX_lookahead: llex returned token=%d", ls->lookahead.token);
   {
     const char *s = (ls->lookahead.token == TK_NAME || ls->lookahead.token == TK_STRING)
                     ? getstr(ls->lookahead.seminfo.ts) : "?";

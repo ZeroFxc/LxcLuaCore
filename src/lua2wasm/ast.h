@@ -52,7 +52,6 @@ typedef enum {
     EXPR_TABLE,       /* { ... } table constructor */
     EXPR_METHOD_CALL, /* recv:name(args) — evaluates recv once */
     EXPR_VARARG,      /* `...` inside a vararg function */
-    EXPR_IS,          /* obj is ClassName — OOP 类型判断 */
 } ExprKind;
 
 typedef enum {
@@ -148,11 +147,6 @@ struct Expr {
             Expr **args;
             size_t nargs;
         } method_call;
-        struct { /* obj is ClassName */
-            Expr *obj;
-            const char *class_name;
-            size_t class_name_len;
-        } is_expr;
     } as;
 };
 
@@ -173,14 +167,6 @@ typedef enum {
     STMT_GLOBAL, /* global name1 [, name2, ...] [= expr1, ...] */
     STMT_GOTO,   /* goto NAME */
     STMT_LABEL,  /* ::NAME:: */
-    /* OOP 节点类型 */
-    STMT_CLASS,         /* class 语句 */
-    STMT_INTERFACE,     /* interface 语句 */
-    STMT_TRAIT,         /* trait 语句 */
-    STMT_METH_OVERRIDE, /* override 方法修饰符 */
-    STMT_IFACE_EXTENDS, /* 接口继承 */
-    STMT_NESTED_CLASS,  /* 嵌套类 */
-    STMT_IS_CLASS,      /* is 运算符的 class 判断 */
 } StmtKind;
 
 struct Block {
@@ -301,51 +287,6 @@ struct Stmt {
                                      * (STMT_LABEL) at the label; (STMT_GOTO) at the
                                      * target label. A goto closes down to this. */
         } label;
-        /* OOP 节点 */
-        struct { /* class ClassName [: ParentClass] [implements Iface1, ...] body end */
-            const char *name;
-            size_t name_len;
-            const char *parent_name;    /* extends 父类名, NULL 表示无 */
-            size_t parent_len;
-            const char **implements_names; /* implements 接口名列表 */
-            size_t *implements_lens;
-            int n_implements;
-            Block body;
-        } class_stmt;
-        struct { /* interface InterfaceName [: ParentIface, ...] body end */
-            const char *name;
-            size_t name_len;
-            const char **extends_names; /* 继承的接口名列表 */
-            size_t *extends_lens;
-            int n_extends;
-            Block body;
-        } interface_stmt;
-        struct { /* trait TraitName body end */
-            const char *name;
-            size_t name_len;
-            Block body;
-        } trait_stmt;
-        struct { /* override 方法修饰符 */
-            const char *method_name;
-            size_t method_name_len;
-        } meth_override;
-        struct { /* 接口继承声明 */
-            const char *interface_name;
-            size_t interface_name_len;
-            const char **extends_names;
-            size_t *extends_lens;
-            int n_extends;
-        } iface_extends;
-        struct { /* 嵌套类 */
-            const char *name;
-            size_t name_len;
-            Block body;
-        } nested_class;
-        struct { /* is 运算符: expr is ClassName */
-            Expr *expr;
-            const char *class_name;
-            size_t class_name_len;
-        } is_class;
     } as;
 };
 
@@ -391,9 +332,5 @@ void *node_pool_alloc(NodePool *p, size_t bytes);
 Expr *expr_new(NodePool *p, ExprKind k, int line);
 Stmt *stmt_new(NodePool *p, StmtKind k, int line);
 LuaFunc *func_new(NodePool *p, int func_idx, int line);
-
-/* 返回节点类型的字符串名称，用于 dump/调试 */
-const char *expr_kind_name(ExprKind k);
-const char *stmt_kind_name(StmtKind k);
 
 #endif

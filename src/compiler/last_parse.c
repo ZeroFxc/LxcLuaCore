@@ -94,6 +94,7 @@ static AstStmt *parse_struct_stat(ParserState *ps);
 static AstStmt *parse_superstruct_stat(ParserState *ps);
 static AstStmt *parse_enum_stat(ParserState *ps);
 static AstStmt *parse_class_stat(ParserState *ps, int class_flags);
+static void parse_method_sig(ParserState *ps, TString **name, int *param_count);
 static AstStmt *parse_trait_stat(ParserState *ps);
 static AstStmt *parse_interface_stat(ParserState *ps);
 static AstMatchPat *parse_match_pattern(ParserState *ps);
@@ -1102,8 +1103,26 @@ static AstExpr *parse_primary(ParserState *ps) {
         if (is_nametoken(la)) {
           int line = ls->linenumber;
           lp_next(ps);  /* skip 'new' */
-          /* 解析类名（suffixedexpr） */
-          AstExpr *class_expr = parse_suffixedexpr(ps, parse_primary(ps));
+          /* 解析类名：不能用 parse_primary（其末尾会调用 parse_suffixedexpr，
+             把构造实参 (args) 当成对类名的函数调用吃掉）。
+             这里手动解析主标识符，且只允许字段访问后缀（.name）。 */
+          AstExpr *class_expr;
+          {
+            TString *cname = ls->t.seminfo.ts;
+            int cline = ls->linenumber;
+            lp_next(ps);
+            class_expr = ast_new_expr_ident(ps->pool, cname, cline);
+          }
+          for (;;) {
+            int l2 = ls->linenumber;
+            if (lp_testnext(ps, '.')) {
+              TString *fkey = lp_checkfieldname(ps);
+              AstExpr *keyexpr = ast_new_expr_str(ps->pool, fkey, AST_EXPR_STRING, l2);
+              class_expr = ast_new_expr_index(ps->pool, class_expr, keyexpr, 0, l2);
+            } else {
+              break;
+            }
+          }
           /* 解析参数列表 */
           int nargs = 0;
           AstExpr **args = NULL;
@@ -2232,7 +2251,6 @@ static AstExpr *parse_suffixedexpr(ParserState *ps, AstExpr *v) {
       /* as 安全类型转换运算符：不在 suffixedexpr 中处理，
        * 交给 parse_subexpr 作为二元运算符处理 */
       if (strcmp(getstr(ls->t.seminfo.ts), "as") == 0) {
-        fprintf(stderr, "[DBG] parse_suffixedexpr: breaking on 'as', token=%s\n", getstr(ls->t.seminfo.ts));
         break;
       }
       /* 中缀函数调用：receiver method arg
@@ -2312,7 +2330,6 @@ static AstExpr *parse_subexpr(ParserState *ps, int min_prec) {
         strcmp(getstr(ls->t.seminfo.ts), "as") == 0 &&
         lp_lookahead(ps) == TK_NAME) {
       op = AST_BIN_AS;
-      fprintf(stderr, "[DBG] parse_subexpr: detected 'as' binary operator, la=%d\n", lp_lookahead(ps));
     }
 
     if (op == -1) {
@@ -2408,14 +2425,24 @@ static AstFunc *parse_funcbody(ParserState *ps, int line, int is_arrow, int need
     lp_checknext(ps, '(');
     f->is_vararg = 0;
 
-    /* 如果是方法定义，在参数最前面插入self */
+    /* 如果是方法定义，检查第一个参数是否已经是self，没有则自动插入 */
     if (need_self) {
-      AstFuncParam *param;
-      param = &params[nparams++];
-      param->name = luaS_newliteral(ps->L, "self");
-      param->default_value = NULL;
-      param->attr = AST_ATTR_NONE;
-      param->type_hint = NULL;
+      int has_self = 0;
+      /* 预读下一个 token 检查是否已显式声明 self */
+      if (is_nametoken(ps->ls->t.token)) {
+        const char *pname = getstr(ps->ls->t.seminfo.ts);
+        if (strcmp(pname, "self") == 0) {
+          has_self = 1;
+        }
+      }
+      if (!has_self) {
+        AstFuncParam *param;
+        param = &params[nparams++];
+        param->name = luaS_newliteral(ps->L, "self");
+        param->default_value = NULL;
+        param->attr = AST_ATTR_NONE;
+        param->type_hint = NULL;
+      }
     }
 
     if (!lp_check(ps, ')')) {
@@ -4901,42 +4928,111 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
 
     /* 解析类体成员 */
     while (ls->t.token != TK_END && ls->t.token != '}' && ls->t.token != TK_EOS) {
+      /* 解析装饰器 @expr（可多个，作用于紧随其后的成员） */
+      AstExpr **deco_list = NULL;
+      int ndeco = 0;
+      int deco_cap = 0;
+      while (ls->t.token == '@') {
+        lp_next(ps); /* skip '@' */
+        AstExpr *de = parse_expr(ps);
+        if (ndeco >= deco_cap) {
+          int new_cap = (deco_cap == 0) ? 2 : deco_cap * 2;
+          AstExpr **new_arr = cast(AstExpr **,
+            ast_pool_alloc(ps->pool, sizeof(AstExpr *) * new_cap));
+          if (deco_list) memcpy(new_arr, deco_list, ndeco * sizeof(AstExpr *));
+          deco_list = new_arr;
+          deco_cap = new_cap;
+        }
+        deco_list[ndeco++] = de;
+      }
+
       /* 解析访问修饰符 */
       AstAccessLevel access = AST_ACCESS_DEFAULT;
       int is_static = 0;
       int is_abstract = 0;
       int is_final = 0;
+      int is_override = 0;
+      int has_access_modifier = 0;
 
       /* 修饰符循环 */
-      while (ls->t.token == TK_NAME) {
+      int found_modifier = 1;
+      while (found_modifier && ls->t.token == TK_NAME) {
+        found_modifier = 0;
         const char *kw = getstr(ls->t.seminfo.ts);
         if (strcmp(kw, "private") == 0) {
+          if (has_access_modifier) {
+            lp_error(ps, "multiple access modifiers not allowed");
+          }
           access = AST_ACCESS_PRIVATE;
-          lp_softkw_is(ps, kw); /* 确保识别为软关键字 */
+          has_access_modifier = 1;
+          lp_softkw_is(ps, kw);
           lp_next(ps);
+          found_modifier = 1;
         } else if (strcmp(kw, "protected") == 0) {
+          if (has_access_modifier) {
+            lp_error(ps, "multiple access modifiers not allowed");
+          }
           access = AST_ACCESS_PROTECTED;
+          has_access_modifier = 1;
           lp_softkw_is(ps, kw);
           lp_next(ps);
+          found_modifier = 1;
         } else if (strcmp(kw, "public") == 0) {
+          if (has_access_modifier) {
+            lp_error(ps, "multiple access modifiers not allowed");
+          }
           access = AST_ACCESS_PUBLIC;
+          has_access_modifier = 1;
           lp_softkw_is(ps, kw);
           lp_next(ps);
+          found_modifier = 1;
         } else if (strcmp(kw, "static") == 0) {
+          if (is_static) {
+            lp_error(ps, "duplicate 'static' modifier");
+          }
           is_static = 1;
           lp_softkw_is(ps, kw);
           lp_next(ps);
+          found_modifier = 1;
         } else if (strcmp(kw, "abstract") == 0) {
+          if (is_abstract) {
+            lp_error(ps, "duplicate 'abstract' modifier");
+          }
           is_abstract = 1;
           lp_softkw_is(ps, kw);
           lp_next(ps);
+          found_modifier = 1;
         } else if (strcmp(kw, "final") == 0) {
+          if (is_final) {
+            lp_error(ps, "duplicate 'final' modifier");
+          }
           is_final = 1;
           lp_softkw_is(ps, kw);
           lp_next(ps);
-        } else {
-          break;
+          found_modifier = 1;
+        } else if (strcmp(kw, "override") == 0) {
+          if (is_override) {
+            lp_error(ps, "duplicate 'override' modifier");
+          }
+          is_override = 1;
+          lp_softkw_is(ps, kw);
+          lp_next(ps);
+          found_modifier = 1;
         }
+      }
+
+      /* 修饰符互斥校验 */
+      if (is_abstract && is_final) {
+        lp_error(ps, "method cannot be both 'abstract' and 'final'");
+      }
+      if (is_static && is_abstract) {
+        lp_error(ps, "static method cannot be 'abstract'");
+      }
+      if (is_static && is_override) {
+        lp_error(ps, "static method cannot be 'override'");
+      }
+      if (is_abstract && is_override) {
+        lp_error(ps, "method cannot be both 'abstract' and 'override'");
       }
 
       /* 扩大成员数组 */
@@ -4955,13 +5051,17 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
         lp_softkw_is(ps, "get");
         lp_next(ps);
         TString *prop_name = lp_checkname(ps);
-        AstFunc *func = parse_funcbody(ps, member_line, 0, 0, 0);
+        /* getter 始终是实例方法，need_self=1 */
+        AstFunc *func = parse_funcbody(ps, member_line, 0, 1, 0);
         AstClassMember *m = &members[nmembers];
         m->kind = AST_MEMBER_GETTER;
         m->access = access;
-        m->is_static = is_static;
+        m->is_static = 0;  /* getter 不能是静态的 */
+        m->is_override = is_override;
         m->name = prop_name;
         m->u.method_func = func;
+        m->decorators = deco_list;
+        m->ndecorators = ndeco;
         m->line = member_line;
         nmembers++;
         continue;
@@ -4971,13 +5071,17 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
         lp_softkw_is(ps, "set");
         lp_next(ps);
         TString *prop_name = lp_checkname(ps);
-        AstFunc *func = parse_funcbody(ps, member_line, 0, 0, 0);
+        /* setter 始终是实例方法，need_self=1 */
+        AstFunc *func = parse_funcbody(ps, member_line, 0, 1, 0);
         AstClassMember *m = &members[nmembers];
         m->kind = AST_MEMBER_SETTER;
         m->access = access;
-        m->is_static = is_static;
+        m->is_static = 0;  /* setter 不能是静态的 */
+        m->is_override = is_override;
         m->name = prop_name;
         m->u.method_func = func;
+        m->decorators = deco_list;
+        m->ndecorators = ndeco;
         m->line = member_line;
         nmembers++;
         continue;
@@ -4985,36 +5089,68 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
 
       /* 普通方法 */
       if (ls->t.token == TK_FUNCTION) {
-        lp_next(ps); /* skip 'function' */
-        TString *method_name = lp_checkname(ps);
-        AstFunc *func = parse_funcbody(ps, member_line, 0, 0, 0);
-        AstClassMember *m = &members[nmembers];
-        m->access = access;
-        m->is_static = is_static;
-        m->name = method_name;
-        m->u.method_func = func;
-        m->line = member_line;
-
         if (is_abstract) {
+          /* 抽象方法：允许无函数体的纯签名声明（与原版 parser 对齐） */
+          TString *abs_name;
+          int abs_pc;
+          parse_method_sig(ps, &abs_name, &abs_pc);
+          /* 创建仅携带参数个数的占位函数节点，供 codegen 写入 __abstracts */
+          AstFunc *af = ast_new_func(ps->pool, ps->func_idx_counter++, -1, member_line);
+          af->source = ls->source;
+          af->nparams = abs_pc;
+          af->nlocals = 0;
+          ast_chunk_add_func(ps->chunk, af);
+          AstClassMember *m = &members[nmembers];
           m->kind = AST_MEMBER_ABSTRACT;
-        } else if (is_final) {
-          m->kind = AST_MEMBER_FINAL;
+          m->access = access;
+          m->is_static = is_static;
+          m->is_override = is_override;
+          m->name = abs_name;
+          m->u.method_func = af;
+          m->decorators = deco_list;
+          m->ndecorators = ndeco;
+          m->line = member_line;
+          nmembers++;
         } else {
-          m->kind = AST_MEMBER_METHOD;
+          lp_next(ps); /* skip 'function' */
+          TString *method_name = lp_checkname(ps);
+          /* 非静态方法需要 self 参数 */
+          AstFunc *func = parse_funcbody(ps, member_line, 0, !is_static, 0);
+          AstClassMember *m = &members[nmembers];
+          m->access = access;
+          m->is_static = is_static;
+          m->is_override = is_override;
+          m->name = method_name;
+          m->u.method_func = func;
+          m->decorators = deco_list;
+          m->ndecorators = ndeco;
+          m->line = member_line;
+
+          if (is_final) {
+            m->kind = AST_MEMBER_FINAL;
+          } else {
+            m->kind = AST_MEMBER_METHOD;
+          }
+          nmembers++;
         }
-        nmembers++;
       } else if (ls->t.token == TK_NAME) {
         /* 检查是否是嵌套类定义 */
         if (strcmp(getstr(ls->t.seminfo.ts), "class") == 0 || lp_softkw_is(ps, "class")) {
-          /* 嵌套类：递归解析 */
-          AstStmt *nested = parse_class_stat(ps, 0);
+          /* 嵌套类：递归解析，传递 class_flags */
+          int nested_flags = 0;
+          if (is_abstract) nested_flags |= CLASS_FLAG_ABSTRACT;
+          if (is_final) nested_flags |= CLASS_FLAG_FINAL;
+          AstStmt *nested = parse_class_stat(ps, nested_flags);
           if (nested != NULL && nested->kind == AST_STMT_CLASS) {
             AstClassMember *m = &members[nmembers];
             m->kind = AST_MEMBER_NESTED_CLASS;
             m->access = access;
             m->is_static = 1;  /* 嵌套类始终是静态成员 */
+            m->is_override = 0;
             m->name = nested->u.classstmt.name;
             m->u.nested_class = nested;
+            m->decorators = NULL;
+            m->ndecorators = 0;
             m->line = member_line;
             nmembers++;
           }
@@ -5031,8 +5167,11 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
         m->kind = AST_MEMBER_PROPERTY;
         m->access = access;
         m->is_static = is_static;
+        m->is_override = 0;
         m->name = prop_name;
         m->u.property_value = value;
+        m->decorators = NULL;
+        m->ndecorators = 0;
         m->line = member_line;
         nmembers++;
       } else if (ls->t.token == ';') {
@@ -5078,7 +5217,43 @@ static AstStmt *parse_class_stat(ParserState *ps, int class_flags) {
 
 
 /**
- * @brief 解析 trait 语句: trait Name { ... } / trait Name do ... end / trait Name begin ... end
+ * @brief 解析方法签名（仅参数个数，不解析函数体）
+ * @param ps 解析器状态
+ * @param name 方法名（输出）
+ * @param param_count 参数个数（含self，输出）
+ * @note 用于 interface 方法声明和 trait require 声明
+ */
+static void parse_method_sig(ParserState *ps, TString **name, int *param_count) {
+  LexState *ls = ps->ls;
+  lp_next(ps); /* skip 'function' */
+  *name = lp_checkname(ps);
+  lp_checknext(ps, '(');
+  int pc = 0;
+  while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+    if (is_nametoken(ls->t.token) || ls->t.token == TK_DOTS) {
+      pc++;
+    }
+    lp_next(ps);
+    /* 跳过类型注解、默认值等 */
+    while (ls->t.token != ',' && ls->t.token != ')' && ls->t.token != TK_EOS) {
+      lp_next(ps);
+    }
+    if (ls->t.token == ',') lp_next(ps);
+  }
+  lp_checknext(ps, ')');
+  /* 跳过可选返回类型注解 */
+  if (lp_testnext(ps, ':')) {
+    /* 跳过返回类型 */
+    while (ls->t.token != TK_END && ls->t.token != '}' && ls->t.token != ';' &&
+           ls->t.token != TK_EOS && ls->t.token != TK_FUNCTION && ls->t.token != TK_NAME) {
+      lp_next(ps);
+    }
+  }
+  *param_count = pc;
+}
+
+/**
+ * @brief 解析 trait 语句: trait Name { ... } / trait Name do ... end / trait Name begin ... end / trait Name ... end
  * @param ps 解析器状态
  * @return 语句节点
  */
@@ -5089,37 +5264,117 @@ static AstStmt *parse_trait_stat(ParserState *ps) {
 
   TString *name = lp_checkname(ps);
 
-  /* 解析 trait 体：接受 {, do 或 begin 作为块开始符 */
+  /* 确定体结束符 */
+  int end_tok = TK_END;
+  int has_brace = 0;
+  if (lp_testnext(ps, '{')) {
+    end_tok = '}';
+    has_brace = 1;
+  } else if (lp_testnext(ps, TK_DO)) {
+    end_tok = TK_END;
+  } else if (ls->t.token == TK_NAME && lp_softkw_is(ps, "begin")) {
+    lp_next(ps); /* skip 'begin' */
+    end_tok = TK_END;
+  }
+  /* 否则隐式体，直接开始解析直到 TK_END */
+
+  /* 解析 trait 体：方法和 require 声明 */
   AstBlock body = {NULL, 0, 0};
   block_init(ps, &body);
+  AstClassMember *methods = NULL;
+  int nmethods = 0;
+  int method_cap = 4;
+  AstMethodSig *sigs = NULL;
+  int nsigs = 0;
+  int sig_cap = 4;
+
   {
     AstFunc *oldfunc = ps->curfunc;
     scope_push(ps, 0);
-    if (lp_testnext(ps, '{')) {
-      parse_block(ps, &body);
-      lp_checknext(ps, '}');
-    } else if (lp_testnext(ps, TK_DO)) {
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
-    } else if (ls->t.token == TK_NAME && lp_softkw_is(ps, "begin")) {
-      lp_next(ps); /* skip 'begin' */
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
-    } else if (ls->t.token != TK_EOS) {
-      /* 隐式 trait 体：trait Name ... end */
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
+    methods = cast(AstClassMember *, ast_pool_alloc(ps->pool, sizeof(AstClassMember) * method_cap));
+    sigs = cast(AstMethodSig *, ast_pool_alloc(ps->pool, sizeof(AstMethodSig) * sig_cap));
+
+    while (ls->t.token != end_tok && ls->t.token != TK_EOS) {
+      if (ls->t.token == ';') {
+        lp_next(ps);
+        continue;
+      }
+
+      int member_line = ls->linenumber;
+
+      /* 检查 require 软关键字 */
+      int is_require = 0;
+      if (ls->t.token == TK_NAME && lp_softkw_is(ps, "require")) {
+        lp_next(ps);
+        is_require = 1;
+      }
+
+      if (ls->t.token == TK_FUNCTION) {
+        if (is_require) {
+          /* require function method(sig) - 记录方法签名 */
+          TString *method_name;
+          int param_count;
+          parse_method_sig(ps, &method_name, &param_count);
+          if (nsigs >= sig_cap) {
+            sig_cap *= 2;
+            AstMethodSig *new_sigs = cast(AstMethodSig *,
+              ast_pool_alloc(ps->pool, sizeof(AstMethodSig) * sig_cap));
+            memcpy(new_sigs, sigs, sizeof(AstMethodSig) * nsigs);
+            sigs = new_sigs;
+          }
+          sigs[nsigs].name = method_name;
+          sigs[nsigs].param_count = param_count;
+          sigs[nsigs].line = member_line;
+          nsigs++;
+        } else {
+          /* 普通方法：function name() body end */
+          lp_next(ps); /* skip 'function' */
+          TString *method_name = lp_checkname(ps);
+          /* trait 方法不自动注入 self（与旧版 parser 一致，需要显式声明 self） */
+          AstFunc *func = parse_funcbody(ps, member_line, 0, 0, 0);
+          if (nmethods >= method_cap) {
+            method_cap *= 2;
+            AstClassMember *new_methods = cast(AstClassMember *,
+              ast_pool_alloc(ps->pool, sizeof(AstClassMember) * method_cap));
+            memcpy(new_methods, methods, sizeof(AstClassMember) * nmethods);
+            methods = new_methods;
+          }
+          AstClassMember *m = &methods[nmethods];
+          m->kind = AST_MEMBER_METHOD;
+          m->access = AST_ACCESS_PUBLIC;
+          m->is_static = 0;
+          m->is_override = 0;
+          m->name = method_name;
+          m->u.method_func = func;
+          m->line = member_line;
+          nmethods++;
+        }
+      } else {
+        luaX_syntaxerror(ls, "only methods allowed in trait body");
+      }
     }
+
+    if (end_tok == TK_END) {
+      lp_checknext(ps, TK_END);
+    } else {
+      lp_checknext(ps, '}');
+    }
+    (void)has_brace;
     scope_pop(ps);
     ps->curfunc = oldfunc;
   }
 
-  return ast_new_stmt_typed(ps->pool, AST_STMT_TRAIT, name, &body, line);
+  AstStmt *s = ast_new_stmt_typed(ps->pool, AST_STMT_TRAIT, name, &body, line);
+  s->u.nsstruct.methods = methods;
+  s->u.nsstruct.nmethods = nmethods;
+  s->u.nsstruct.sigs = sigs;
+  s->u.nsstruct.nsigs = nsigs;
+  return s;
 }
 
 
 /**
- * @brief 解析 interface 语句: interface Name { ... } / interface Name do ... end / interface Name begin ... end
+ * @brief 解析 interface 语句: interface Name { ... } / interface Name do ... end / interface Name begin ... end / interface Name ... end
  * @param ps 解析器状态
  * @return 语句节点
  */
@@ -5131,7 +5386,6 @@ static AstStmt *parse_interface_stat(ParserState *ps) {
   TString *name = lp_checkname(ps);
 
   /* 解析接口继承（软关键字 extends） */
-  /* 接口可以继承多个父接口，以逗号分隔 */
   TString **extends_names = NULL;
   int nextends = 0;
   if (lp_softkw_is(ps, "extends")) {
@@ -5152,26 +5406,67 @@ static AstStmt *parse_interface_stat(ParserState *ps) {
     } while (lp_testnext(ps, ','));
   }
 
-  /* 解析接口体：接受 {, do 或 begin 作为块开始符 */
+  /* 确定体结束符 */
+  int end_tok = TK_END;
+  if (lp_testnext(ps, '{')) {
+    end_tok = '}';
+  } else if (lp_testnext(ps, TK_DO)) {
+    end_tok = TK_END;
+  } else if (ls->t.token == TK_NAME && lp_softkw_is(ps, "begin")) {
+    lp_next(ps); /* skip 'begin' */
+    end_tok = TK_END;
+  }
+
+  /* 解析接口体：方法签名 */
   AstBlock body = {NULL, 0, 0};
   block_init(ps, &body);
+  AstMethodSig *sigs = NULL;
+  int nsigs = 0;
+  int sig_cap = 4;
+
   {
     AstFunc *oldfunc = ps->curfunc;
     scope_push(ps, 0);
-    if (lp_testnext(ps, '{')) {
-      parse_block(ps, &body);
+    sigs = cast(AstMethodSig *, ast_pool_alloc(ps->pool, sizeof(AstMethodSig) * sig_cap));
+
+    while (ls->t.token != end_tok && ls->t.token != TK_EOS) {
+      if (ls->t.token == ';') {
+        lp_next(ps);
+        continue;
+      }
+
+      int member_line = ls->linenumber;
+
+      /* 可选的 require 前缀（require function name(...)），与 trait 语法对齐 */
+      if (ls->t.token == TK_NAME && lp_softkw_is(ps, "require")) {
+        lp_next(ps);
+      }
+
+      if (ls->t.token == TK_FUNCTION) {
+        /* 方法声明：function name(sig) - 无函数体 */
+        TString *method_name;
+        int param_count;
+        parse_method_sig(ps, &method_name, &param_count);
+        if (nsigs >= sig_cap) {
+          sig_cap *= 2;
+          AstMethodSig *new_sigs = cast(AstMethodSig *,
+            ast_pool_alloc(ps->pool, sizeof(AstMethodSig) * sig_cap));
+          memcpy(new_sigs, sigs, sizeof(AstMethodSig) * nsigs);
+          sigs = new_sigs;
+        }
+        sigs[nsigs].name = method_name;
+        sigs[nsigs].param_count = param_count;
+        sigs[nsigs].line = member_line;
+        nsigs++;
+      } else {
+        luaX_syntaxerror(ls, "only method declarations allowed in interface");
+      }
+    }
+
+    if (end_tok == TK_END) {
+      lp_checknext(ps, TK_END);
+    } else {
       lp_checknext(ps, '}');
-    } else if (lp_testnext(ps, TK_DO)) {
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
-    } else if (ls->t.token == TK_NAME && lp_softkw_is(ps, "begin")) {
-      lp_next(ps); /* skip 'begin' */
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
-    } else if (ls->t.token != TK_EOS) {
-      /* 隐式接口体：interface Name ... end */
-      parse_block(ps, &body);
-      lp_checknext(ps, TK_END);
     }
     scope_pop(ps);
     ps->curfunc = oldfunc;
@@ -5180,6 +5475,8 @@ static AstStmt *parse_interface_stat(ParserState *ps) {
   AstStmt *s = ast_new_stmt_typed(ps->pool, AST_STMT_INTERFACE, name, &body, line);
   s->u.nsstruct.extends_names = extends_names;
   s->u.nsstruct.nextends = nextends;
+  s->u.nsstruct.sigs = sigs;
+  s->u.nsstruct.nsigs = nsigs;
   return s;
 }
 
@@ -6950,20 +7247,11 @@ static AstStmt *parse_stat(ParserState *ps) {
           /* singleton 后必须跟 class */
           lp_error(ps, "'singleton' must be followed by 'class'");
         }
-        /* trait require 声明: require function name(args) - 无函数体 */
+        /* trait require 声明: require function 只能出现在 trait 体内 */
         if (lp_softkw_is(ps, "require")) {
           int la = lp_lookahead(ps);
           if (la == TK_FUNCTION) {
-            lp_next(ps); /* skip 'require' */
-            lp_next(ps); /* skip 'function' */
-            lp_checkname(ps); /* skip function name */
-            if (lp_testnext(ps, '(')) {
-              while (!lp_check(ps, ')') && !lp_check(ps, TK_EOS)) {
-                lp_next(ps);
-              }
-              lp_checknext(ps, ')');
-            }
-            return ast_new_stmt_empty(ps->pool, stmt_line);
+            lp_error(ps, "'require function' can only appear inside a trait body");
           }
           /* require 后不跟 function，则作为普通表达式 */
         }

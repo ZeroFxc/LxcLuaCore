@@ -1,0 +1,9 @@
+=== 模板字符串测试 ===
+1. plain: hello world
+2. interp: Name: Alice, Age: 25
+3. expr: Sum: 6
+4. multi: Line1
+Line2
+Line3
+5. escape: Price: $100
+PASS: template

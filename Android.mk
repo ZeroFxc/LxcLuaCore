@@ -111,34 +111,6 @@ LOCAL_SRC_FILES := \
 	src/wasm/m3_info.c \
 	src/wasm/m3_module.c \
 	src/wasm/m3_parse.c \
-	src/jit/sljitLir.c \
-	src/vm/jit/core/ljit.c \
-	src/vm/jit/ir/ljit_ir.c \
-	src/vm/jit/ir/ljit_ir_list.c \
-	src/vm/jit/ir/ljit_ir_label.c \
-	src/vm/jit/ir/ljit_ir_bb.c \
-	src/vm/jit/sljit/ljit_sljit.c \
-	src/vm/jit/codegen/ljit_codegen.c \
-	src/vm/jit/codegen/ljit_cg_arith.c \
-	src/vm/jit/codegen/ljit_cg_ctrl.c \
-	src/vm/jit/codegen/ljit_cg_table.c \
-	src/vm/jit/codegen/ljit_cg_conv.c \
-	src/vm/jit/codegen/ljit_cg_closure.c \
-	src/vm/jit/codegen/ljit_cg_oop.c \
-	src/vm/jit/regalloc/ljit_regalloc.c \
-	src/vm/jit/regalloc/ljit_reg_live.c \
-	src/vm/jit/regalloc/ljit_reg_graph.c \
-	src/vm/jit/regalloc/ljit_reg_color.c \
-	src/vm/jit/regalloc/ljit_reg_spill.c \
-	src/vm/jit/regalloc/ljit_reg_alloc.c \
-	src/vm/jit/optimize/ljit_opt.c \
-	src/vm/jit/optimize/ljit_opt_const.c \
-	src/vm/jit/optimize/ljit_opt_dce.c \
-	src/vm/jit/optimize/ljit_opt_peep.c \
-	src/vm/jit/optimize/ljit_opt_cse.c \
-	src/vm/jit/optimize/ljit_opt_inline.c \
-	src/vm/jit/frontend/ljit_translate.c \
-	src/vm/jit/frontend/ljit_analyze.c \
 	quickjs/quickjs.c \
 	quickjs/libregexp.c \
 	quickjs/libunicode.c \
@@ -158,6 +130,7 @@ LOCAL_SRC_FILES := \
 	src/utils/luuid.c \
 	src/utils/lrsa.c \
 	src/utils/lecc.c \
+    src/stdlib/lpcre2_stubs.c \
 	pcre2/src/pcre2_auto_possess.c \
 	pcre2/src/pcre2_chartables.c \
 	pcre2/src/pcre2_chkdint.c \
@@ -190,7 +163,7 @@ LOCAL_SRC_FILES := \
 	pcre2/src/pcre2_valid_utf.c \
 	pcre2/src/pcre2_xclass.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/jit -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 
 # QuickJS 配置

@@ -1,0 +1,6 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: cannot inherit from final class 'Shape'
+stack traceback:
+	build/f01_abstract.lua:6: in function <build/f01_abstract.lua:1>
+	[C]: in ?

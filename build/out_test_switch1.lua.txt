@@ -1,0 +1,11 @@
+=== Test 1: switch 表达式基本 ===
+nil
+=== Test 2: switch 表达式多值 ===
+low
+=== Test 3: switch 语句多值 ===
+high
+=== Test 4: switch 语句块体 ===
+mid
+=== Test 5: switch 表达式 default ===
+other
+=== All switch tests completed ===

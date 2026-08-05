@@ -1,0 +1,5 @@
+--- STDOUT ---
+--- STDERR ---
+./lxclua.exe: build/f12_decorator.lua:5: invalid member definition in class body
+    5 |   @deco
+      | ^ here
