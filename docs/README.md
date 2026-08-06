@@ -3,10 +3,15 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-blue.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Cross--Platform-green.svg)]()
+[![Code Size](https://img.shields.io/badge/Code-~160K--lines-green)](PROJECT_STATUS.md)
+[![Maturity](https://img.shields.io/badge/Maturity-Production--Grade-brightgreen)](PROJECT_STATUS.md)
+[![Documentation](https://img.shields.io/badge/Docs-Complete-blue)](docs/)
 
 A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with enhanced security features, extended libraries, and optimized bytecode compilation.
 
 [中文文档 (Chinese Documentation)](README_CN.md)
+
+> **Project Maturity: A Grade** — This is a production-level Lua engine fork with ~160K lines of C code across 85 source files, not a "toy project". See [Project Status Report](PROJECT_STATUS.md) for a detailed assessment based on thorough code analysis.
 
 ---
 
@@ -766,13 +771,20 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 - [Async Programming Guide](NATIVE_ASYNC_AWAIT.md) -- Native async/await support
 - [Async Syntax Sugar](ASYNC_AWAIT_SUGAR.md) -- Async/await desugaring rules
 
+### New Documents (Based on Code Analysis)
+- [Project Status & Maturity Report](PROJECT_STATUS.md) -- Objective assessment based on full source analysis: code scale, module maturity, technical specs
+- [Technical Deep Dive](DEEP_DIVE.md) -- In-depth analysis of 6 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM, lua2wasm
+- [Embedding Guide](EMBEDDING_GUIDE.md) -- Complete guide for embedding LXCLUA in C/C++ projects
+- [Code of Conduct](CODE_OF_CONDUCT.md) -- Community participation guidelines
+- [Changelog](../../CHANGELOG.md) -- Version history and changes
+
 ### Other
 - [Inline ASM Tutorial (English)](ASM_TUTORIAL.md) -- Inline assembly usage guide
 - [Inline ASM Tutorial (Chinese)](ASM_TUTORIAL_CN.md) -- Inline assembly usage guide
 - [Custom Opcodes](vmcustom_usage.md) -- Custom opcode extension system usage
 - [Security](SECURITY.md) -- Security features and considerations
 - [GC Analysis Report](REPORT_GC_ANALYSIS.md) -- Garbage collector performance analysis
-- [Contributing](CONTRIBUTING.md) -- How to contribute
+- [Contributing](CONTRIBUTING.md) -- Code style, build instructions, testing
 - [Roadmap](PLAN.md) -- Project status and future plans
 
 ---

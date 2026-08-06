@@ -895,13 +895,19 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 - [异步编程指南](NATIVE_ASYNC_AWAIT.md) -- async/await 原生支持详解
 - [异步语法糖说明](ASYNC_AWAIT_SUGAR.md) -- 异步语法糖脱糖规则
 
+### 新增文档（基于代码分析）
+- [项目状态与成熟度报告](PROJECT_STATUS.md) -- 基于全部源码的客观评估，涵盖代码规模、模块成熟度、技术规格
+- [技术深潜](DEEP_DIVE.md) -- 深入分析 6 大子系统：64 位指令格式、OOP 实现、混淆引擎、密码库、NativeVM、lua2wasm
+- [嵌入指南](EMBEDDING_GUIDE.md) -- C/C++ 项目嵌入 LXCLUA 的完整教程
+- [行为准则](CODE_OF_CONDUCT.md) -- 社区参与规范
+
 ### 其他
 - [内联汇编教程（中文）](ASM_TUTORIAL_CN.md) -- 内联汇编使用指南
 - [内联汇编教程（英文）](ASM_TUTORIAL.md) -- 内联汇编使用指南
 - [自定义操作码](vmcustom_usage.md) -- 自定义操作码扩展系统使用说明
 - [安全说明](SECURITY.md) -- 安全特性与注意事项
 - [GC 分析报告](REPORT_GC_ANALYSIS.md) -- 垃圾回收器性能分析
-- [贡献指南](CONTRIBUTING.md) -- 参与贡献的方式
+- [贡献指南](CONTRIBUTING.md) -- 参与贡献的方式（含代码风格、构建说明）
 - [开发计划](PLAN.md) -- 项目现状与未来规划
 
 ## 许可证
