@@ -3,10 +3,15 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-blue.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Cross--Platform-green.svg)]()
+[![Code Size](https://img.shields.io/badge/Code-~160K--lines-green)]()
+[![Maturity](https://img.shields.io/badge/Maturity-Production--Grade-brightgreen)](PROJECT_STATUS.md)
+[![Documentation](https://img.shields.io/badge/Docs-Complete-blue)](docs/)
 
 English | [中文](README.md)
 
 A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with enhanced security features, extended libraries, and optimized bytecode compilation.
+
+> **Project Maturity: A Grade** — This is a production-level Lua engine fork with ~160K lines of C code across 85 source files, not a "toy project". See [Project Status Report](docs/PROJECT_STATUS.md) for a detailed assessment based on thorough code analysis.
 
 ## Tested Platforms
 
@@ -177,7 +182,41 @@ Original Lua code is copyrighted by PUC-Rio. See [Lua License](https://www.lua.o
 
 ## Contributing
 
-Issues and Pull Requests are welcome. Please refer to the [Contributing Guidelines](CONTRIBUTING.md).
+Issues and Pull Requests are welcome. Please refer to the [Contributing Guidelines](docs/CONTRIBUTING.md).
+
+## Documentation Index
+
+### Getting Started
+- [Chinese README](docs/README_CN.md) — Comprehensive syntax reference and feature overview
+- [Build Guide](docs/BUILD.md) — Compilation and build instructions
+- [Tutorial](docs/TUTORIAL.md) — Quick start and basic usage
+
+### Architecture & Design
+- [Architecture Overview](docs/ARCHITECTURE.md) — System architecture and module relationships
+- [Module Details](docs/MODULES.md) — Detailed module documentation
+- [Project Status Report](docs/PROJECT_STATUS.md) — Objective assessment based on full source analysis
+
+### Reference Manuals
+- [Syntax Reference](docs/SYNTAX_REFERENCE.md) — Complete syntax feature documentation verified against source code
+- [API Reference](docs/API_REFERENCE.md) — Complete function API listing for all standard and extension libraries
+- [Lua API Reference](docs/LUA_API.md) — Full Lua C API reference
+
+### Technical Deep Dives
+- [Deep Dive](docs/DEEP_DIVE.md) — Technical deep dive into 6 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM, lua2wasm
+- [WASM Runtime](docs/WASM_RUNTIME.md) — WebAssembly runtime integration
+- [LSP Server](docs/LSP_SERVER.md) — Language Server Protocol implementation
+- [AST System](docs/AST_SYSTEM.md) — Abstract syntax tree structure and operations
+
+### Integration & Embedding
+- [Embedding Guide](docs/EMBEDDING_GUIDE.md) — Complete guide for embedding LXCLUA in C/C++ projects
+- [Async Programming](docs/NATIVE_ASYNC_AWAIT.md) — async/await native support
+
+### Community
+- [Code of Conduct](docs/CODE_OF_CONDUCT.md) — Community participation guidelines
+- [Security Notes](docs/SECURITY.md) — Security features and considerations
+- [Inline Assembly (CN)](docs/ASM_TUTORIAL_CN.md) / [(EN)](docs/ASM_TUTORIAL.md)
+- [GC Analysis](docs/REPORT_GC_ANALYSIS.md) — Garbage collector performance analysis
+- [Development Plan](docs/PLAN.md) — Project status and future roadmap
 
 ## Contact
 

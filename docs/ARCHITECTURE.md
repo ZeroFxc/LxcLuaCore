@@ -196,16 +196,39 @@ src/vm/jit/
          ljit_translate             (5种优化)     (图着色)        ljit_cg_*
 ```
 
-#### 3.2.3 VM 工具模块
+### 3.2.3 NativeVM 子系统与 VM 工具模块
+
+#### NativeVM — 独立原生虚拟机
+
+NativeVM 是一个**完全独立的虚拟机**，拥有自己的指令集 (64 位: `|imm32|c|b|a|op|`) 和编译器 (NLang 2.0)。特点：
+
+- 纯 C 运行时执行，与主 VM 互不干扰
+- 40 种操作码，256 个寄存器 (NTYPE_NIL/INT/FLOAT/PTR/FUNC)
+- 两遍汇编器：先解析源码→中间指令，再解析标签→最终字节码
+- 支持 Lua 互操作：CALL、GETFIELD、SETTABLE 等混合操作码
+
+```
+NativeVM 指令执行流程:
+源码字符串 → [Lexer] → Token流 → [Parser] → AsmInst[] (含标签引用)
+                                          ↓
+                                    [两遍汇编器] → 64位指令数组
+                                          ↓
+                                    [VM执行] → 结果
+```
+
+| 模块 | 文件 | 功能描述 |
+|------|------|----------|
+| **lnativevm** | `src/vm/lnativevm.c` (2,592 行) | NativeVM 运行时：指令执行循环、寄存器文件、标签解析 |
+| **lnativeparser** | `src/vm/lnativeparser.c` (2,651 行) | NLang 2.0 编译器：词法分析、语法分析、两遍汇编 |
+
+#### VM 工具模块
 
 | 模块 | 文件 | 功能描述 |
 |------|------|----------|
 | **lbytecode** | `src/vm/lbytecode.c` | 字节码操作和分析库 (ByteCode 模块) |
 | **lvmlib** | `src/vm/lvmlib.c` | VM 内省库 (vm 模块)，提供字节码级别的 VM 内省 |
-| **lvmpro** | `src/vm/lvmpro.c` | VM 保护库 (vmprotect 模块)，基于 VM 的代码保护 |
+| **lvmpro** | `src/vm/lvmpro.c` (309 行) | VM 保护库 (vmprotect 模块)，Proto→Lua 函数递归转换 |
 | **lvmustom** | `src/vm/lvmustom.c` | 自定义操作码扩展系统 (vmcustom 模块) |
-| **lnativevm** | `src/vm/lnativevm.c` | 原生 VM 接口 (nativevm 模块) |
-| **lnativeparser** | `src/vm/lnativeparser.c` | 原生解析器接口 (nativeparser 模块) |
 | **ljumptab** | `src/vm/ljumptab.h` | VM 指令跳转表（computed goto 优化） |
 
 ### 3.3 编译器层 (`src/compiler/`)
