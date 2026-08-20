@@ -5455,14 +5455,14 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
           int concat_nospace = (op == OPR_CONCAT) ? ls->t.nospace : 0;
           luaX_next(ls);  /* skip operator */
           if (op == OPR_CONCAT && concat_nospace && v->k == VKINT) {
-            /* 范围操作符：先解析右操作数，若也是整数则生成范围表 */
+            /* 范围操作符：先解析右操作数，若两端均为整数且 start<=end 则生成范围表 */
             nextop = subexpr(ls, &v2, priority[op].right);
-            if (v2.k == VKINT) {
+            if (v2.k == VKINT && v->u.ival <= v2.u.ival) {
               luaK_range(ls->fs, v, v->u.ival, v2.u.ival, line);
               op = nextop;
               continue;  /* 跳过 infix/posfix，直接处理下一个运算符 */
             }
-            /* 右操作数不是整数，回退到正常拼接 */
+            /* 右操作数不是整数或 start>end（降序范围），回退到正常拼接 */
             luaK_infix(ls->fs, op, v);
             luaK_posfix(ls->fs, op, v, &v2, line);
           } else {
@@ -5612,9 +5612,9 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
       int concat_nospace = (op == OPR_CONCAT) ? ls->t.nospace : 0;
       luaX_next(ls);  /* skip operator */
       if (op == OPR_CONCAT && concat_nospace && v->k == VKINT) {
-        /* 范围操作符：先解析右操作数，若也是整数则生成范围表 */
+        /* 范围操作符：先解析右操作数，若两端均为整数且 start<=end 则生成范围表 */
         nextop = subexpr(ls, &v2, priority[op].right);
-        if (v2.k == VKINT) {
+        if (v2.k == VKINT && v->u.ival <= v2.u.ival) {
           luaK_range(ls->fs, v, v->u.ival, v2.u.ival, line);
           op = nextop;
           /* 如果 nextop 返回中缀但当前 token 已跨行，取消中缀链 */
@@ -5627,7 +5627,7 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
           }
           continue;  /* 跳过 infix/posfix，直接处理下一个运算符 */
         }
-        /* 右操作数不是整数，回退到正常拼接 */
+        /* 右操作数不是整数或 start>end（降序范围），回退到正常拼接 */
         luaK_infix(ls->fs, op, v);
         luaK_posfix(ls->fs, op, v, &v2, line);
       } else {
