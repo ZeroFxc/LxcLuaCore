@@ -1793,6 +1793,14 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
       /* 管道运算符：luaK_pipe 自行处理 e1/e2 的寄存器分配，无需预释放 */
       break;
     }
+    case OPR_REVPIPE: {
+      /* 反向管道运算符：luaK_revpipe 自行处理 e1/e2 的寄存器分配，无需预释放 */
+      break;
+    }
+    case OPR_SAFEPIPE: {
+      /* 安全管道运算符：luaK_safepipe 自行处理 e1/e2 的寄存器分配，无需预释放 */
+      break;
+    }
     case OPR_IN: {
       luaK_exp2anyreg(fs, v);
       break;
@@ -1990,6 +1998,14 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       luaK_pipe(fs, e1, e2);
       break;
     }
+    case OPR_REVPIPE: {
+      luaK_revpipe(fs, e1, e2);
+      break;
+    }
+    case OPR_SAFEPIPE: {
+      luaK_safepipe(fs, e1, e2);
+      break;
+    }
     case OPR_CASE: {
       int r1 = luaK_exp2anyreg(fs, e1);
       int r2 = luaK_exp2anyreg(fs, e2);
@@ -2160,13 +2176,16 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int func_reg, arg_reg;
   int nargs = 1;  /* 默认1个参数 */
   int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
-  int e1_was_nonreloc = (e1->k == VNONRELOC);
-  int e1_orig_reg = e1_was_nonreloc ? e1->u.info : -1;
+  /* e1 是否已位于临时寄存器中（局部变量寄存器除外）。链式管道时复用其位置，
+     避免在下一次调用时产生中间死寄存器，导致调用方按 freereg 误算参数个数 */
+  int e1_tmp_reg = (e1->k == VNONRELOC && !hasjumps(e1) &&
+                    e1->u.info >= luaY_nvarstack(fs)) ? e1->u.info : -1;
 
   if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
 
-  /* 方法引用不使用标准布局，避免 SELF 指令的寄存器冲突 */
   if (is_self) {
+    /* 方法引用 x |> obj:method：func(obj.method) 已由 luaK_self 分配，
+       self 位于 func_reg+1，管道值 x 放入 func_reg+2 */
     luaK_dischargevars(fs, e2);
     func_reg = e2->u.info;
     if (fs->freereg <= func_reg + 2) {
@@ -2174,36 +2193,36 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
     }
     arg_reg = func_reg + 2;
     luaK_exp2reg(fs, e1, arg_reg);
+  } else if (e1_tmp_reg >= 0) {
+    /*
+     * 链式管道：e1 是上一次管道的结果，已占用一个临时寄存器。
+     * 复用该寄存器作为函数位置：先把 e1 值上移到参数寄存器，
+     * 再把函数覆盖写入原寄存器，最终结果仍落在该寄存器，
+     * 从而不产生中间死寄存器空洞。
+     */
+    func_reg = e1_tmp_reg;
+    arg_reg = func_reg + 1;
+    luaK_codeABC(fs, OP_MOVE, arg_reg, func_reg, 0);  /* 参数 = e1 原值 */
+    if (fs->freereg <= arg_reg) fs->freereg = arg_reg + 1;
+    luaK_exp2reg(fs, e2, func_reg);                    /* 函数覆盖写入 func_reg */
   } else {
     /*
-     * 标准管道布局：e2（函数）在 func_reg，e1（管道输入）在 arg_reg=func_reg+1
+     * 首次管道：e2（函数）在 func_reg，e1（管道输入）在 arg_reg=func_reg+1
      * OP_CALL 结果落在 func_reg
      */
     luaK_exp2nextreg(fs, e2);
     func_reg = fs->freereg - 1;
-    
     arg_reg = fs->freereg;
     luaK_reserveregs(fs, 1);
-    
     luaK_exp2reg(fs, e1, arg_reg);
   }
-  
+
   /* 生成函数调用指令：结果落在 func_reg */
   luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
 
-  /*
-   * 如果 e1 原本在低于 func_reg 的寄存器中（链式管道场景），
-   * 将结果移回 e1 的原寄存器，使中间寄存器可被正常回收。
-   * Lua 寄存器栈只能从顶部释放，因此必须把结果下沉到最低占用位。
-   */
-  if (e1_was_nonreloc && e1_orig_reg >= 0 && e1_orig_reg < func_reg) {
-    luaK_codeABC(fs, OP_MOVE, e1_orig_reg, func_reg, 0);
-    fs->freereg = e1_orig_reg + 1;
-    e1->u.info = e1_orig_reg;
-  } else {
-    fs->freereg = func_reg + 1;
-    e1->u.info = func_reg;
-  }
+  /* 调用结果落在 func_reg，仅保留结果寄存器一个槽位 */
+  fs->freereg = func_reg + 1;
+  e1->u.info = func_reg;
   e1->k = VNONRELOC;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;
@@ -2221,31 +2240,51 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
 */
 void luaK_revpipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int func_reg, arg_reg;
-  
+
   /*
    * 反向管道：f <| x 等价于 f(x)
    * e1 是函数，e2 是参数
-   * 
-   * 这里不需要特殊处理，因为我们按顺序处理 e1 和 e2，
-   * 直接使用 luaK_exp2nextreg 是安全的
+   * OP_CALL 要求函数在基址寄存器 func_reg，参数在 func_reg+1
    */
-  
-  /* 步骤1：将函数表达式放入下一个寄存器 */
-  luaK_exp2nextreg(fs, e1);
-  func_reg = fs->freereg - 1;
-  
-  /* 步骤2：将参数表达式放入下一个寄存器 */
-  luaK_exp2nextreg(fs, e2);
-  arg_reg = fs->freereg - 1;
-  
-  /* 步骤3：生成函数调用指令 */
-  e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, 2, 2);
-  e1->k = VCALL;
+
+  /* e2（参数）是否已位于临时寄存器中（局部变量寄存器除外）。
+     链式反向管道如 add1 <| (double <| 8)：内层结果已占用一个临时寄存器，
+     若此时再用 exp2nextreg 会对 e2 错误释放 freereg，导致函数被覆盖成数字 */
+  int e2_tmp_reg = (e2->k == VNONRELOC && !hasjumps(e2) &&
+                    e2->u.info >= luaY_nvarstack(fs)) ? e2->u.info : -1;
+
+  if (e2_tmp_reg >= 0) {
+    /*
+     * 链式反向管道：参数 e2 已是内层结果，复用其寄存器作为函数位置。
+     * 先把参数上移到 func_reg+1，再把函数覆盖写入 func_reg，
+     * 最终结果仍落在该寄存器，避免中间死寄存器空洞。
+     */
+    func_reg = e2_tmp_reg;
+    arg_reg = func_reg + 1;
+    luaK_codeABC(fs, OP_MOVE, arg_reg, func_reg, 0);  /* 参数 = e2 原值 */
+    if (fs->freereg <= arg_reg) fs->freereg = arg_reg + 1;
+    luaK_exp2reg(fs, e1, func_reg);                    /* 函数覆盖写入 func_reg */
+  } else {
+    /*
+     * 首次反向管道：函数 e1 在 func_reg，参数 e2 在 arg_reg=func_reg+1
+     * OP_CALL 结果落在 func_reg
+     */
+    luaK_exp2nextreg(fs, e1);
+    func_reg = fs->freereg - 1;
+    arg_reg = fs->freereg;
+    luaK_reserveregs(fs, 1);
+    luaK_exp2reg(fs, e2, arg_reg);
+  }
+
+  /* 生成函数调用指令：结果落在 func_reg */
+  luaK_codeABC(fs, OP_CALL, func_reg, 2, 2);
+
+  /* 调用结果落在 func_reg，仅保留结果寄存器一个槽位 */
+  fs->freereg = func_reg + 1;
+  e1->u.info = func_reg;
+  e1->k = VNONRELOC;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;
-  
-  /* 调用后释放参数寄存器，保留结果寄存器 */
-  fs->freereg = func_reg + 1;
 }
 
 /*
@@ -2271,9 +2310,10 @@ void luaK_safepipe (FuncState *fs, expdesc *e1, expdesc *e2) {
    * 链式调用时结果在第一次调用的位置
    */
   
-  /* 步骤1：记录 e1 的当前寄存器位置 */
+  /* 步骤1：记录 e1 的当前寄存器位置（仅当其为临时寄存器，而非局部变量） */
   luaK_dischargevars(fs, e1);
-  if (e1->k == VNONRELOC) {
+  if (e1->k == VNONRELOC && !hasjumps(e1) &&
+      e1->u.info >= luaY_nvarstack(fs)) {
     e1_reg = e1->u.info;
   }
   

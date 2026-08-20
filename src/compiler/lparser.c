@@ -4026,135 +4026,11 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         funcargs(ls, v, line);
         break;
       }
-      /* 注意：'|>' 管道不在此处处理。suffixedexp 不感知 subexpr 的
-         优先级上下文，若在此消费管道会破坏链式管道的左结合性
-         （如 a |> f |> g 会被解析成 a |> (f |> g)）。
-         管道统一由 subexpr 二元运算符路径处理（getbinopr/OPR_PIPE）。 */
-      case TK_REVPIPE: {  /* '<|' 反向管道 */
-        luaX_next(ls);
-        expdesc e;
-        /* 支持反向管道右侧直接使用字面量和匿名函数 */
-        switch (ls->t.token) {
-          case TK_FUNCTION: {  /* 匿名函数 */
-            body(ls, &e, 0, ls->linenumber);
-            break;
-          }
-          case TK_LAMBDA: {  /* lambda表达式 */
-            lambda_body(ls, &e, ls->linenumber);
-            break;
-          }
-          case TK_INT: {  /* 整数常量 */
-            init_exp(&e, VKINT, 0);
-            e.u.ival = ls->t.seminfo.i;
-            luaX_next(ls);
-            break;
-          }
-          case TK_FLT: {  /* 浮点数常量 */
-            init_exp(&e, VKFLT, 0);
-            e.u.nval = ls->t.seminfo.r;
-            luaX_next(ls);
-            break;
-          }
-          case TK_STRING:
-          case TK_RAWSTRING: {  /* 字符串常量 */
-            codestring(&e, ls->t.seminfo.ts);
-            luaX_next(ls);
-            break;
-          }
-          case TK_TRUE: {  /* true常量 */
-            init_exp(&e, VTRUE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_FALSE: {  /* false常量 */
-            init_exp(&e, VFALSE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_NIL: {  /* nil常量 */
-            init_exp(&e, VNIL, 0);
-            luaX_next(ls);
-            break;
-          }
-          case '{': {  /* 表常量作为参数 */
-            constructor(ls, &e);
-            break;
-          }
-          default: {
-            /* 解析函数表达式（不递归处理管道，确保左关联） */
-            pipe_funcexp(ls, &e);
-            break;
-          }
-        }
-        /* 生成反向管道运算符代码：v 是函数，e 是参数 */
-        luaK_revpipe(fs, v, &e);
-        break;
-      }
-      case TK_SAFEPIPE: {  /* '|?>' 安全管道 */
-        /*
-        ** 安全管道运算符: x |?> f
-        ** 功能描述：如果 x 为 nil，则结果为 nil；否则结果为 f(x)
-        ** 用于避免 nil 值导致的错误
-        */
-        luaX_next(ls);
-        expdesc e;
-        /* 支持管道符右侧直接使用字面量和匿名函数 */
-        switch (ls->t.token) {
-          case TK_FUNCTION: {  /* 匿名函数 */
-            body(ls, &e, 0, ls->linenumber);
-            break;
-          }
-          case TK_LAMBDA: {  /* lambda表达式 */
-            lambda_body(ls, &e, ls->linenumber);
-            break;
-          }
-          case TK_INT: {  /* 整数常量 */
-            init_exp(&e, VKINT, 0);
-            e.u.ival = ls->t.seminfo.i;
-            luaX_next(ls);
-            break;
-          }
-          case TK_FLT: {  /* 浮点数常量 */
-            init_exp(&e, VKFLT, 0);
-            e.u.nval = ls->t.seminfo.r;
-            luaX_next(ls);
-            break;
-          }
-          case TK_STRING:
-          case TK_RAWSTRING: {  /* 字符串常量 */
-            codestring(&e, ls->t.seminfo.ts);
-            luaX_next(ls);
-            break;
-          }
-          case TK_TRUE: {  /* true常量 */
-            init_exp(&e, VTRUE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_FALSE: {  /* false常量 */
-            init_exp(&e, VFALSE, 0);
-            luaX_next(ls);
-            break;
-          }
-          case TK_NIL: {  /* nil常量 */
-            init_exp(&e, VNIL, 0);
-            luaX_next(ls);
-            break;
-          }
-          case '{': {  /* 表常量作为函数 */
-            constructor(ls, &e);
-            break;
-          }
-          default: {
-            /* 解析函数表达式（不递归处理管道，确保左关联） */
-            pipe_funcexp(ls, &e);
-            break;
-          }
-        }
-        /* 生成安全管道运算符代码 */
-        luaK_safepipe(fs, v, &e);
-        break;
-      }
+      /* 注意：管道运算符 '|>'、'<|'、'|?>' 均不在此处处理。
+         suffixedexp 不感知 subexpr 的优先级上下文，若在此消费管道会
+         破坏链式管道的左结合性（如 a |> f |> g 会被解析成 a |> (f |> g)）。
+         三种管道统一由 subexpr 二元运算符路径处理
+         （getbinopr/OPR_PIPE、OPR_REVPIPE、OPR_SAFEPIPE）。 */
 
       default: goto end_loop;
     }
@@ -5282,6 +5158,8 @@ static BinOpr getbinopr (int op) {
     case TK_SHR: return OPR_SHR;
     case TK_CONCAT: return OPR_CONCAT;
     case TK_PIPE: return OPR_PIPE;
+    case TK_REVPIPE: return OPR_REVPIPE;
+    case TK_SAFEPIPE: return OPR_SAFEPIPE;
     case TK_NE: return OPR_NE;
     case TK_EQ: return OPR_EQ;
     case '<': return OPR_LT;
@@ -5317,6 +5195,8 @@ static const struct {
    {7, 7}, {7, 7},           /* '<<' '>>' */
    {9, 8},                   /* '..' (right associative) */
    {8, 8},                   /* '|>' 管道（左结合：a |> f |> g == g(f(a))） */
+   {8, 8},                   /* '<|' 反向管道（左结合：f <| x == f(x)） */
+   {8, 8},                   /* '|?>' 安全管道（左结合：x |?> f == x~=nil and f(x) or nil） */
    {3, 3}, {3, 3}, {3, 3},   /* ==, <, <= */
    {3, 3}, {3, 3}, {3, 3},   /* ~=, >, >= */
    {3, 3},                   /* <=> (spaceship) */

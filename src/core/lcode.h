@@ -34,6 +34,10 @@ typedef enum BinOpr {
   OPR_CONCAT,
   /* pipe operator */
   OPR_PIPE,
+  /* reverse pipe operator: f <| x 等价于 f(x) */
+  OPR_REVPIPE,
+  /* safe pipe operator: x |?> f (x 为 nil 时短路为 nil，否则 f(x)) */
+  OPR_SAFEPIPE,
   /* comparison operators */
   OPR_EQ, OPR_LT, OPR_LE,
   OPR_NE, OPR_GT, OPR_GE,
