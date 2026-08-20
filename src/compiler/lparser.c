@@ -6266,43 +6266,53 @@ static void gotostat (LexState *ls) {
 
 
 /*
-** Break statement. Semantically equivalent to "goto break".
+** 生成 break N / continue N 的多层级跳转。
+** 参数：
+**   ls    - 词法状态
+**   temp  - TK_BREAK 或 TK_CONTINUE
+**   level - 跨越的循环层数（<1 时按 1 处理）
+**   line  - 语句行号
+**   jump  - 待链接的跳转指令（条件跳转 v.t 或无条件 luaK_jump）
+** 说明：
+**   level == 1 跳转到 break/continue 常规标签；
+**   level > 1 跳转到目标循环的隐藏标签 __lpbrk<D> / __lpcontinue<D>，
+**   其中 D 为目标循环的绝对深度（对称于 break N 机制）。
 */
-static void breakstat (LexState *ls) {
-  int line = ls->linenumber;
-  int temp = ls->t.token;
-  luaX_next(ls);  /* skip break */
-  /* 多层级 break N / continue N（与 AST 解析器对齐） */
-  int level = 1;
-  if (ls->t.token == TK_INT) {
-    level = (int)ls->t.seminfo.i;
-    if (level < 1) level = 1;
-    luaX_next(ls);
-  }
+static void emit_loop_jump (LexState *ls, int temp, int level, int line, int jump) {
+  if (level < 1) level = 1;
   if (level > 1) {
     if (level > ls->loop_depth) {
       luaK_semerror(ls, luaO_pushfstring(ls->L,
         "%s level %d exceeds loop depth %d",
         (temp == TK_BREAK) ? "break" : "continue", level, ls->loop_depth));
     }
-    if (temp == TK_BREAK) {
-      /* 目标循环的绝对深度；跳转到其隐藏标签 __lpbrk<D>（由该循环结束时创建） */
-      int target_depth = ls->loop_depth - level + 1;
-      const char *fmt = luaO_pushfstring(ls->L, "__lpbrk%d", target_depth);
-      TString *name = luaS_new(ls->L, fmt);
-      ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
-      newgotoentry(ls, name, line, luaK_jump(ls->fs));
-    } else {
-      /* continue N：跳转到目标循环体内的 continue 标签（由循环体创建） */
-      newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(ls->fs));
-    }
-    return;
+    int target_depth = ls->loop_depth - level + 1;
+    const char *fmt = luaO_pushfstring(ls->L,
+      (temp == TK_BREAK) ? "__lpbrk%d" : "__lpcontinue%d", target_depth);
+    TString *name = luaS_new(ls->L, fmt);
+    ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
+    newgotoentry(ls, name, line, jump);
+  } else {
+    newgotoentry(ls, luaS_new(ls->L,
+      (temp == TK_BREAK) ? "break" : "continue"), line, jump);
   }
-  if(temp==TK_BREAK) {
-      newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, luaK_jump(ls->fs));
-  }else if(temp==TK_CONTINUE){
-      newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, luaK_jump(ls->fs));
+}
+
+
+/*
+** Break statement. Semantically equivalent to "goto break".
+*/
+static void breakstat (LexState *ls) {
+  int line = ls->linenumber;
+  int temp = ls->t.token;
+  luaX_next(ls);  /* skip break/continue */
+  /* 多层级 break N / continue N（与 AST 解析器对齐） */
+  int level = 1;
+  if (ls->t.token == TK_INT) {
+    level = (int)ls->t.seminfo.i;
+    luaX_next(ls);
   }
+  emit_loop_jump(ls, temp, level, line, luaK_jump(ls->fs));
 }
 
 
@@ -6324,6 +6334,26 @@ static void lp_exit_loop (LexState *ls) {
     }
   }
   ls->loop_depth--;
+}
+
+/*
+** 循环 continue 点注册该层循环的隐藏 continue 标签 __lpcontinue<depth>，
+** 仅当存在指向它的待定 goto 时才创建，用于解析 continue N 跳转
+** （对称于 lp_exit_loop 的 __lpbrk<depth> 机制）
+*/
+static void lp_create_continue_label (LexState *ls) {
+  int depth = ls->loop_depth;
+  const char *fmt = luaO_pushfstring(ls->L, "__lpcontinue%d", depth);
+  TString *name = luaS_new(ls->L, fmt);
+  ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
+  Labellist *gl = &ls->dyd->gt;
+  int i;
+  for (i = 0; i < gl->n; i++) {
+    if (gl->arr[i].name == name) {
+      createlabel(ls, name, 0, 0);
+      break;
+    }
+  }
 }
 
 /*
@@ -6397,6 +6427,7 @@ static void whilestat (LexState *ls, int line) {
     }
     
     createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
+    lp_create_continue_label(ls);
     luaK_jumpto(fs, whileinit);
     luaK_patchtohere(fs, condexit);
     if (testnext(ls, TK_ELSE)) {
@@ -6416,6 +6447,7 @@ static void whilestat (LexState *ls, int line) {
     if (ls->t.token == TK_DO) luaX_next(ls);
     block(ls);
     createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
+    lp_create_continue_label(ls);
     luaK_jumpto(fs, whileinit);
     luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
     if (testnext(ls, TK_ELSE)) {
@@ -6440,6 +6472,7 @@ static void repeatstat (LexState *ls, int line) {
   luaX_next(ls);  /* skip REPEAT */
   statlist(ls);
   createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
+  lp_create_continue_label(ls);
   check_match(ls, TK_UNTIL, TK_REPEAT, line);
   condexit = cond(ls);  /* read condition (inside scope block) */
   leaveblock(fs);  /* finish scope */
@@ -6502,6 +6535,7 @@ static void forbody (LexState *ls, int base, int line, int nvars, int isgen) {
   luaK_reserveregs(fs, nvars);
   block(ls);
   createlabel(ls, luaS_newliteral(ls->L, "continue"), 0, 0);
+  lp_create_continue_label(ls);
   leaveblock(fs);  /* end of scope for declared variables */
   fixforjump(fs, prep, luaK_getlabel(fs), 0);
   if (isgen) {  /* generic for? */
@@ -6691,40 +6725,19 @@ static int test_then_block (LexState *ls, int *escapelist) {
     luaX_next(ls);  /* skip 'do' (Universal Block Opener) */
   }
   
-  if (ls->t.token == TK_BREAK||ls->t.token==TK_CONTINUE) {  /* 'if x then break' ? */
+  if (ls->t.token == TK_BREAK||ls->t.token==TK_CONTINUE) {  /* 'if x then break/continue' ? */
     int line = ls->linenumber;
+    int temp = ls->t.token;
     luaK_goiffalse(ls->fs, &v);  /* will jump if condition is true */
-    if(ls->t.token==TK_BREAK) {
-      int is_breakkw = 1;
-      luaX_next(ls);  /* skip 'break' */
-      enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-      /* 支持 break N 多层级跳转（与 AST 解析器对齐） */
-      if (is_breakkw && ls->t.token == TK_INT) {
-        int level = (int)ls->t.seminfo.i;
-        if (level < 1) level = 1;
-        luaX_next(ls);
-        if (level > 1) {
-          if (level > ls->loop_depth) {
-            luaK_semerror(ls, luaO_pushfstring(ls->L,
-              "break level %d exceeds loop depth %d", level, ls->loop_depth));
-          }
-          {
-            int target_depth = ls->loop_depth - level + 1;
-            const char *fmt = luaO_pushfstring(ls->L, "__lpbrk%d", target_depth);
-            TString *name = luaS_new(ls->L, fmt);
-            ls->L->top.p--;  /* 字符串已 intern，弹出 pushfstring 的栈值 */
-            newgotoentry(ls, name, line, v.t);
-          }
-        } else {
-          newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
-        }
-      } else {
-        newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
-      }
-    }else{
-      enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-      newgotoentry(ls, luaS_newliteral(ls->L, "continue"), line, v.t);
+    luaX_next(ls);  /* skip break/continue */
+    enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
+    /* 支持 break N / continue N 多层级跳转（与 AST 解析器对齐） */
+    int level = 1;
+    if (ls->t.token == TK_INT) {
+      level = (int)ls->t.seminfo.i;
+      luaX_next(ls);
     }
+    emit_loop_jump(ls, temp, level, line, v.t);
     while (testnext(ls, ';')) {}  /* skip semicolons */
     if (block_follow(ls, 0) || (use_brace && ls->t.token == '}')) {  /* jump is the entire block? */
       leaveblock(fs);
@@ -6834,7 +6847,30 @@ static void single_test_then_block (LexState *ls, int *escapelist) {
     if (ls->t.token == TK_GOTO || ls->t.token == TK_BREAK || ls->t.token == TK_CONTINUE) {
         luaK_goiffalse(ls->fs, &v);  /* will jump to label if condition is true */
         enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-        gotostat(ls);  /* handle goto/break */
+        if (ls->t.token == TK_BREAK || ls->t.token == TK_CONTINUE) {
+          /* break / continue N 快速路径（使用条件跳转 v.t） */
+          int temp = ls->t.token;
+          luaX_next(ls);  /* skip break/continue */
+          int level = 1;
+          if (ls->t.token == TK_INT) {
+            level = (int)ls->t.seminfo.i;
+            luaX_next(ls);
+          }
+          emit_loop_jump(ls, temp, level, line, v.t);
+        } else {
+          /* goto NAME 快速路径（使用条件跳转 v.t） */
+          luaX_next(ls);  /* skip 'goto' */
+          TString *name = str_checkname(ls);  /* label's name */
+          Labeldesc *lb = findlabel(ls, name);
+          if (lb == NULL)  /* no label? forward jump */
+            newgotoentry(ls, name, line, v.t);
+          else {  /* found a label; backward jump */
+            int lblevel = reglevel(fs, lb->nactvar);
+            if (luaY_nvarstack(fs) > lblevel)
+              luaK_codeABC(fs, OP_CLOSE, lblevel, 0, 0);
+            luaK_patchlist(fs, v.t, lb->pc);
+          }
+        }
         leaveblock(fs);
         return;
     }
