@@ -336,7 +336,7 @@ static int pmain(lua_State* L)
   if (D==NULL) cannot("open");
   lua_lock(L);
   if (obfuscate_flags)
-   luaU_dump_obfuscated(L,f,writer,D,stripping,obfuscate_flags,0,NULL);
+    luaU_dump_obfuscated(L,f,writer,D,stripping,obfuscate_flags, 0, NULL);
   else
    luaU_dump(L,f,writer,D,stripping);
   lua_unlock(L);

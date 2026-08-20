@@ -2447,11 +2447,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
   trap = L->hookmask;
  returning:  /* trap already set */
   cl = ci_func(ci);
-  {
-    Proto *p = cl->p;
-    (void)p;
-  }
-
   /** VM protection detection */
   if (cl->p->difierline_mode & OBFUSCATE_VM_PROTECT) {
     #ifdef VMOB_LOG
@@ -2491,7 +2486,8 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
     vmdispatch (GET_OPCODE(i)) {
       vmcase(OP_MOVE) {
         StkId ra = RA(i);
-        setobjs2s(L, ra, RB(i));
+        StkId rb = RB(i);
+        setobjs2s(L, ra, rb);
         vmbreak;
       }
       vmcase(OP_LOADI) {
@@ -3288,7 +3284,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           L->top.p = ra + b;  /* top signals number of arguments */
         /* else previous instruction set top */
         savepc(L);  /* in case of errors */
-        
         if (ra <= L->top.p && ttisLclosure(s2v(ra))) {
           LClosure *cl = clLvalue(s2v(ra));
           Proto *p = cl->p;
@@ -3540,6 +3535,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         luaC_staticinit(L, -1);
         L->top.p--;
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_TAILCALL) {
@@ -3629,10 +3625,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           }
         }
        ret:  /* return from a Lua function */
-       #ifdef VMOB_LOG
-        fprintf(stderr, "[LVM] ret: ci=%p, ci->callstatus=%d, CIST_FRESH=%d, ci->previous=%p, L->ci=%p\n",
-                (void*)ci, ci->callstatus, CIST_FRESH, (void*)ci->previous, (void*)L->ci);
-                 #endif
         if (ci->callstatus & CIST_FRESH)
           return;  /* end this frame */
         else {
@@ -3842,8 +3834,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         ** Format: OP_NEWCLASS A Bx
         ** Function: R[A] := create new class with name K[Bx]
         */
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 1);
         updatebase(ci);
         TString *classname = tsvalue(&k[GETARG_Bx(i)]);
@@ -3883,12 +3874,15 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         /* Call inherit function */
         luaC_inherit(L, -2, -1);
         L->top.p -= 2;
+        updatebase(ci);
+        ra = RA(i);
         /* 计算继承后的 MRO */
         setobj2s(L, L->top.p, s2v(ra));
         L->top.p++;
         luaC_compute_mro(L, -1);
         L->top.p--;
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_MULTIINHERIT) {
@@ -3950,6 +3944,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           L->top.p--;
         }
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_GETSUPER) {
@@ -3993,6 +3988,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         luaC_setmethod(L, -2, key, -1);
         L->top.p -= 2;
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_CHECKOVERRIDE) {
@@ -4009,6 +4005,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         luaC_checkoverride(L, -1, key);
         L->top.p--;
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_SETSTATIC) {
@@ -4030,6 +4027,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         luaC_setstatic(L, -2, key, -1);
         L->top.p -= 2;
         updatetrap(ci);
+        updatebase(ci);
         vmbreak;
       }
       vmcase(OP_NEWOBJ) {
@@ -4226,8 +4224,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_CASE) {
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 2);
         updatebase(ci);
         StkId ra = RA(i);
@@ -4343,8 +4340,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_GETCMDS) {
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 1);
         updatebase(ci);
         StkId ra = RA(i);
@@ -4372,8 +4368,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_GETOPS) {
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 1);
         updatebase(ci);
         StkId ra = RA(i);
@@ -4477,8 +4472,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
          *
          * 完全不依赖任何全局函数或 Lua 表，纯 C 实现
          */
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 5);
         updatebase(ci);
         int b = GETARG_B(i);
@@ -4539,8 +4533,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_CHECKTYPE) {
-        while (L->top.p < base + cl->p->maxstacksize)
-             setnilvalue(s2v(L->top.p++));
+        L->top.p = ci->top.p;  /* set L->top to safe position above registers (do NOT overwrite registers) */
         luaD_checkstack(L, 2);
         updatebase(ci);
         StkId ra = RA(i);

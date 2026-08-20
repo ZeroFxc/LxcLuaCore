@@ -2432,6 +2432,12 @@ LUA_API void lua_getsuper (lua_State *L, int obj_idx, const char *name) {
   lua_unlock(L);
 }
 
+LUA_API void lua_compute_mro (lua_State *L, int class_idx) {
+  lua_lock(L);
+  luaC_compute_mro(L, class_idx);
+  lua_unlock(L);
+}
+
 
 static UpVal **getupvalref (lua_State *L, int fidx, int n, LClosure **pf) {
   static const UpVal *const nullup = NULL;

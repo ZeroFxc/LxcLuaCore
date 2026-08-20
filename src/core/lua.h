@@ -1708,6 +1708,7 @@ LUA_API void  (lua_setprop) (lua_State *L, int obj_idx, const char *key, int val
 LUA_API int   (lua_instanceof) (lua_State *L, int obj_idx, int class_idx);
 LUA_API void  (lua_implement) (lua_State *L, int class_idx, int interface_idx);
 LUA_API void  (lua_getsuper) (lua_State *L, int obj_idx, const char *name);
+LUA_API void  (lua_compute_mro) (lua_State *L, int class_idx);
 
 LUA_API int   (lua_spaceship) (lua_State *L, int idx1, int idx2);
 LUA_API int   (lua_is) (lua_State *L, int idx, const char *type_name);

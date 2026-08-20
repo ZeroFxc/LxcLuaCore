@@ -657,6 +657,7 @@ static void init_exp (expdesc *e, expkind k, int i) {
   e->k = k;
   e->u.info = i;
   e->nodiscard = 0;
+  e->is_pipe_self = 0;
 }
 
 
@@ -732,6 +733,7 @@ static void codestring (expdesc *e, TString *s) {
   e->f = e->t = NO_JUMP;
   e->k = VKSTR;
   e->u.strval = s;
+  e->is_pipe_self = 0;
 }
 
 
@@ -904,6 +906,7 @@ static void init_var (FuncState *fs, expdesc *e, int vidx) {
   e->u.var.vidx = vidx;
   e->u.var.ridx = getlocalvardesc(fs, vidx)->vd.ridx;
   e->nodiscard = getlocalvardesc(fs, vidx)->vd.nodiscard;
+  e->is_pipe_self = 0;
 }
 
 
@@ -11737,7 +11740,7 @@ static void funcstat (LexState *ls, int line, int isasync) {
 ** 说明：
 **   解析 function methodName(self, ...) ... end 形式的方法定义
 */
-static void class_method(LexState *ls, int class_reg, int is_static, int access_level, int is_override) {
+static int class_method(LexState *ls, int class_reg, int is_static, int access_level, int is_override) {
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
   expdesc method_exp, key_exp;
@@ -11787,14 +11790,17 @@ static void class_method(LexState *ls, int class_reg, int is_static, int access_
     luaK_codeABC(fs, OP_CHECKOVERRIDE, class_reg, key_k, 0);
   }
   
-  /* 根据静态性使用不同的操作码 */
+  /* 静态和公开实例方法由专用操作码写入；非公开方法直接写入选定的访问表。 */
   if (is_static) {
     luaK_codeABC(fs, OP_SETSTATIC, class_reg, key_k, method_exp.u.info);
-  } else {
+  } else if (access_level == ACCESS_PUBLIC) {
     luaK_codeABC(fs, OP_SETMETHOD, class_reg, key_k, method_exp.u.info);
+  } else {
+    luaK_codeABC(fs, OP_SETFIELD, class_exp.u.info, key_k, method_exp.u.info);
   }
   
   fs->freereg = class_reg + 1;  /* 释放临时寄存器 */
+  return strcmp(getstr(method_name), "init") == 0;
 }
 
 
@@ -12055,8 +12061,8 @@ static void class_final_method(LexState *ls, int class_reg, int is_static, int a
   /* 获取方法名 */
   TString *method_name = str_checkname(ls);
   
-  /* 生成方法体 */
-  body(ls, &method_exp, 0, line);
+  /* final 实例方法与普通实例方法一致，必须自动注入 self 参数。 */
+  body(ls, &method_exp, !is_static, line);
   
   /* 将方法存储到对应表中 */
   int methods_reg = fs->freereg;
@@ -12083,7 +12089,14 @@ static void class_final_method(LexState *ls, int class_reg, int is_static, int a
   luaK_exp2anyreg(fs, &method_exp);
   
   int key_k = luaK_stringK(fs, method_name);
-  luaK_codeABC(fs, OP_SETMETHOD, class_reg, key_k, method_exp.u.info);
+  /* final 方法仍需遵守静态性和访问级别，写入对应成员表。 */
+  if (is_static) {
+    luaK_codeABC(fs, OP_SETSTATIC, class_reg, key_k, method_exp.u.info);
+  } else if (access_level == ACCESS_PUBLIC) {
+    luaK_codeABC(fs, OP_SETMETHOD, class_reg, key_k, method_exp.u.info);
+  } else {
+    luaK_codeABC(fs, OP_SETFIELD, class_exp.u.info, key_k, method_exp.u.info);
+  }
   
   /* 将方法名添加到 __finals 表，标记为不可重写 */
   TString *finals_ts = luaS_newliteral(ls->L, "__finals");
@@ -12416,20 +12429,11 @@ static void classstat(LexState *ls, int line, int class_flags, int isexport, int
       class_final_method(ls, class_reg, is_static, access_level);
     }
     else if (ls->t.token == TK_FUNCTION) {
-      /* 普通方法定义 */
-      /* 前瞻方法名，检查是否是静态构造函数 static function init */
-      int is_static_init = 0;
-      if (is_static) {
-        int la = luaX_lookahead(ls);
-        if (la == TK_NAME) {
-          /* 需要进一步检查方法名是否是 init。这里先标记，在 class_method 后处理 */
-          is_static_init = 1;
-        }
-      }
-      class_method(ls, class_reg, is_static, access_level, is_override);
+      /* class_method 返回方法名是否精确为 init，避免把任意静态方法误标为静态构造。 */
+      int is_init = class_method(ls, class_reg, is_static, access_level, is_override);
       /* 静态构造函数：记录标记，等类存储到全局变量后再发射 OP_STATICINIT，
          使静态 init 内部能通过全局类名访问类自身 */
-      if (is_static_init) {
+      if (is_static && is_init) {
         has_static_init = 1;
       }
     }

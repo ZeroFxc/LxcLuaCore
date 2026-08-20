@@ -24,6 +24,7 @@
 #include "lstring.h"
 #include "ldebug.h"
 #include "lpromise.h"
+#include "lstruct.h"
 
 /*
 ** tcc support functions (Library API)
@@ -49,6 +50,10 @@ LUA_API void lua_tcc_prologue(lua_State *L, int nparams, int maxstack) {
     int nargs = lua_gettop(L);
     /* 变长参数 = 总参数 - 固定参数（固定参数从1开始，之后全是变长） */
     int nvarargs = (nargs > nparams) ? nargs - nparams : 0;
+    /* 确保栈足够大：需要 maxstack+1（vtab）+ EXTRA_STACK(5) 的空间。
+     * lua_settop 不会自动扩栈，必须先 lua_checkstack 否则 maxstack > LUA_MINSTACK(20)
+     * 时会写越界导致堆损坏。 */
+    lua_checkstack(L, maxstack + 6);
     lua_createtable(L, nvarargs, 0);
     if (nvarargs > 0) {
         /* vararg 起始位置: nparams + 1 (固定参数之后的第一个) */
@@ -57,6 +62,11 @@ LUA_API void lua_tcc_prologue(lua_State *L, int nparams, int maxstack) {
             lua_rawseti(L, -2, i + 1);
         }
     }
+    /* 将 nvarargs 存储在 vtab[0]，供 VARARG C==0 使用。
+     * 不能用 lua_rawlen，因为 nil 值会被 rawseti 从表中移除，
+     * 导致含 nil 的 vararg 长度计算错误。 */
+    lua_pushinteger(L, nvarargs);
+    lua_rawseti(L, -2, 0);
     int table_pos = lua_gettop(L);
     int target = maxstack + 1;
     if (table_pos > target) {
@@ -180,14 +190,42 @@ LUA_API void lua_tcc_mapset(lua_State *L) {
 **   - 目标是普通 Table → 走标准 Lua C API（lua_gettable 等）
 */
 
+/* 直接从栈索引获取 TValue 指针（不经过 lua_pushvalue，避免 struct 深拷贝） */
+static const TValue *tcc_index2value(lua_State *L, int idx) {
+    CallInfo *ci = L->ci;
+    if (idx > 0) {
+        StkId o = ci->func.p + idx;
+        if (o >= L->top.p) return &G(L)->nilvalue;
+        return s2v(o);
+    } else if (idx > LUA_REGISTRYINDEX) {  /* negative index (not pseudo) */
+        return s2v(L->top.p + idx);
+    } else if (idx == LUA_REGISTRYINDEX) {
+        return &G(L)->l_registry;
+    } else {  /* upvalue */
+        idx = LUA_REGISTRYINDEX - idx;
+        if (ttisCclosure(s2v(ci->func.p))) {
+            CClosure *func = clCvalue(s2v(ci->func.p));
+            return (idx <= func->nupvalues) ? &func->upvalue[idx-1] : &G(L)->nilvalue;
+        }
+        return &G(L)->nilvalue;
+    }
+}
+
+/* 原始拷贝 TValue（不触发 setobj 的 struct 深拷贝） */
+static void tcc_raw_copy(TValue *dest, const TValue *src) {
+    dest->value_ = src->value_;
+    dest->tt_ = src->tt_;
+}
+
 LUA_API int lua_tcc_gettable(lua_State *L, int idx) {
-    /* 入栈状态: ... t ... k (k 栈顶, idx 指向 t) */
-    lua_pushvalue(L, idx); /* -> ... k t_copy (顶) */
-    if (ttismap(s2v(L->top.p - 1))) {
-        Map *m = mapvalue(s2v(L->top.p - 1));
-        const TValue *key = s2v(L->top.p - 2); /* k */
+    /* 入栈状态: ... t ... k (k 栈顶, idx 指向 t)
+     * 直接从 idx 访问 TValue（避免 struct 深拷贝），消费 k，push result */
+    const TValue *t = tcc_index2value(L, idx);
+    if (ttismap(t)) {
+        Map *m = mapvalue(t);
+        const TValue *key = s2v(L->top.p - 1);
         const TValue *val = luaM_getval(m, key);
-        L->top.p -= 2; /* pop k + t_copy */
+        L->top.p--; /* pop k */
         if (val != NULL) {
             setobj2s(L, L->top.p, val);
         } else {
@@ -196,34 +234,62 @@ LUA_API int lua_tcc_gettable(lua_State *L, int idx) {
         L->top.p++;
         return ttype(s2v(L->top.p - 1));
     }
-    lua_pop(L, 1);
+    if (ttisstruct(t)) {
+        TValue t_local;
+        tcc_raw_copy(&t_local, t);
+        const TValue *key = s2v(L->top.p - 1);
+        TValue key_local;
+        tcc_raw_copy(&key_local, key);
+        L->top.p--; /* pop k */
+        StackValue result_sv;
+        setnilvalue(s2v(&result_sv));
+        luaS_structindex(L, &t_local, &key_local, &result_sv);
+        setobj2s(L, L->top.p, s2v(&result_sv));
+        L->top.p++;
+        return ttype(s2v(L->top.p - 1));
+    }
+    /* 默认: table 走标准 lua_gettable（消费 k，push result） */
     return lua_gettable(L, idx);
 }
 
 LUA_API void lua_tcc_settable(lua_State *L, int idx) {
-    /* 入栈状态: ... t ... k v (v 栈顶, idx 指向 t) */
-    lua_pushvalue(L, idx); /* -> ... k v t_copy (顶) */
-    if (ttismap(s2v(L->top.p - 1))) {
-        Map *m = mapvalue(s2v(L->top.p - 1));
-        const TValue *key = s2v(L->top.p - 3); /* k */
-        const TValue *val = s2v(L->top.p - 2); /* v */
+    /* 入栈状态: ... t ... k v (v 栈顶, k 次顶, idx 指向 t)
+     * 直接从 idx 访问 TValue（避免 struct 深拷贝），消费 k+v */
+    const TValue *t = tcc_index2value(L, idx);
+    if (ttismap(t)) {
+        Map *m = mapvalue(t);
+        const TValue *val = s2v(L->top.p - 1); /* v */
+        const TValue *key = s2v(L->top.p - 2); /* k */
         luaM_setval(L, m, key, val);
-        L->top.p -= 3; /* pop k + v + t_copy */
+        L->top.p -= 2; /* pop k + v */
         return;
     }
-    lua_pop(L, 1);
+    if (ttisstruct(t)) {
+        TValue t_local;
+        tcc_raw_copy(&t_local, t);
+        const TValue *val = s2v(L->top.p - 1);
+        const TValue *key = s2v(L->top.p - 2);
+        TValue val_local, key_local;
+        tcc_raw_copy(&val_local, val);
+        tcc_raw_copy(&key_local, key);
+        L->top.p -= 2; /* pop k + v */
+        luaS_structnewindex(L, &t_local, &key_local, &val_local);
+        return;
+    }
+    /* 默认: table 走标准 lua_settable（消费 k+v） */
     lua_settable(L, idx);
 }
 
+
 LUA_API int lua_tcc_getfield(lua_State *L, int idx, const char *k) {
-    /* 入栈状态: ... t ... (idx 指向 t); 函数要压入 t[k] */
-    lua_pushvalue(L, idx); /* -> ... t_copy (顶) */
-    if (ttismap(s2v(L->top.p - 1))) {
-        Map *m = mapvalue(s2v(L->top.p - 1));
+    /* 入栈状态: ... t ... (idx 指向 t); 函数要压入 t[k]
+     * 直接从 idx 访问 TValue，不经过 lua_pushvalue（避免 struct 深拷贝） */
+    const TValue *t = tcc_index2value(L, idx);
+    if (ttismap(t)) {
+        Map *m = mapvalue(t);
         TValue key;
         setsvalue(L, &key, luaS_new(L, k));
         const TValue *val = luaM_getval(m, &key);
-        L->top.p--; /* pop t_copy */
         if (val != NULL) {
             setobj2s(L, L->top.p, val);
         } else {
@@ -232,23 +298,51 @@ LUA_API int lua_tcc_getfield(lua_State *L, int idx, const char *k) {
         L->top.p++;
         return ttype(s2v(L->top.p - 1));
     }
-    lua_pop(L, 1);
-    return lua_getfield(L, idx, k);
+    if (ttisstruct(t)) {
+        /* struct: 原始拷贝 TValue（保留同一 Struct 指针，不深拷贝） */
+        TValue t_local;
+        tcc_raw_copy(&t_local, t);
+        TValue key;
+        setsvalue(L, &key, luaS_new(L, k));
+        StackValue result_sv;
+        setnilvalue(s2v(&result_sv));
+        luaS_structindex(L, &t_local, &key, &result_sv);
+        setobj2s(L, L->top.p, s2v(&result_sv));
+        L->top.p++;
+        return ttype(s2v(L->top.p - 1));
+    }
+    /* 默认: table 等走标准 lua_getfield */
+    lua_getfield(L, idx, k);
+    return ttype(s2v(L->top.p - 1));
 }
 
 LUA_API void lua_tcc_setfield(lua_State *L, int idx, const char *k) {
-    /* 入栈状态: ... t ... v (v 栈顶, idx 指向 t) */
-    lua_pushvalue(L, idx); /* -> ... v t_copy (顶) */
-    if (ttismap(s2v(L->top.p - 1))) {
-        Map *m = mapvalue(s2v(L->top.p - 1));
-        const TValue *val = s2v(L->top.p - 2); /* v */
+    /* 入栈状态: ... t ... v (v 栈顶, idx 指向 t)
+     * 直接从 idx 访问 TValue，不经过 lua_pushvalue（避免 struct 深拷贝）
+     * 消费栈顶 v，设置 t[k] = v */
+    const TValue *t = tcc_index2value(L, idx);
+    if (ttismap(t)) {
+        Map *m = mapvalue(t);
+        const TValue *val = s2v(L->top.p - 1); /* v */
         TValue key;
         setsvalue(L, &key, luaS_new(L, k));
         luaM_setval(L, m, &key, val);
-        L->top.p -= 2; /* pop v + t_copy */
+        L->top.p--; /* pop v */
         return;
     }
-    lua_pop(L, 1);
+    if (ttisstruct(t)) {
+        /* struct: 原始拷贝 TValue（保留同一 Struct 指针，不深拷贝） */
+        TValue t_local, val_local;
+        tcc_raw_copy(&t_local, t);
+        const TValue *val = s2v(L->top.p - 1);
+        tcc_raw_copy(&val_local, val);
+        L->top.p--; /* pop v */
+        TValue key;
+        setsvalue(L, &key, luaS_new(L, k));
+        luaS_structnewindex(L, &t_local, &key, &val_local);
+        return;
+    }
+    /* 默认: table 等走标准 lua_setfield（它会消费栈顶 v） */
     lua_setfield(L, idx, k);
 }
 
@@ -620,6 +714,18 @@ static void emit_quoted_string(luaL_Buffer *B, const char *s, size_t len) {
             add_fmt(B, "\\%c", c == '\n' ? 'n' : (c == '\r' ? 'r' : (c == '\t' ? 't' : c)));
         } else if (c < 32 || c > 126) {
             add_fmt(B, "\\x%02x", c);
+            /* C 的 \x hex 转义是贪婪的：会吞掉后面所有连续 hex 数字。
+             * \xbf 后跟 '1' 会被解析成 \xbf1 = 0xBF1，超出 0xFF 上限。
+             * 修复：如果下一个字符是 hex 数字 (0-9,a-f,A-F)，
+             * 用 C 字符串拼接 "\" \"" 断开，编译器会自动拼接相邻字符串字面量。 */
+            if (i + 1 < len) {
+                unsigned char next = (unsigned char)s[i + 1];
+                if ((next >= '0' && next <= '9') ||
+                    (next >= 'a' && next <= 'f') ||
+                    (next >= 'A' && next <= 'F')) {
+                    add_fmt(B, "\" \"");
+                }
+            }
         } else {
             luaL_addchar(B, c);
         }
@@ -698,6 +804,107 @@ static int is_upval_modified(Proto *p, int upval_idx) {
     return 0;
 }
 
+/* 检查父 proto 中的 instack slot 是否被多个子闭包捕获，
+ * 且其中任一子闭包修改了该 upvalue。
+ * 如果是，则所有捕获该 slot 的闭包都需要 boxing，
+ * 因为 C 闭包创建时复制值，不共享引用。
+ * 这是 C 闭包与 Lua 闭包的核心差异：Lua 闭包通过 upvalue 引用共享变量，
+ * C 闭包创建时复制值，后续修改不可见。当多个闭包共享同一变量且任一修改时，
+ * 必须用 box table 共享引用。
+ */
+static int is_slot_shared_modified(Proto *p, int slot) {
+    int captured_count = 0;
+    int any_modified = 0;
+    for (int i = 0; i < p->sizecode; i++) {
+        Instruction ci = p->code[i];
+        OpCode op = GET_OPCODE(ci);
+        if (op == OP_CLOSURE || op == OP_NEWCONCEPT) {
+            int bx = GETARG_Bx(ci);
+            if (bx >= 0 && bx < p->sizep) {
+                Proto *child = p->p[bx];
+                for (int k = 0; k < child->sizeupvalues; k++) {
+                    Upvaldesc *uv = &child->upvalues[k];
+                    if (uv->instack && uv->idx == slot) {
+                        captured_count++;
+                        if (is_upval_modified(child, k)) {
+                            any_modified = 1;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return (captured_count > 1 && any_modified);
+}
+
+/* 检查父函数中指定 PC 之后是否有指令写入给定栈槽位。
+ * 这用于判断 CLOSURE 创建的 C 闭包的 instack upvalue 是否需要在创建时 box：
+ * 如果槽位在 CLOSURE 之后被赋值（MOVE/LOADI/CALL 结果等），
+ * 则 C 闭包在创建时复制的值会过时，必须用 box table 共享引用。
+ */
+static int is_slot_written_after(Proto *p, int slot, int after_pc) {
+    for (int i = after_pc + 1; i < p->sizecode; i++) {
+        Instruction ci = p->code[i];
+        OpCode op = GET_OPCODE(ci);
+        int a = GETARG_A(ci);
+        /* 排除 A 不是目标寄存器的指令 */
+        switch (op) {
+            case OP_SETUPVAL:
+            case OP_SETTABLE:
+            case OP_SETI:
+            case OP_SETFIELD:
+            case OP_SETLIST:
+            case OP_RETURN:
+            case OP_RETURN0:
+            case OP_RETURN1:
+            case OP_TAILCALL:
+            case OP_TEST:
+            case OP_JMP:
+            case OP_EQ:
+            case OP_LT:
+            case OP_LE:
+            case OP_EQI:
+            case OP_LTI:
+            case OP_LEI:
+            case OP_GTI:
+            case OP_GEI:
+            case OP_MMBIN:
+            case OP_MMBINI:
+            case OP_MMBINK:
+            case OP_VARARGPREP:
+            case OP_EXTRAARG:  /* EXTRAARG 是前一指令的扩展参数，A 字段不是寄存器 */
+                continue;
+            case OP_CLOSE:
+                /* CLOSE R[A] 关闭 slot >= A 的所有 upvalue，标志作用域结束。
+                 * 若 slot >= A，该 slot 的变量已离开作用域，
+                 * 后续对同编号 slot 的写入是不同变量的 slot 复用，不应计为 "后续写入"。 */
+                if (slot >= a) return 0;
+                continue;
+            default:
+                break;
+        }
+        /* 检查 A 是否匹配（对于 SELF 还要检查 A+1） */
+        if (a == slot) return 1;
+        if (op == OP_SELF && a + 1 == slot) return 1;
+        /* LOADNIL 写入 R[A..A+B] */
+        if (op == OP_LOADNIL) {
+            int b = GETARG_B(ci);
+            if (slot >= a && slot <= a + b) return 1;
+        }
+        /* FORLOOP 写入 R[A] 和 R[A+3] */
+        if (op == OP_FORLOOP) {
+            if (a == slot || a + 3 == slot) return 1;
+        }
+        /* TFORCALL 写入 R[A+3..] */
+        if (op == OP_TFORCALL) {
+            int c = GETARG_C(ci);
+            if (slot >= a + 3 && slot <= a + 3 + c - 1) return 1;
+        }
+    }
+    return 0;
+}
+
 /* 读取局部变量（自动处理 boxed 变量） */
 static void emit_read_local(luaL_Buffer *B, int slot, int *boxed_slots, unsigned int *obf_seed, int obfuscate) {
     if (boxed_slots && boxed_slots[slot]) {
@@ -716,7 +923,7 @@ static void emit_write_local(luaL_Buffer *B, int slot, int *boxed_slots, unsigne
     }
 }
 
-static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate, int *boxed_slots, int *boxed_upvals) {
+static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, ProtoInfo *protos, int proto_count, int use_pure_c, int str_encrypt, int seed, int obfuscate, int *boxed_slots, int *boxed_upvals, int func_id, int *call_counter, int state_reg) {
     OpCode op = GET_OPCODE(i);
     int a = GETARG_A(i);
 
@@ -725,6 +932,7 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
     add_fmt(B, "    %s: /* %s */\n", label_name, opnames[op]);
 
     unsigned int obf_seed = (unsigned int)seed + pc;
+
 
     switch (op) {
         case OP_MOVE: {
@@ -778,14 +986,23 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         }
         case OP_LOADI: {
             int sbx = GETARG_sBx(i);
-            add_fmt(B, "    lua_pushinteger(L, %d);\n", sbx);
-            emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            if (state_reg >= 0 && a == state_reg) {
+                /* Dispatcher state: use C local variable instead of Lua stack slot */
+                add_fmt(B, "    __dispatch_state = %s;\n", obf_int(sbx, &obf_seed, obfuscate));
+            } else {
+                add_fmt(B, "    lua_pushinteger(L, %d);\n", sbx);
+                emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            }
             break;
         }
          case OP_LOADF: {
             int sbx = GETARG_sBx(i);
-            add_fmt(B, "    lua_pushnumber(L, (lua_Number)%d);\n", sbx);
-            emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            if (state_reg >= 0 && a == state_reg) {
+                add_fmt(B, "    __dispatch_state = %s;\n", obf_int(sbx, &obf_seed, obfuscate));
+            } else {
+                add_fmt(B, "    lua_pushnumber(L, (lua_Number)%d);\n", sbx);
+                emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            }
             break;
         }
         case OP_LOADNIL: {
@@ -1249,22 +1466,55 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int nargs = (b == 0) ? -1 : (b - 1); // b=0 means top-A
             int nresults = (c == 0) ? -1 : (c - 1);
 
+            /* yieldable = 固定参数 + 固定结果 → 可以使用 lua_callk + resume-PC */
+            int is_yieldable = (b != 0 && c != 0);
+
             add_fmt(B, "    {\n");
             if (b != 0) {
+                /* 对于 vararg 函数，B!=0 CALL 也需要管理 vtab：
+                 * lua_settop 会缩小栈，vtab 可能被丢弃。
+                 * 在 call 前 ref 暂存 vtab，call 后恢复。 */
+                if (p->is_vararg) {
+                    add_fmt(B, "    int __vtab_save = -1;\n");
+                    add_fmt(B, "    if (vtab_idx <= lua_gettop(L)) { lua_pushvalue(L, vtab_idx); __vtab_save = luaL_ref(L, LUA_REGISTRYINDEX); }\n");
+                }
                 if (c == 0) add_fmt(B, "    int s = lua_gettop(L);\n");
                 add_fmt(B, "    lua_tcc_push_args(L, %s, %s); /* func + args */\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nargs + 1, &obf_seed, obfuscate));
-                add_fmt(B, "    lua_call(L, %s, %s);\n", obf_int(nargs, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate));
-                if (c != 0) {
-                     add_fmt(B, "    lua_tcc_store_results(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate));
+                if (is_yieldable) {
+                    (*call_counter)++;
+                    int cid = *call_counter;
+                    /* 使用 lua_callk 带续体；ctx=cid 传给 continuation。
+                     * 注意：不能在 callk 前设 tcc_rpc_N=cid，因为 tcc_rpc_N 是 static 变量，
+                     * 递归调用同一 function_N 时新帧会误判为 resume 并 goto 到错误位置。
+                     * continuation tcc_cont_N 在 yield 恢复时才设 tcc_rpc_N=ctx。 */
+                    add_fmt(B, "    lua_callk(L, %s, %s, %d, tcc_cont_%d);\n", obf_int(nargs, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate), cid, func_id);
+                    /* 恢复点：yield 后续体函数会 goto 到这里 */
+                    add_fmt(B, "    __rpc_%d_%d:;\n", func_id, cid);
+                    /* 在 resume 点之后清零，确保后续递归调用不会看到残留值 */
+                    add_fmt(B, "    tcc_rpc_%d = 0;\n", func_id);
+                    add_fmt(B, "    lua_tcc_store_results(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate));
                 } else {
-                     add_fmt(B, "    {\n");
-                     add_fmt(B, "        int nres = lua_gettop(L) - s;\n");
-                     add_fmt(B, "        for (int k = 0; k < nres; k++) {\n");
-                     add_fmt(B, "            lua_pushvalue(L, s + 1 + k);\n");
-                     add_fmt(B, "            lua_replace(L, %s + k);\n", obf_int(a + 1, &obf_seed, obfuscate));
-                     add_fmt(B, "        }\n");
-                     add_fmt(B, "        lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
-                     add_fmt(B, "    }\n");
+                    add_fmt(B, "    lua_call(L, %s, %s);\n", obf_int(nargs, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate));
+                    if (c != 0) {
+                         add_fmt(B, "    lua_tcc_store_results(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nresults, &obf_seed, obfuscate));
+                    } else {
+                         add_fmt(B, "    {\n");
+                         add_fmt(B, "        int nres = lua_gettop(L) - s;\n");
+                         add_fmt(B, "        for (int k = 0; k < nres; k++) {\n");
+                         add_fmt(B, "            lua_pushvalue(L, s + 1 + k);\n");
+                         add_fmt(B, "            lua_replace(L, %s + k);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                         add_fmt(B, "        }\n");
+                         add_fmt(B, "        lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
+                         add_fmt(B, "    }\n");
+                    }
+                }
+                /* vararg 函数 B!=0 CALL 后恢复 vtab */
+                if (p->is_vararg) {
+                    if (c != 0) {
+                        add_fmt(B, "    lua_settop(L, %s);\n", obf_int(p->maxstacksize, &obf_seed, obfuscate));
+                    }
+                    add_fmt(B, "    if (__vtab_save >= 0) { lua_rawgeti(L, LUA_REGISTRYINDEX, __vtab_save); luaL_unref(L, LUA_REGISTRYINDEX, __vtab_save); vtab_idx = lua_gettop(L); }\n");
+                    add_fmt(B, "    else { lua_newtable(L); lua_pushinteger(L, 0); lua_rawseti(L, -2, 0); vtab_idx = lua_gettop(L); }\n");
                 }
             } else {
                  /* Variable number of arguments from stack (B=0) */
@@ -1302,12 +1552,13 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
                          add_fmt(B, "                lua_pushvalue(L, __stack_before + 1 + __k);\n");
                          add_fmt(B, "                lua_replace(L, %s + __k);\n", obf_int(a + 1, &obf_seed, obfuscate));
                          add_fmt(B, "            }\n");
-                         /* 修复：先 settop(maxstacksize+nres)，再 rawgeti push vtab，用 lua_insert 插入到 maxstacksize+1 */
-                         add_fmt(B, "            lua_settop(L, %s + nres);\n", obf_int(p->maxstacksize, &obf_seed, obfuscate));
-                         add_fmt(B, "            lua_rawgeti(L, LUA_REGISTRYINDEX, __vtab_ref);\n");
-                         add_fmt(B, "            luaL_unref(L, LUA_REGISTRYINDEX, __vtab_ref);\n");
-                         add_fmt(B, "            lua_insert(L, %s);\n", obf_int(p->maxstacksize + 1, &obf_seed, obfuscate));
-                         add_fmt(B, "            vtab_idx = %s;\n", obf_int(p->maxstacksize + 1, &obf_seed, obfuscate));
+                         /* 修复：settop 到 a+nres（不含旧 func slot），push vtab 到栈顶。
+                          * 不能用 maxstacksize：nres=0 时旧 func 值残留在 a+1 slot，被下一个 CALL 当作参数。
+                          * a+nres 正好截断到 results 末尾，旧 func 被弹出。后续指令 push+replace 自动扩展栈。 */
+                         add_fmt(B, "            lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
+                        add_fmt(B, "            lua_rawgeti(L, LUA_REGISTRYINDEX, __vtab_ref);\n");
+                        add_fmt(B, "            luaL_unref(L, LUA_REGISTRYINDEX, __vtab_ref);\n");
+                        add_fmt(B, "            vtab_idx = lua_gettop(L);\n");
                          add_fmt(B, "        }\n");
                      }
                      add_fmt(B, "        __frame_handled = 1;\n");
@@ -1348,11 +1599,12 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
                          add_fmt(B, "                lua_pushvalue(L, __stack_before + 1 + __k);\n");
                          add_fmt(B, "                lua_replace(L, %s + __k);\n", obf_int(a + 1, &obf_seed, obfuscate));
                          add_fmt(B, "            }\n");
-                         /* 修复：先 settop(maxstacksize) 截断，再用 __r 恢复 vtab 到 maxstacksize+1 = 栈顶，避免 lua_replace 越界 */
-                         add_fmt(B, "            lua_settop(L, %s);\n", obf_int(p->maxstacksize, &obf_seed, obfuscate));
-                         add_fmt(B, "            lua_rawgeti(L, LUA_REGISTRYINDEX, __r); /* vtab push 到栈顶 = maxstacksize+1 */\n");
+                         /* 修复：settop 到 a+nres，截断旧 func/多余值；不能用 max(a+nres, maxstacksize)，
+                          * 否则 nres=0 时旧 func 残留被下一个 CALL 当参数 */
+                         add_fmt(B, "            lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
+                         add_fmt(B, "            lua_rawgeti(L, LUA_REGISTRYINDEX, __r);\n");
                          add_fmt(B, "            luaL_unref(L, LUA_REGISTRYINDEX, __r);\n");
-                         add_fmt(B, "            vtab_idx = %s;\n", obf_int(p->maxstacksize + 1, &obf_seed, obfuscate));
+                         add_fmt(B, "            vtab_idx = lua_gettop(L);\n");
                          add_fmt(B, "        } else {\n");
                          add_fmt(B, "            for (int __k = 0; __k < nres; __k++) {\n");
                          add_fmt(B, "                lua_pushvalue(L, __stack_before + 1 + __k);\n");
@@ -1400,38 +1652,56 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int nargs = (b == 0) ? -1 : (b - 1);
 
             if (b != 0) {
-                add_fmt(B, "    lua_tcc_push_args(L, %s, %s); /* func + args */\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nargs + 1, &obf_seed, obfuscate));
-                add_fmt(B, "    lua_call(L, %s, %s);\n", obf_int(nargs, &obf_seed, obfuscate), obf_int(LUA_MULTRET, &obf_seed, obfuscate));
-                add_fmt(B, "    return lua_gettop(L) - %s;\n", obf_int(p->maxstacksize + (p->is_vararg ? 1 : 0), &obf_seed, obfuscate));
+                 add_fmt(B, "    { int __sb = lua_gettop(L);\n");
+                 add_fmt(B, "    lua_tcc_push_args(L, %s, %s); /* func + args */\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(nargs + 1, &obf_seed, obfuscate));
+                 add_fmt(B, "    lua_call(L, %s, %s);\n", obf_int(nargs, &obf_seed, obfuscate), obf_int(LUA_MULTRET, &obf_seed, obfuscate));
+                 add_fmt(B, "    { int nres = lua_gettop(L) - __sb;\n");
+                 add_fmt(B, "        for (int __k = 0; __k < nres; __k++) {\n");
+                 add_fmt(B, "            lua_pushvalue(L, __sb + 1 + __k);\n");
+                 add_fmt(B, "            lua_replace(L, %s + __k);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                 add_fmt(B, "        }\n");
+                 add_fmt(B, "        lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
+                 add_fmt(B, "        return nres;\n");
+                 add_fmt(B, "    } }\n");
             } else {
                  /* Variable number of arguments from stack (B=0) */
                  /* 先把寄存器 L[a+1..] 上的 func + args push 到栈顶；注意 vtab 在栈顶时要先暂存 */
-                 add_fmt(B, "    { int __cnt, __n;\n");
+                 add_fmt(B, "    { int __cnt, __n, __stack_before;\n");
                  if (p->is_vararg) {
                      add_fmt(B, "        if (vtab_idx == lua_gettop(L)) {\n");
                      add_fmt(B, "            int __r = luaL_ref(L, LUA_REGISTRYINDEX); /* pop vtab */\n");
                      add_fmt(B, "            __cnt = lua_gettop(L) - %s + 1;\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "            __n = __cnt - 1;\n");
+                     add_fmt(B, "            __stack_before = lua_gettop(L);\n");
                      add_fmt(B, "            lua_tcc_push_args(L, %s, __cnt);\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "            lua_call(L, __n, LUA_MULTRET);\n");
-                     add_fmt(B, "            lua_rawgeti(L, LUA_REGISTRYINDEX, __r);\n");
                      add_fmt(B, "            luaL_unref(L, LUA_REGISTRYINDEX, __r);\n");
                      add_fmt(B, "            (void)__r;\n");
                      add_fmt(B, "        } else {\n");
                      add_fmt(B, "            __cnt = lua_gettop(L) - %s + 1;\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "            __n = __cnt - 1;\n");
+                     add_fmt(B, "            __stack_before = lua_gettop(L);\n");
                      add_fmt(B, "            lua_tcc_push_args(L, %s, __cnt);\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "            lua_call(L, __n, LUA_MULTRET);\n");
                      add_fmt(B, "        }\n");
                  } else {
                      add_fmt(B, "        __cnt = lua_gettop(L) - %s + 1;\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "        __n = __cnt - 1;\n");
+                     add_fmt(B, "        __stack_before = lua_gettop(L);\n");
                      add_fmt(B, "        lua_tcc_push_args(L, %s, __cnt);\n", obf_int(a + 1, &obf_seed, obfuscate));
                      add_fmt(B, "        lua_call(L, __n, LUA_MULTRET);\n");
                  }
+                 /* 把返回值从栈顶搬回 R[A+1..]，返回正确的值数量 */
+                 add_fmt(B, "    { int nres = lua_gettop(L) - __stack_before;\n");
+                 add_fmt(B, "        for (int __k = 0; __k < nres; __k++) {\n");
+                 add_fmt(B, "            lua_pushvalue(L, __stack_before + 1 + __k);\n");
+                 add_fmt(B, "            lua_replace(L, %s + __k);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                 add_fmt(B, "        }\n");
+                 add_fmt(B, "        lua_settop(L, %s + nres);\n", obf_int(a, &obf_seed, obfuscate));
+                 add_fmt(B, "        return nres;\n");
                  add_fmt(B, "    }\n");
-                 add_fmt(B, "    return lua_gettop(L) - %s;\n", obf_int(a, &obf_seed, obfuscate));
-            }
+                 add_fmt(B, "    }\n");
+             }
             break;
         }
 
@@ -1458,7 +1728,7 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             break;
 
         case OP_RETURN1:
-            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
             add_fmt(B, "    return %s;\n", obf_int(1, &obf_seed, obfuscate));
             break;
 
@@ -1471,23 +1741,45 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
                  Upvaldesc *uv = &child->upvalues[k];
                  if (uv->instack) {
                      int slot = uv->idx + 1;
-                     if (is_upval_modified(child, k)) {
-                         if (boxed_slots && boxed_slots[slot]) {
-                             /* 已被其他闭包 boxed，直接推送 box table */
-                             add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, already boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
-                         } else {
-                             /* 创建 box table 实现共享引用 */
-                             add_fmt(B, "    {\n");
-                             add_fmt(B, "        lua_createtable(L, 0, 1);\n");
-                             add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
-                             add_fmt(B, "        lua_setfield(L, -2, \"_v\");\n");
-                             add_fmt(B, "        lua_replace(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
-                             add_fmt(B, "    }\n");
-                             /* 推送 box table 作为闭包的 upvalue */
-                             add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
-                             /* 标记该 slot 已被 boxed */
-                             if (boxed_slots) boxed_slots[slot] = 1;
+                     /* 判断是否需要 box：
+                      * 1. is_upval_modified: 子函数通过 SETUPVAL 修改该 upvalue
+                      * 2. is_slot_written_after: 父函数在 CLOSURE 之后写入该栈槽位
+                      *    （C 闭包在创建时复制值，后续赋值不可见，必须 box 共享引用）
+                      */
+                      int need_box = is_upval_modified(child, k) || is_slot_written_after(p, uv->idx, pc) || is_slot_shared_modified(p, uv->idx);
+                     if (need_box) {
+                         /* 同步更新子 proto 的 boxed_upvals，使子函数的 GETUPVAL/SETUPVAL 知道解 box */
+                         if (protos[child_id].boxed_upvals) {
+                             protos[child_id].boxed_upvals[k] = 1;
                          }
+                          if (boxed_slots && boxed_slots[slot]) {
+                              /* 已被其他闭包 boxed，直接推送 box table */
+                              add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, already boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
+                          } else {
+                              /* 创建 box table 实现共享引用。
+                               * 注意：CLOSURE 可能在循环中被多次执行，
+                               * 对于跨迭代持久的变量（如循环外的 local），
+                               * 只应在首次执行时创建 box，后续迭代复用已有 box。
+                               * 通过运行时检查 lua_istable + _v 字段来判断是否已 boxed。*/
+                              add_fmt(B, "    {\n");
+                              add_fmt(B, "        int __already_boxed = 0;\n");
+                              add_fmt(B, "        if (lua_istable(L, %s)) {\n", obf_int(slot, &obf_seed, obfuscate));
+                              add_fmt(B, "            lua_getfield(L, %s, \"_v\");\n", obf_int(slot, &obf_seed, obfuscate));
+                              add_fmt(B, "            if (!lua_isnil(L, -1)) __already_boxed = 1;\n");
+                              add_fmt(B, "            lua_pop(L, 1);\n");
+                              add_fmt(B, "        }\n");
+                              add_fmt(B, "        if (!__already_boxed) {\n");
+                              add_fmt(B, "            lua_createtable(L, 0, 1);\n");
+                              add_fmt(B, "            lua_pushvalue(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
+                              add_fmt(B, "            lua_setfield(L, -2, \"_v\");\n");
+                              add_fmt(B, "            lua_replace(L, %s);\n", obf_int(slot, &obf_seed, obfuscate));
+                              add_fmt(B, "        }\n");
+                              add_fmt(B, "    }\n");
+                              /* 推送 box table 作为闭包的 upvalue */
+                              add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local, boxed) */\n", obf_int(slot, &obf_seed, obfuscate), k);
+                              /* 标记该 slot 已被 boxed */
+                              if (boxed_slots) boxed_slots[slot] = 1;
+                          }
                      } else {
                          add_fmt(B, "    lua_pushvalue(L, %s); /* upval %d (local) */\n", obf_int(slot, &obf_seed, obfuscate), k);
                      }
@@ -1498,18 +1790,26 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
                          if (boxed_upvals && boxed_upvals[upidx]) {
                              /* 已在当前函数包装过 */
                              add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s)); /* upval %d (upval, already boxed) */\n", obf_int(upidx + 1, &obf_seed, obfuscate), k);
-                         } else {
-                             add_fmt(B, "    {\n");
-                             add_fmt(B, "        lua_createtable(L, 0, 1);\n");
-                             add_fmt(B, "        lua_pushvalue(L, lua_upvalueindex(%s));\n", obf_int(upidx + 1, &obf_seed, obfuscate));
-                             add_fmt(B, "        lua_setfield(L, -2, \"_v\");\n");
-                             /* 把 box table 替换回当前函数的 upvalue upidx+1 */
-                             add_fmt(B, "        lua_setupvalue(L, 0, %s);\n", obf_int(upidx + 1, &obf_seed, obfuscate));
-                             add_fmt(B, "    }\n");
-                             /* 再次推送 boxed upvalue 给子闭包 */
-                             add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s)); /* upval %d (upval, boxed) */\n", obf_int(upidx + 1, &obf_seed, obfuscate), k);
-                             if (boxed_upvals) boxed_upvals[upidx] = 1;
-                         }
+                          } else {
+                              /* 创建 box table 实现共享引用（运行时检查避免循环中重复装箱）*/
+                              add_fmt(B, "    {\n");
+                              add_fmt(B, "        int __already_boxed = 0;\n");
+                              add_fmt(B, "        if (lua_istable(L, lua_upvalueindex(%s))) {\n", obf_int(upidx + 1, &obf_seed, obfuscate));
+                              add_fmt(B, "            lua_getfield(L, lua_upvalueindex(%s), \"_v\");\n", obf_int(upidx + 1, &obf_seed, obfuscate));
+                              add_fmt(B, "            if (!lua_isnil(L, -1)) __already_boxed = 1;\n");
+                              add_fmt(B, "            lua_pop(L, 1);\n");
+                              add_fmt(B, "        }\n");
+                              add_fmt(B, "        if (!__already_boxed) {\n");
+                              add_fmt(B, "            lua_createtable(L, 0, 1);\n");
+                              add_fmt(B, "            lua_pushvalue(L, lua_upvalueindex(%s));\n", obf_int(upidx + 1, &obf_seed, obfuscate));
+                              add_fmt(B, "            lua_setfield(L, -2, \"_v\");\n");
+                              add_fmt(B, "            lua_setupvalue(L, 0, %s);\n", obf_int(upidx + 1, &obf_seed, obfuscate));
+                              add_fmt(B, "        }\n");
+                              add_fmt(B, "    }\n");
+                              /* 再次推送 boxed upvalue 给子闭包 */
+                              add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s)); /* upval %d (upval, boxed) */\n", obf_int(upidx + 1, &obf_seed, obfuscate), k);
+                              if (boxed_upvals) boxed_upvals[upidx] = 1;
+                          }
                      } else {
                          add_fmt(B, "    lua_pushvalue(L, lua_upvalueindex(%s)); /* upval %d (upval) */\n", obf_int(upidx + 1, &obf_seed, obfuscate), k);
                      }
@@ -1572,8 +1872,8 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
             add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate);
             add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPEQ, &obf_seed, obfuscate));
             add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
             add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
@@ -1587,8 +1887,8 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
             add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate);
             add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLT, &obf_seed, obfuscate));
             add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
             add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
@@ -1602,8 +1902,8 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
             add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+            emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate);
             add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLE, &obf_seed, obfuscate));
             add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
             add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
@@ -1617,7 +1917,7 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
             add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
             emit_loadk(B, p, b, str_encrypt, seed, obfuscate);
             add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPEQ, &obf_seed, obfuscate));
             add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
@@ -1631,13 +1931,18 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int k = GETARG_k(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
-            add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPEQ, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
-            add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
-            add_fmt(B, "    }\n");
+            if (state_reg >= 0 && a == state_reg) {
+                /* Dispatcher state: use C local variable */
+                add_fmt(B, "    if ((__dispatch_state == %s) != %s) goto %s;\n", obf_int(sb, &obf_seed, obfuscate), obf_int(k, &obf_seed, obfuscate), target_label);
+            } else {
+                add_fmt(B, "    {\n");
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+                add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
+                add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPEQ, &obf_seed, obfuscate));
+                add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
+                add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
+                add_fmt(B, "    }\n");
+            }
             break;
         }
 
@@ -1646,13 +1951,17 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int k = GETARG_k(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
-            add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLT, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
-            add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
-            add_fmt(B, "    }\n");
+            if (state_reg >= 0 && a == state_reg) {
+                add_fmt(B, "    if ((__dispatch_state < %s) != %s) goto %s;\n", obf_int(sb, &obf_seed, obfuscate), obf_int(k, &obf_seed, obfuscate), target_label);
+            } else {
+                add_fmt(B, "    {\n");
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+                add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
+                add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLT, &obf_seed, obfuscate));
+                add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
+                add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
+                add_fmt(B, "    }\n");
+            }
             break;
         }
 
@@ -1661,13 +1970,17 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int k = GETARG_k(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
-            add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLE, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
-            add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
-            add_fmt(B, "    }\n");
+            if (state_reg >= 0 && a == state_reg) {
+                add_fmt(B, "    if ((__dispatch_state <= %s) != %s) goto %s;\n", obf_int(sb, &obf_seed, obfuscate), obf_int(k, &obf_seed, obfuscate), target_label);
+            } else {
+                add_fmt(B, "    {\n");
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+                add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
+                add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLE, &obf_seed, obfuscate));
+                add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
+                add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
+                add_fmt(B, "    }\n");
+            }
             break;
         }
 
@@ -1676,13 +1989,18 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int k = GETARG_k(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLT, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
-            add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
-            add_fmt(B, "    }\n");
+            if (state_reg >= 0 && a == state_reg) {
+                /* GTI: sb < state (swapped operands) */
+                add_fmt(B, "    if ((__dispatch_state > %s) != %s) goto %s;\n", obf_int(sb, &obf_seed, obfuscate), obf_int(k, &obf_seed, obfuscate), target_label);
+            } else {
+                add_fmt(B, "    {\n");
+                add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+                add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLT, &obf_seed, obfuscate));
+                add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
+                add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
+                add_fmt(B, "    }\n");
+            }
             break;
         }
 
@@ -1691,13 +2009,18 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int k = GETARG_k(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + 2, seed, obfuscate);
-            add_fmt(B, "    {\n");
-            add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLE, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
-            add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
-            add_fmt(B, "    }\n");
+            if (state_reg >= 0 && a == state_reg) {
+                /* GEI: sb <= state (swapped operands) */
+                add_fmt(B, "    if ((__dispatch_state >= %s) != %s) goto %s;\n", obf_int(sb, &obf_seed, obfuscate), obf_int(k, &obf_seed, obfuscate), target_label);
+            } else {
+                add_fmt(B, "    {\n");
+                add_fmt(B, "        lua_pushinteger(L, %s);\n", obf_int(sb, &obf_seed, obfuscate));
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate);
+                add_fmt(B, "        int res = lua_compare(L, %s, %s, %s);\n", obf_int(-2, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate), obf_int(LUA_OPLE, &obf_seed, obfuscate));
+                add_fmt(B, "        lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
+                add_fmt(B, "        if (res != %s) goto %s;\n", obf_int(k, &obf_seed, obfuscate), target_label);
+                add_fmt(B, "    }\n");
+            }
             break;
         }
 
@@ -1728,7 +2051,9 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
                 add_fmt(B, "    }\n");
             } else {
                 add_fmt(B, "    {\n");
-                add_fmt(B, "        int nvar = (int)lua_rawlen(L, vtab_idx);\n");
+                add_fmt(B, "        lua_rawgeti(L, vtab_idx, 0);\n");
+                add_fmt(B, "        int nvar = (int)lua_tointeger(L, -1);\n");
+                add_fmt(B, "        lua_pop(L, 1);\n");
                 /* 修复：先 push vtab 再 ref，避免被 setop 弹走 */
                 add_fmt(B, "        lua_pushvalue(L, vtab_idx);\n");
                 add_fmt(B, "        int __vtab_ref = luaL_ref(L, LUA_REGISTRYINDEX);\n");
@@ -1810,52 +2135,87 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
         case OP_GETFIELD: {
             /* R[A] := R[B][K[C]]：table 若 boxed 先解 _v；结果 a+1 若 boxed 写 _v
-             * helper 栈消费：lua_tcc_getfield(-1, k) → push result；原 emit 推的 table(-2 位置) 保留
-             * 执行后栈[-2]=table, [-1]=result */
+             * 非 boxed: 直接传寄存器索引给 lua_tcc_getfield（避免 lua_pushvalue 触发 struct 深拷贝）
+             * boxed: 仍走 push _v + getfield(-1) + remove 路径 */
             int b = GETARG_B(i);
             int c = GETARG_C(i);
-            emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate); /* table (+1) */
+            int table_boxed = (boxed_slots && boxed_slots[b + 1]);
             TValue *k = &p->k[c];
             if (ttisstring(k)) {
-                if (str_encrypt) {
-                    emit_encrypted_string_push(B, getstr(tsvalue(k)), tsslen(tsvalue(k)), seed); /* key (+1, 总+2) */
-                    add_fmt(B, "    lua_tcc_gettable(L, %s);\n", obf_int(-2, &obf_seed, obfuscate)); /* 消费2产1，净+1，table在-2 */
+                if (table_boxed) {
+                    emit_read_local(B, b + 1, boxed_slots, &obf_seed, obfuscate); /* push _v (+1) */
+                    if (str_encrypt) {
+                        emit_encrypted_string_push(B, getstr(tsvalue(k)), tsslen(tsvalue(k)), seed);
+                        add_fmt(B, "    lua_tcc_gettable(L, %s);\n", obf_int(-2, &obf_seed, obfuscate));
+                    } else {
+                        add_fmt(B, "    lua_tcc_getfield(L, %s, ", obf_int(-1, &obf_seed, obfuscate));
+                        emit_quoted_string(B, getstr(tsvalue(k)), tsslen(tsvalue(k)));
+                        add_fmt(B, ");\n");
+                    }
+                    add_fmt(B, "    lua_remove(L, %s);\n", obf_int(-2, &obf_seed, obfuscate));
                 } else {
-                    add_fmt(B, "    lua_tcc_getfield(L, %s, ", obf_int(-1, &obf_seed, obfuscate));
-                    emit_quoted_string(B, getstr(tsvalue(k)), tsslen(tsvalue(k)));
-                    add_fmt(B, ");\n"); /* 消费1产1，净+1，table在-2 */
+                    /* 非 boxed: 直接传寄存器索引 */
+                    if (str_encrypt) {
+                        emit_encrypted_string_push(B, getstr(tsvalue(k)), tsslen(tsvalue(k)), seed);
+                        add_fmt(B, "    lua_tcc_gettable(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+                    } else {
+                        add_fmt(B, "    lua_tcc_getfield(L, %s, ", obf_int(b + 1, &obf_seed, obfuscate));
+                        emit_quoted_string(B, getstr(tsvalue(k)), tsslen(tsvalue(k)));
+                        add_fmt(B, ");\n"); /* 直接从寄存器读取，push result */
+                    }
                 }
             } else {
-                add_fmt(B, "    lua_pushnil(L);\n"); /* Should not happen for GETFIELD */
+                add_fmt(B, "    lua_pushnil(L);\n");
             }
-            add_fmt(B, "    lua_remove(L, %s);\n", obf_int(-2, &obf_seed, obfuscate)); /* 移除 table，栈顶=result (净0) */
             emit_write_local(B, a + 1, boxed_slots, &obf_seed, obfuscate); /* 写回 a+1 */
             break;
         }
 
         case OP_SETFIELD: {
             /* R[A][K[B]] := RK(C)：table/value(R) 若 boxed 先解 _v
-             * helper 栈消费：lua_tcc_setfield(-2, k) → 消费 value；-2位置的 table 保留在 -2 位置（即栈顶如果 value 被消费）*/
+             * 非 boxed: 不 push table copy，直接传寄存器索引给 lua_tcc_setfield（避免 struct 深拷贝）
+             * boxed: 仍走 push _v + setfield(-2) + pop 路径 */
             int b = GETARG_B(i);
             int c = GETARG_C(i);
-            emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate); /* table (+1) */
-            if (TESTARG_k(i)) emit_loadk(B, p, c, str_encrypt, seed, obfuscate); /* value K (+1, 总+2) */
-            else emit_read_local(B, c + 1, boxed_slots, &obf_seed, obfuscate); /* value R (+1, 总+2) */
+            int table_boxed = (boxed_slots && boxed_slots[a + 1]);
             TValue *key = &p->k[b];
-            if (ttisstring(key)) {
-                if (str_encrypt) {
-                    emit_encrypted_string_push(B, getstr(tsvalue(key)), tsslen(tsvalue(key)), seed); /* key (+1, 总+3) */
-                    add_fmt(B, "    lua_insert(L, %s);\n", obf_int(-2, &obf_seed, obfuscate)); /* 顺序: table,key,value (-3,-2,-1) */
-                    add_fmt(B, "    lua_tcc_settable(L, %s);\n", obf_int(-3, &obf_seed, obfuscate)); /* 消费 key+value，栈顶剩table(净+1) */
+            if (table_boxed) {
+                emit_read_local(B, a + 1, boxed_slots, &obf_seed, obfuscate); /* table (+1) */
+                if (TESTARG_k(i)) emit_loadk(B, p, c, str_encrypt, seed, obfuscate);
+                else emit_read_local(B, c + 1, boxed_slots, &obf_seed, obfuscate);
+                if (ttisstring(key)) {
+                    if (str_encrypt) {
+                        emit_encrypted_string_push(B, getstr(tsvalue(key)), tsslen(tsvalue(key)), seed);
+                        add_fmt(B, "    lua_insert(L, %s);\n", obf_int(-2, &obf_seed, obfuscate));
+                        add_fmt(B, "    lua_tcc_settable(L, %s);\n", obf_int(-3, &obf_seed, obfuscate));
+                    } else {
+                        add_fmt(B, "    lua_tcc_setfield(L, %s, ", obf_int(-2, &obf_seed, obfuscate));
+                        emit_quoted_string(B, getstr(tsvalue(key)), tsslen(tsvalue(key)));
+                        add_fmt(B, ");\n");
+                    }
                 } else {
-                    add_fmt(B, "    lua_tcc_setfield(L, %s, ", obf_int(-2, &obf_seed, obfuscate));
-                    emit_quoted_string(B, getstr(tsvalue(key)), tsslen(tsvalue(key)));
-                    add_fmt(B, ");\n"); /* 消费 value，栈顶剩table(净+1) */
+                    add_fmt(B, "    lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate));
                 }
+                add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
             } else {
-                add_fmt(B, "    lua_pop(L, %s);\n", obf_int(2, &obf_seed, obfuscate)); /* pop table+value */
+                /* 非 boxed: 只 push value，直接传寄存器索引 */
+                if (TESTARG_k(i)) emit_loadk(B, p, c, str_encrypt, seed, obfuscate);
+                else emit_read_local(B, c + 1, boxed_slots, &obf_seed, obfuscate);
+                if (ttisstring(key)) {
+                    if (str_encrypt) {
+                        emit_encrypted_string_push(B, getstr(tsvalue(key)), tsslen(tsvalue(key)), seed);
+                        /* 栈: key(-2), value(-1) → need table,key,value order for settable */
+                        add_fmt(B, "    lua_insert(L, %s);\n", obf_int(-2, &obf_seed, obfuscate));
+                        add_fmt(B, "    lua_tcc_settable(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+                    } else {
+                        add_fmt(B, "    lua_tcc_setfield(L, %s, ", obf_int(a + 1, &obf_seed, obfuscate));
+                        emit_quoted_string(B, getstr(tsvalue(key)), tsslen(tsvalue(key)));
+                        add_fmt(B, ");\n"); /* 消费 value，无 pop */
+                    }
+                } else {
+                    add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate)); /* pop value */
+                }
             }
-            add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate)); /* 清 table，恢复平衡 */
             break;
         }
 
@@ -2005,6 +2365,19 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int bx = GETARG_Bx(i);
             char target_label[16];
             get_label_name(target_label, sizeof(target_label), pc + 1 + bx + 1, seed, obfuscate);
+            /* implicit pairs: if R[A] is a table without __call, use next as iterator */
+            add_fmt(B, "    if (lua_istable(L, %s)) {\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "        luaL_getmetafield(L, %s, \"__call\");\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "        if (lua_isnil(L, -1)) {\n");
+            add_fmt(B, "            lua_pop(L, 1);\n");
+            add_fmt(B, "            lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 2, &obf_seed, obfuscate));
+            add_fmt(B, "            lua_getglobal(L, \"next\");\n");
+            add_fmt(B, "            lua_replace(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "        } else {\n");
+            add_fmt(B, "            lua_pop(L, 1);\n");
+            add_fmt(B, "        }\n");
+            add_fmt(B, "    }\n");
             add_fmt(B, "    lua_toclose(L, %s);\n", obf_int(a + 3 + 1, &obf_seed, obfuscate));
             add_fmt(B, "    goto %s;\n", target_label);
             break;
@@ -2105,6 +2478,9 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
         case OP_INHERIT: {
             int b = GETARG_B(i);
             add_fmt(B, "    lua_inherit(L, %s, %s);\n", obf_int(a + 1, &obf_seed, obfuscate), obf_int(b + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_compute_mro(L, -1);\n");
+            add_fmt(B, "    lua_pop(L, 1);\n");
             break;
         }
 
@@ -2114,10 +2490,19 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             add_fmt(B, "    lua_pushnil(L);\n");
             add_fmt(B, "    while (lua_next(L, %s) != 0) {\n", obf_int(b + 1, &obf_seed, obfuscate));
             add_fmt(B, "        lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "        lua_pushvalue(L, -3);\n");
+            add_fmt(B, "        lua_pushvalue(L, -2);\n");
             add_fmt(B, "        lua_inherit(L, -2, -1);\n");
             add_fmt(B, "        lua_pop(L, %s);\n", obf_int(3, &obf_seed, obfuscate));
             add_fmt(B, "    }\n");
+            /* 设置 __parents 表，供 luaC_compute_mro 使用 */
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_pushstring(L, \"__parents\");\n");
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(b + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_rawset(L, -3);\n");
+            add_fmt(B, "    lua_pop(L, 1);\n");
+            add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_compute_mro(L, -1);\n");
+            add_fmt(B, "    lua_pop(L, 1);\n");
             break;
         }
 
@@ -2134,7 +2519,7 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
             int b = GETARG_B(i);
             emit_loadk(B, p, b, str_encrypt, seed, obfuscate);
             add_fmt(B, "    lua_pushvalue(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
-            add_fmt(B, "    lua_checkoverride(L, %s, lua_tostring(L, %s));\n", obf_int(-1, &obf_seed, obfuscate), obf_int(-1, &obf_seed, obfuscate));
+            add_fmt(B, "    lua_checkoverride(L, %s, lua_tostring(L, %s));\n", obf_int(-1, &obf_seed, obfuscate), obf_int(-2, &obf_seed, obfuscate));
             add_fmt(B, "    lua_pop(L, %s);\n", obf_int(1, &obf_seed, obfuscate));
             break;
         }
@@ -2431,6 +2816,14 @@ static void emit_instruction(luaL_Buffer *B, Proto *p, int pc, Instruction i, Pr
 
         case OP_CLOSE: {
             add_fmt(B, "    lua_closeslot(L, %s);\n", obf_int(a + 1, &obf_seed, obfuscate));
+            /* Lua 5.5: lua_closeslot 将 slot 置 nil，且 OP_CLOSE 关闭 >= A 的所有 upvalue。
+             * 关闭后这些 slot 不再是 boxed 变量，清除标记避免后续指令用 lua_setfield 写 nil。 */
+            if (boxed_slots) {
+                int _si;
+                for (_si = a + 1; _si <= p->maxstacksize; _si++) {
+                    boxed_slots[_si] = 0;
+                }
+            }
             break;
         }
 
@@ -2670,6 +3063,51 @@ static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, i
     }
 
     add_fmt(B, "\n/* Proto %d */\n", id);
+
+    /* === Resume-PC 机制：为协程 yield 提供续体支持 ===
+     * 问题：lua_call (lua_callk with k=NULL) 使用 luaD_callnoyield，
+     *       导致 coroutine.yield 报 "attempt to yield across a C-call boundary"。
+     * 方案：对每个 OP_CALL 使用 lua_callk 带续体函数。
+     *       - 续体函数设置 tcc_rpc_N = call_id，然后重新调用 function_N
+     *       - function_N 开头检查 tcc_rpc_N，非零则 goto 到对应恢复点
+     *       - 恢复点跳过 push_args 和 lua_callk，直接执行 store_results
+     *
+     * 统计固定结果数 (C≠0) 的 OP_CALL 数量（只有这些需要 yieldable，
+     * 变参调用 C=0 的 store_results 依赖运行时变量，不支持 resume）
+     */
+    int yieldable_calls = 0;
+    for (int i = 0; i < p->sizecode; i++) {
+        Instruction code = p->code[i];
+        if (GET_OPCODE(code) == OP_CALL) {
+            int c = GETARG_C(code);
+            int b = GETARG_B(code);
+            if (c != 0 && b != 0) {
+                yieldable_calls++;
+            }
+        }
+    }
+
+    if (yieldable_calls > 0) {
+        /* 续体函数名和 rpc 变量名始终使用固定格式（内部符号，不需混淆） */
+        char cont_name[32];
+        char rpc_name[32];
+        snprintf(cont_name, sizeof(cont_name), "tcc_cont_%d", id);
+        snprintf(rpc_name, sizeof(rpc_name), "tcc_rpc_%d", id);
+
+        /* static int tcc_rpc_N = 0; */
+        add_fmt(B, "static int %s = 0;\n", rpc_name);
+
+        /* 续体函数前向声明 */
+        add_fmt(B, "static int %s(lua_State *%s, int status, lua_KContext ctx);\n", cont_name, L_name);
+
+        /* 续体函数实现：设置 rpc，重新进入主函数 */
+        add_fmt(B, "static int %s(lua_State *%s, int status, lua_KContext ctx) {\n", cont_name, L_name);
+        add_fmt(B, "    (void)status;\n");
+        add_fmt(B, "    %s = (int)ctx;\n", rpc_name);
+        add_fmt(B, "    return %s(%s);\n", protos[id].name, L_name);
+        add_fmt(B, "}\n\n");
+    }
+
     if (inline_opt) {
         add_fmt(B, "static inline int %s(lua_State *%s) {\n", protos[id].name, L_name);
     } else {
@@ -2690,6 +3128,15 @@ static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, i
         protos[id].boxed_slots = boxed_slots;  /* 记录以便后续释放 */
     }
 
+    /* 检测是否经过控制流扁平化，若是则使用 C 局部变量存储 dispatcher 状态，
+     * 避免 VARARG/CALL 结果覆盖 Lua 栈上的 dispatcher 状态寄存器。 */
+    int state_reg = -1;
+    if (p->difierline_mode & OBFUSCATE_CFF) {
+        /* state_reg 是 flatten 前的 maxstacksize（0-indexed），
+         * 即 protos[id].maxstack（在 flatten 前保存的原始值） */
+        state_reg = protos[id].maxstack;
+    }
+
     if (p->is_vararg) {
         add_fmt(B, "    int %s = %s;\n", vtab_name, obf_int(effective_maxstack + 1, &obf_seed, obfuscate));
         add_fmt(B, "    lua_tcc_prologue(%s, %s, %s);\n", L_name, obf_int(p->numparams, &obf_seed, obfuscate), obf_int(effective_maxstack, &obf_seed, obfuscate));
@@ -2697,10 +3144,38 @@ static void process_proto(luaL_Buffer *B, Proto *p, int id, ProtoInfo *protos, i
         add_fmt(B, "    lua_settop(%s, %s); /* Max Stack Size */\n", L_name, obf_int(effective_maxstack, &obf_seed, obfuscate));
     }
 
-    // Iterate instructions
+    /* 声明 dispatcher 状态 C 局部变量（仅在扁平化模式下） */
+    if (state_reg >= 0) {
+        add_fmt(B, "    int __dispatch_state = 0;\n");
+    }
+
+    /* 生成 resume-PC 检查：如果 tcc_rpc_N 非零，跳转到对应恢复点 */
+    if (yieldable_calls > 0) {
+        add_fmt(B, "    if (tcc_rpc_%d != 0) {\n", id);
+        add_fmt(B, "        int __rpc = tcc_rpc_%d;\n", id);
+        add_fmt(B, "        tcc_rpc_%d = 0;\n", id);
+        /* 为每个 yieldable call 生成 goto */
+        int call_idx = 0;
+        for (int i = 0; i < p->sizecode; i++) {
+            Instruction code = p->code[i];
+            if (GET_OPCODE(code) == OP_CALL) {
+                int c = GETARG_C(code);
+                int b = GETARG_B(code);
+                if (c != 0 && b != 0) {
+                    call_idx++;
+                    add_fmt(B, "        if (__rpc == %d) goto __rpc_%d_%d;\n", call_idx, id, call_idx);
+                }
+            }
+        }
+        add_fmt(B, "    }\n");
+    }
+
+    /* Iterate instructions */
+    /* call_counter 用于为每个 yieldable call 分配唯一 ID */
+    int call_counter = 0;
     for (int i = 0; i < p->sizecode; i++) {
         if (obfuscate && (my_rand(&obf_seed) % 4 == 0)) emit_junk_code(B, &obf_seed);
-        emit_instruction(B, p, i, p->code[i], protos, proto_count, use_pure_c, str_encrypt, seed, obfuscate, boxed_slots, boxed_upvals);
+        emit_instruction(B, p, i, p->code[i], protos, proto_count, use_pure_c, str_encrypt, seed, obfuscate, boxed_slots, boxed_upvals, id, &call_counter, state_reg);
     }
 
     if (obfuscate) {
@@ -2740,7 +3215,7 @@ static int tcc_compute_flags(lua_State *L) {
 
     for (int i = 0; options[i].name; i++) {
         lua_getfield(L, 1, options[i].name);
-        if (lua_toboolean(L, -1)) {
+        if (lua_isboolean(L, -1) && lua_toboolean(L, -1)) {
             flags |= options[i].flag;
         }
         lua_pop(L, 1);
@@ -2762,58 +3237,61 @@ static int tcc_compile(lua_State *L) {
     int provided_flags = 0;
     int inline_opt = 0;
 
-    if (lua_gettop(L) >= 2) {
-        if (lua_type(L, 2) == LUA_TTABLE) {
-             /* Parse table options */
-             lua_getfield(L, 2, "use_pure_c");
-             if (!lua_isnil(L, -1)) use_pure_c = lua_toboolean(L, -1);
-             lua_pop(L, 1);
+     if (lua_gettop(L) >= 2) {
+         if (lua_type(L, 2) == LUA_TTABLE) {
+              /* Parse table options */
+              /* Use lua_isboolean to avoid LXCLua's default table metatable
+               * (G(L)->mt[LUA_TTABLE]) resolving field names like "flatten"
+               * to table.* functions (e.g. table.flatten) via __index. */
+              lua_getfield(L, 2, "use_pure_c");
+              if (lua_isboolean(L, -1)) use_pure_c = lua_toboolean(L, -1);
+              lua_pop(L, 1);
 
-             lua_getfield(L, 2, "obfuscate");
-             if (!lua_isnil(L, -1)) obfuscate = lua_toboolean(L, -1);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "obfuscate");
+              if (lua_isboolean(L, -1)) obfuscate = lua_toboolean(L, -1);
+              lua_pop(L, 1);
 
-             lua_getfield(L, 2, "flatten");
-             if (!lua_isnil(L, -1)) flatten = lua_toboolean(L, -1);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "flatten");
+              if (lua_isboolean(L, -1)) flatten = lua_toboolean(L, -1);
+              lua_pop(L, 1);
 
-             lua_getfield(L, 2, "string_encryption");
-             if (!lua_isnil(L, -1)) str_encrypt = lua_toboolean(L, -1);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "string_encryption");
+              if (lua_isboolean(L, -1)) str_encrypt = lua_toboolean(L, -1);
+              lua_pop(L, 1);
 
-             lua_getfield(L, 2, "flags");
-             if (!lua_isnil(L, -1)) provided_flags = (int)lua_tointeger(L, -1);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "flags");
+              if (lua_isinteger(L, -1)) provided_flags = (int)lua_tointeger(L, -1);
+              lua_pop(L, 1);
 
-             lua_getfield(L, 2, "inline");
-             if (!lua_isnil(L, -1)) inline_opt = lua_toboolean(L, -1);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "inline");
+              if (lua_isboolean(L, -1)) inline_opt = lua_toboolean(L, -1);
+              lua_pop(L, 1);
 
-             /* Parse boolean flags from table and merge into provided_flags */
-             struct { const char *name; int flag; } bool_opts[] = {
-                 {"block_shuffle", OBFUSCATE_BLOCK_SHUFFLE},
-                 {"bogus_blocks", OBFUSCATE_BOGUS_BLOCKS},
-                 {"state_encode", OBFUSCATE_STATE_ENCODE},
-                 {"nested_dispatcher", OBFUSCATE_NESTED_DISPATCHER},
-                 {"opaque_predicates", OBFUSCATE_OPAQUE_PREDICATES},
-                 {"func_interleave", OBFUSCATE_FUNC_INTERLEAVE},
-                 {"vm_protect", OBFUSCATE_VM_PROTECT},
-                 {"binary_dispatcher", OBFUSCATE_BINARY_DISPATCHER},
-                 {"random_nop", OBFUSCATE_RANDOM_NOP},
-                 {NULL, 0}
-             };
-             for (int i = 0; bool_opts[i].name; i++) {
-                 lua_getfield(L, 2, bool_opts[i].name);
-                 if (lua_toboolean(L, -1)) {
-                     provided_flags |= bool_opts[i].flag;
-                 }
-                 lua_pop(L, 1);
-             }
+              /* Parse boolean flags from table and merge into provided_flags */
+              struct { const char *name; int flag; } bool_opts[] = {
+                  {"block_shuffle", OBFUSCATE_BLOCK_SHUFFLE},
+                  {"bogus_blocks", OBFUSCATE_BOGUS_BLOCKS},
+                  {"state_encode", OBFUSCATE_STATE_ENCODE},
+                  {"nested_dispatcher", OBFUSCATE_NESTED_DISPATCHER},
+                  {"opaque_predicates", OBFUSCATE_OPAQUE_PREDICATES},
+                  {"func_interleave", OBFUSCATE_FUNC_INTERLEAVE},
+                  {"vm_protect", OBFUSCATE_VM_PROTECT},
+                  {"binary_dispatcher", OBFUSCATE_BINARY_DISPATCHER},
+                  {"random_nop", OBFUSCATE_RANDOM_NOP},
+                  {NULL, 0}
+              };
+              for (int i = 0; bool_opts[i].name; i++) {
+                  lua_getfield(L, 2, bool_opts[i].name);
+                  if (lua_isboolean(L, -1) && lua_toboolean(L, -1)) {
+                      provided_flags |= bool_opts[i].flag;
+                  }
+                  lua_pop(L, 1);
+              }
 
-             lua_getfield(L, 2, "seed");
-             if (!lua_isnil(L, -1)) seed = (int)lua_tointeger(L, -1);
-             else seed = (int)time(NULL);
-             lua_pop(L, 1);
+              lua_getfield(L, 2, "seed");
+              if (lua_isnumber(L, -1)) seed = (int)lua_tointeger(L, -1);
+              else seed = (int)time(NULL);
+              lua_pop(L, 1);
 
              if (lua_gettop(L) >= 3) {
                  modname = luaL_checkstring(L, 3);
@@ -2823,56 +3301,56 @@ static int tcc_compile(lua_State *L) {
         } else {
             modname = luaL_checkstring(L, 2);
             if (lua_gettop(L) >= 3) {
-                 if (lua_type(L, 3) == LUA_TTABLE) {
-                     lua_getfield(L, 3, "use_pure_c");
-                     if (!lua_isnil(L, -1)) use_pure_c = lua_toboolean(L, -1);
-                     lua_pop(L, 1);
+                  if (lua_type(L, 3) == LUA_TTABLE) {
+                      lua_getfield(L, 3, "use_pure_c");
+                      if (lua_isboolean(L, -1)) use_pure_c = lua_toboolean(L, -1);
+                      lua_pop(L, 1);
 
-                     lua_getfield(L, 3, "obfuscate");
-                     if (!lua_isnil(L, -1)) obfuscate = lua_toboolean(L, -1);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "obfuscate");
+                      if (lua_isboolean(L, -1)) obfuscate = lua_toboolean(L, -1);
+                      lua_pop(L, 1);
 
-                     lua_getfield(L, 3, "flatten");
-                     if (!lua_isnil(L, -1)) flatten = lua_toboolean(L, -1);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "flatten");
+                      if (lua_isboolean(L, -1)) flatten = lua_toboolean(L, -1);
+                      lua_pop(L, 1);
 
-                     lua_getfield(L, 3, "string_encryption");
-                     if (!lua_isnil(L, -1)) str_encrypt = lua_toboolean(L, -1);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "string_encryption");
+                      if (lua_isboolean(L, -1)) str_encrypt = lua_toboolean(L, -1);
+                      lua_pop(L, 1);
 
-                     lua_getfield(L, 3, "flags");
-                     if (!lua_isnil(L, -1)) provided_flags = (int)lua_tointeger(L, -1);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "flags");
+                      if (lua_isinteger(L, -1)) provided_flags = (int)lua_tointeger(L, -1);
+                      lua_pop(L, 1);
 
-                     lua_getfield(L, 3, "inline");
-                     if (!lua_isnil(L, -1)) inline_opt = lua_toboolean(L, -1);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "inline");
+                      if (lua_isboolean(L, -1)) inline_opt = lua_toboolean(L, -1);
+                      lua_pop(L, 1);
 
-                     /* Parse boolean flags from table (arg 3) and merge into provided_flags */
-                     struct { const char *name; int flag; } bool_opts[] = {
-                         {"block_shuffle", OBFUSCATE_BLOCK_SHUFFLE},
-                         {"bogus_blocks", OBFUSCATE_BOGUS_BLOCKS},
-                         {"state_encode", OBFUSCATE_STATE_ENCODE},
-                         {"nested_dispatcher", OBFUSCATE_NESTED_DISPATCHER},
-                         {"opaque_predicates", OBFUSCATE_OPAQUE_PREDICATES},
-                         {"func_interleave", OBFUSCATE_FUNC_INTERLEAVE},
-                         {"vm_protect", OBFUSCATE_VM_PROTECT},
-                         {"binary_dispatcher", OBFUSCATE_BINARY_DISPATCHER},
-                         {"random_nop", OBFUSCATE_RANDOM_NOP},
-                         {NULL, 0}
-                     };
-                     for (int i = 0; bool_opts[i].name; i++) {
-                         lua_getfield(L, 3, bool_opts[i].name);
-                         if (lua_toboolean(L, -1)) {
-                             provided_flags |= bool_opts[i].flag;
-                         }
-                         lua_pop(L, 1);
-                     }
+                      /* Parse boolean flags from table (arg 3) and merge into provided_flags */
+                      struct { const char *name; int flag; } bool_opts[] = {
+                          {"block_shuffle", OBFUSCATE_BLOCK_SHUFFLE},
+                          {"bogus_blocks", OBFUSCATE_BOGUS_BLOCKS},
+                          {"state_encode", OBFUSCATE_STATE_ENCODE},
+                          {"nested_dispatcher", OBFUSCATE_NESTED_DISPATCHER},
+                          {"opaque_predicates", OBFUSCATE_OPAQUE_PREDICATES},
+                          {"func_interleave", OBFUSCATE_FUNC_INTERLEAVE},
+                          {"vm_protect", OBFUSCATE_VM_PROTECT},
+                          {"binary_dispatcher", OBFUSCATE_BINARY_DISPATCHER},
+                          {"random_nop", OBFUSCATE_RANDOM_NOP},
+                          {NULL, 0}
+                      };
+                      for (int i = 0; bool_opts[i].name; i++) {
+                          lua_getfield(L, 3, bool_opts[i].name);
+                          if (lua_isboolean(L, -1) && lua_toboolean(L, -1)) {
+                              provided_flags |= bool_opts[i].flag;
+                          }
+                          lua_pop(L, 1);
+                      }
 
-                     lua_getfield(L, 3, "seed");
-                     if (!lua_isnil(L, -1)) seed = (int)lua_tointeger(L, -1);
-                     else seed = (int)time(NULL);
-                     lua_pop(L, 1);
+                      lua_getfield(L, 3, "seed");
+                      if (lua_isnumber(L, -1)) seed = (int)lua_tointeger(L, -1);
+                      else seed = (int)time(NULL);
+                      lua_pop(L, 1);
                  } else {
                      use_pure_c = lua_toboolean(L, 3);
                  }

@@ -1790,8 +1790,7 @@ void luaK_infix (FuncState *fs, BinOpr op, expdesc *v) {
       break;
     }
     case OPR_PIPE: {
-      /* 管道运算符：确保左侧表达式被转换为寄存器 */
-      luaK_exp2anyreg(fs, v);
+      /* 管道运算符：luaK_pipe 自行处理 e1/e2 的寄存器分配，无需预释放 */
       break;
     }
     case OPR_IN: {
@@ -2161,6 +2160,8 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   int func_reg, arg_reg;
   int nargs = 1;  /* 默认1个参数 */
   int is_self = e2->is_pipe_self;  /* 是否为管道方法引用（obj:method） */
+  int e1_was_nonreloc = (e1->k == VNONRELOC);
+  int e1_orig_reg = e1_was_nonreloc ? e1->u.info : -1;
 
   if (is_self) nargs = 2;  /* 方法引用需要2个参数（self + 管道值） */
 
@@ -2176,7 +2177,7 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
   } else {
     /*
      * 标准管道布局：e2（函数）在 func_reg，e1（管道输入）在 arg_reg=func_reg+1
-     * 步骤4 将结果落在 func_reg+1，确保链式管道每段使用独立寄存器
+     * OP_CALL 结果落在 func_reg
      */
     luaK_exp2nextreg(fs, e2);
     func_reg = fs->freereg - 1;
@@ -2187,19 +2188,26 @@ void luaK_pipe (FuncState *fs, expdesc *e1, expdesc *e2) {
     luaK_exp2reg(fs, e1, arg_reg);
   }
   
-  /* 生成函数调用指令 */
-  e1->u.info = luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
-  e1->k = VCALL;
+  /* 生成函数调用指令：结果落在 func_reg */
+  luaK_codeABC(fs, OP_CALL, func_reg, nargs + 1, 2);
+
+  /*
+   * 如果 e1 原本在低于 func_reg 的寄存器中（链式管道场景），
+   * 将结果移回 e1 的原寄存器，使中间寄存器可被正常回收。
+   * Lua 寄存器栈只能从顶部释放，因此必须把结果下沉到最低占用位。
+   */
+  if (e1_was_nonreloc && e1_orig_reg >= 0 && e1_orig_reg < func_reg) {
+    luaK_codeABC(fs, OP_MOVE, e1_orig_reg, func_reg, 0);
+    fs->freereg = e1_orig_reg + 1;
+    e1->u.info = e1_orig_reg;
+  } else {
+    fs->freereg = func_reg + 1;
+    e1->u.info = func_reg;
+  }
+  e1->k = VNONRELOC;
   e1->t = NO_JUMP;
   e1->f = NO_JUMP;
   e1->is_pipe_self = 0;
-
-  /* 结果始终落在 func_reg+1，防止链式管道下一段覆盖值寄存器 */
-  if (fs->freereg <= func_reg + 1) fs->freereg = func_reg + 1;
-  luaK_codeABC(fs, OP_MOVE, fs->freereg, func_reg, 0);
-  e1->u.info = fs->freereg;
-  e1->k = VNONRELOC;
-  fs->freereg++;
 }
 
 /*

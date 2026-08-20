@@ -667,6 +667,11 @@ typedef struct LspServer {
      * 目前仅记录最近 1 个请求（足够覆盖大多数同步模型：每请求串行处理）。 */
     char *cm_uri;      /**< 当前处理中请求的文档 uri（若涉及文档） */
     int cm_version;    /**< 该请求处理起始时的文档版本（-1 表示无文档） */
+    /* Negotiated position encoding: 0=utf-16 (default), 1=utf-8, 2=utf-32 @since 3.17 */
+    #define LSP_POS_ENCODING_UTF16 0
+    #define LSP_POS_ENCODING_UTF8  1
+    #define LSP_POS_ENCODING_UTF32 2
+    int position_encoding;
 } LspServer;
 
 /* ---- 入站消息后服务器需要主循环额外推送的通知：

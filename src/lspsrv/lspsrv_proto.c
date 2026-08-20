@@ -493,7 +493,11 @@ static JsonValue *build_initialize_result(LspServer *srv) {
     /* ---- Completion provider (resolveProvider from capabilities) ---- */
     if (srv->capabilities.completion) {
         JsonValue *comp = json_new_object();
-        json_object_set(comp, "triggerCharacters", NULL);
+        JsonValue *tc_arr = json_new_array();
+        json_array_add(tc_arr, json_new_string("."));
+        json_array_add(tc_arr, json_new_string(":"));
+        json_array_add(tc_arr, json_new_string("("));
+        json_object_set(comp, "triggerCharacters", tc_arr);
         json_object_set(comp, "resolveProvider", json_new_bool(srv->capabilities.completion_resolve));
         json_object_set(caps, "completionProvider", comp);
     }
@@ -533,11 +537,16 @@ static JsonValue *build_initialize_result(LspServer *srv) {
         json_object_set(caps, "documentSymbolProvider", json_new_bool(srv->capabilities.document_symbol));
     }
 
-    /* ---- Signature help (补 retriggerCharacters) ---- */
+    /* ---- Signature help (triggerCharacters/retriggerCharacters) ---- */
     if (srv->capabilities.signature_help) {
         JsonValue *sig = json_new_object();
-        json_object_set(sig, "triggerCharacters", NULL);
-        json_object_set(sig, "retriggerCharacters", NULL);
+        JsonValue *tc_arr = json_new_array();
+        json_array_add(tc_arr, json_new_string("("));
+        json_array_add(tc_arr, json_new_string(","));
+        json_object_set(sig, "triggerCharacters", tc_arr);
+        JsonValue *rtc_arr = json_new_array();
+        json_array_add(rtc_arr, json_new_string(","));
+        json_object_set(sig, "retriggerCharacters", rtc_arr);
         json_object_set(caps, "signatureHelpProvider", sig);
     }
 
@@ -593,9 +602,11 @@ static JsonValue *build_initialize_result(LspServer *srv) {
             json_array_add(token_modifiers, json_new_string(modifiers[m]));
         json_object_set(legend, "tokenModifiers", token_modifiers);
         json_object_set(semtok, "legend", legend);
-        json_object_set(semtok, "full", json_new_bool(1));
+        /* LSP 3.17 spec: full?: boolean | { delta?: boolean }; delta is a sub-property of full */
+        JsonValue *full_opts = json_new_object();
+        json_object_set(full_opts, "delta", json_new_bool(1));
+        json_object_set(semtok, "full", full_opts);
         json_object_set(semtok, "range", json_new_bool(1));
-        json_object_set(semtok, "delta", json_new_bool(1));
         json_object_set(caps, "semanticTokensProvider", semtok);
     }
 
@@ -679,7 +690,7 @@ static JsonValue *build_initialize_result(LspServer *srv) {
         json_object_set(otf, "firstTriggerCharacter", json_new_string("\n"));
         JsonValue *more_triggers = json_new_array();
         json_array_add(more_triggers, json_new_string("d"));
-        json_object_set(otf, "moreTriggerCharacter", more_triggers);
+        json_object_set(otf, "moreTriggerCharacters", more_triggers);
         json_object_set(caps, "documentOnTypeFormattingProvider", otf);
     }
 
@@ -789,6 +800,14 @@ static JsonValue *build_initialize_result(LspServer *srv) {
         json_object_set(win, "showDocument", sd);
 
         json_object_set(caps, "window", win);
+    }
+
+    /* ---- Position encoding (LSP 3.17): negotiated from client's general.positionEncodings ---- */
+    {
+        const char *enc = "utf-16"; /* default per spec */
+        if (srv->position_encoding == LSP_POS_ENCODING_UTF8) enc = "utf-8";
+        else if (srv->position_encoding == LSP_POS_ENCODING_UTF32) enc = "utf-32";
+        json_object_set(caps, "positionEncoding", json_new_string(enc));
     }
 
     json_object_set(result, "capabilities", caps);
@@ -1001,26 +1020,6 @@ JsonValue *lsp_build_diagnostics_arr(LspDiagnostic *diags, int ndiags) {
         json_object_set(d, "severity", json_new_number(diags[i].severity));
         json_object_set(d, "message", json_new_string(diags[i].message));
         json_object_set(d, "source", json_new_string(diags[i].source ? diags[i].source : "lxclua-lsp"));
-        {
-            int code_val = i + 1;
-            json_object_set(d, "code", json_new_number(code_val));
-        }
-        {
-            JsonValue *code_desc = json_new_object();
-            char href_buf[256];
-            snprintf(href_buf, sizeof(href_buf), "https://lxclua.example/diagnostics/%d", i + 1);
-            json_object_set(code_desc, "href", json_new_string(href_buf));
-            json_object_set(d, "codeDescription", code_desc);
-        }
-        {
-            JsonValue *tags_arr = json_new_array();
-            if (diags[i].severity == 5) {
-                json_array_add(tags_arr, json_new_number(2));
-            }
-            json_object_set(d, "tags", tags_arr);
-        }
-        json_object_set(d, "relatedInformation", json_new_array());
-        json_object_set(d, "data", json_new_null());
         json_array_add(arr, d);
     }
     return arr;
@@ -1136,6 +1135,27 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
                 JsonValue *ws = json_object_get(cc, "workspace");
                 if (ws) {
                     srv->client_caps.workspace.apply_edit = json_object_get_bool(ws, "applyEdit", 1);
+                }
+                /* LSP 3.17: negotiate position encoding from client's general.positionEncodings */
+                srv->position_encoding = LSP_POS_ENCODING_UTF16; /* default per spec */
+                JsonValue *general = json_object_get(cc, "general");
+                if (general) {
+                    JsonValue *encodings = json_object_get(general, "positionEncodings");
+                    if (encodings && encodings->type == JSON_ARRAY && encodings->as.arr.count > 0) {
+                        /* Pick the client's most preferred encoding that we support */
+                        for (int i = 0; i < (int)encodings->as.arr.count; i++) {
+                            JsonValue *enc_val = encodings->as.arr.items[i];
+                            if (!enc_val || enc_val->type != JSON_STRING || !enc_val->as.str_val) continue;
+                            if (strcmp(enc_val->as.str_val, "utf-8") == 0) {
+                                srv->position_encoding = LSP_POS_ENCODING_UTF8;
+                                break;
+                            }
+                            if (strcmp(enc_val->as.str_val, "utf-32") == 0) {
+                                srv->position_encoding = LSP_POS_ENCODING_UTF32;
+                                /* keep scanning for utf-8 which we prefer */
+                            }
+                        }
+                    }
                 }
             }
             JsonValue *wsf = json_object_get(params, "workspaceFolders");
@@ -3236,7 +3256,17 @@ static JsonRpcMessage *dispatch_request(LspServer *srv, const char *method, Json
         json_free(result);
         return resp;
     }
-    
+
+    /* ---- Workspace will* file operations (requests: return null = no WorkspaceEdit veto) ---- */
+    if (strcmp(method, LSP_METHOD_WILL_CREATE_FILES) == 0 ||
+        strcmp(method, LSP_METHOD_WILL_RENAME_FILES) == 0 ||
+        strcmp(method, LSP_METHOD_WILL_DELETE_FILES) == 0) {
+        JsonValue *result = json_new_null();
+        JsonRpcMessage *resp = jrpc_new_response(id, result);
+        json_free(result);
+        return resp;
+    }
+
     /* ---- Workspace notifications (did* only; didChangeWatchedFiles handled earlier) ---- */
     if (strcmp(method, LSP_METHOD_DID_CREATE_FILES) == 0 ||
         strcmp(method, LSP_METHOD_DID_RENAME_FILES) == 0 ||
@@ -3482,6 +3512,7 @@ void *lsp_init(void) {
     memset(srv->pending_notifications, 0, sizeof(srv->pending_notifications));
     srv->cm_uri = NULL;                     /* @since 3.17 ContentModified 跟踪 */
     srv->cm_version = -1;
+    srv->position_encoding = LSP_POS_ENCODING_UTF16;  /* @since 3.17 默认 utf-16 */
     return srv;
 }
 

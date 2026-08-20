@@ -486,8 +486,11 @@ int luaO_identifyBlocks (CFFContext *ctx) {
       if (target >= 0 && target < code_size) {
         is_leader[target] = 1;
       }
-      /* 跳转指令的下一条也是起始点（除非是无条件跳转或函数结束） */
-      if (pc + 1 < code_size && op != OP_JMP) {
+      /* 跳转指令的下一条也是起始点。
+       * 对于 OP_JMP（无条件跳转），下一条指令是死代码，
+       * 但仍需标记为 leader 以确保 JMP 是其所在块的末尾指令，
+       * 否则 flatten 会将 JMP 作为块内指令复制而不更新跳转目标。 */
+      if (pc + 1 < code_size) {
         is_leader[pc + 1] = 1;
       }
     }
@@ -652,19 +655,22 @@ void luaO_shuffleBlocks (CFFContext *ctx) {
 ** 其中 prime 与 range 互质，确保映射是一一对应的
 */
 int luaO_encodeState (int state, unsigned int seed) {
-  /* 使用固定范围和与之互质的乘数 */
-  const int range = 32768;  /* 2的幂，适合XOR双射 */
-  const int prime = 7919;   /* 质数 */
-  
+  /* 使用固定范围和与之互质的乘数
+     range 必须 <= 16384 (2^14)，因为 EQI 的 sB 字段为 15 位，
+     可表示 [-16383, 16383]。编码后值在 [0, 16383]，
+     int2sC 映射到 [16383, 32766]，正好不超过 15 位上限 32767。 */
+  const int range = 16384;  /* 2^14，适合 EQI sB 范围 */
+  const int prime = 7919;   /* 质数，与 2^14 互质 */
+
   /* 使用种子生成偏移量 */
   int offset = (int)(seed % range);
-  
+
   /* 线性变换：(state * prime + offset) mod range */
   int encoded = ((state * prime) % range + offset) % range;
   if (encoded < 0) encoded += range;
-  
-  /* XOR 混淆，由于 range 是 32768，0x5A5A 不会超出范围，形成完美双射 */
-  encoded ^= 0x5A5A;
+
+  /* XOR 混淆，mask 仅使用低 14 位，保证结果仍在 [0, 16383] */
+  encoded ^= 0x3A5A;
 
   return encoded;
 }
@@ -791,12 +797,12 @@ static int emitStateTransition (CFFContext *ctx, int reg, int next_state) {
   return 1;
 }
 
-/* 发出状态比较指令 - 使用 OP_LOADI + OP_EQ（纯寄存器操作） */
+/* 发出状态比较指令 - 使用 OP_EQI（寄存器 vs 立即数）
+   避免 OP_EQ 的 Protect(savestate) 将 L->top 设为 ci->top，
+   否则 MULTRET CALL (B=0) 会读取被污染的 L->top 导致传参过多。
+   EQI 对整数不调用 Protect，不会污染 L->top。 */
 static int emitStateCompareReg (CFFContext *ctx, int reg, int state) {
-  /* 使用 ctx->state_reg + 2 作为比较临时寄存器（确保在栈外） */
-  int tmp = ctx->state_reg + 2;
-  if (emitInstruction(ctx, CREATE_ABx(OP_LOADI, tmp, state + OFFSET_sBx)) < 0) return -1;
-  Instruction cmp_inst = CREATE_ABCk(OP_EQ, reg, tmp, 0, 1);
+  Instruction cmp_inst = CREATE_ABCk(OP_EQI, reg, int2sC(state), 0, 1);
   return emitInstruction(ctx, cmp_inst);
 }
 
@@ -2549,6 +2555,57 @@ Instruction luaO_createNOP (unsigned int seed) {
 
 
 /*
+** 发射算术/位运算指令后紧跟一个 NOP。
+**
+** 原因：VM 的所有二元算术/位运算指令（ADD, SUB, MUL, ADDI, SHLI, SHRI,
+** BAND, BOR, BXOR 及其 K 变体）在快速路径（整数操作数）上执行 pc++ 以
+** 跳过标准 Lua 字节码中紧跟的 MMBIN 指令。但混淆器在不透明谓词中直接
+** 发射这些算术指令时，后面并没有 MMBIN，导致 pc++ 会跳过下一条真实指令
+** （如比较指令 EQI/GEI），使谓词求值错误，死代码变为可达。
+**
+** 解决方案：在每条算术指令后插入一条 NOP 来吸收 VM 的 pc++。
+*/
+static int emitArithInstr (CFFContext *ctx, Instruction inst) {
+  if (emitInstruction(ctx, inst) < 0) return -1;
+  Instruction nop = CREATE_ABCk(OP_NOP, 0, 0, 0, 0);
+  if (emitInstruction(ctx, nop) < 0) return -1;
+  return 0;
+}
+
+
+/*
+** 检查指令是否为 VM 会执行 pc++ 的算术/位运算指令。
+** 这些指令后面必须跟一条 NOP（或 MMBIN）来吸收 pc++。
+*/
+static int isArithOpcode (Instruction inst) {
+  OpCode op = GET_OPCODE(inst);
+  switch (op) {
+    case OP_ADD: case OP_SUB: case OP_MUL: case OP_MOD:
+    case OP_POW: case OP_DIV: case OP_IDIV:
+    case OP_BAND: case OP_BOR: case OP_BXOR:
+    case OP_SHL: case OP_SHR:
+    case OP_ADDI: case OP_SHLI: case OP_SHRI:
+    case OP_ADDK: case OP_SUBK: case OP_MULK: case OP_MODK:
+    case OP_POWK: case OP_DIVK: case OP_IDIVK:
+    case OP_BANDK: case OP_BORK: case OP_BXORK:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+
+/*
+** 发射任意指令：算术指令后自动追加 NOP，非算术指令原样发射。
+*/
+static int emitInstrSafe (CFFContext *ctx, Instruction inst) {
+  if (isArithOpcode(inst))
+    return emitArithInstr(ctx, inst);
+  return emitInstruction(ctx, inst);
+}
+
+
+/*
 ** 生成恒真不透明谓词
 ** @param ctx 上下文
 ** @param seed 随机种子指针
@@ -2588,17 +2645,14 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
   switch (variant) {
     case 0: {
       /* x*x >= 0 (平方数非负) */
-      /* LOADI reg1, random_val */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
-      /* MUL reg2, reg1, reg1 */
+      /* MUL reg2, reg1, reg1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction mul = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, mul) < 0) return -1;
+      if (emitArithInstr(ctx, mul) < 0) return -1;
       
-      /* 注意：不使用 MMBIN，因为它会干扰 VM 执行流程 */
-      
-      /* GEI reg2, 0, k=0 (reg2 >= 0 ? skip next) */
+      /* GEI reg2, 0, k=1 (reg2 >= 0 ? 恒真, 跳过下一条JMP) */
       Instruction cmp = CREATE_ABCk(OP_GEI, reg2, int2sC(0), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2606,51 +2660,45 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
     
     case 1: {
       /* x + 0 == x (恒等式，加0不变) */
-      /* LOADI reg1, random_val */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
-      /* ADDI reg2, reg1, 0 (reg2 = reg1 + 0 = reg1) */
+      /* ADDI reg2, reg1, 0 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction addi = CREATE_ABCk(OP_ADDI, reg2, reg1, int2sC(0), 0);
-      if (emitInstruction(ctx, addi) < 0) return -1;
+      if (emitArithInstr(ctx, addi) < 0) return -1;
       
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒真) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(random_val), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
     
     case 2: {
       /* 2*x - x == x (恒等式) */
-      /* LOADI reg1, random_val */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
-      /* SHLI reg2, reg1, 1 (reg2 = reg1 * 2) */
+      /* SHLI reg2, reg1, 1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction shl = CREATE_ABCk(OP_SHLI, reg2, reg1, int2sC(1), 0);
-      if (emitInstruction(ctx, shl) < 0) return -1;
+      if (emitArithInstr(ctx, shl) < 0) return -1;
       
-      /* SUB reg2, reg2, reg1 (reg2 = 2*x - x = x) */
+      /* SUB reg2, reg2, reg1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg2, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
+      if (emitArithInstr(ctx, sub) < 0) return -1;
       
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒真) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(random_val), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
     
     case 3: {
       /* x - x == 0 (恒等式) */
-      /* LOADI reg1, random_val */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
-      /* SUB reg2, reg1, reg1 (reg2 = x - x = 0) */
+      /* SUB reg2, reg1, reg1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
+      if (emitArithInstr(ctx, sub) < 0) return -1;
       
-      /* EQI reg2, 0, k=0 (reg2 == 0 ? 恒真) */
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2660,18 +2708,13 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       /* (x | 1) != 0 (恒真) */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
-      
-      /* BORI reg2, reg1, 1 */
-      Instruction bor = CREATE_ABCk(OP_BORK, reg2, reg1, int2sC(1), 0);
-      /* Wait, OP_BORK is BORK A B C where K[C] is integer. 
-      ** We should use LOADI for 1 and then BOR.
-      */
       Instruction load1 = CREATE_ABx(OP_LOADI, reg2, 1 + OFFSET_sBx);
       if (emitInstruction(ctx, load1) < 0) return -1;
-      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor_inst) < 0) return -1;
       
-      /* EQI reg2, 0, k=0 (reg2 == 0 is false, so we want k=0 to fall through) */
+      /* BOR reg2, reg1, reg2 — 后跟 NOP 吸收 VM 的 pc++ */
+      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
+      if (emitArithInstr(ctx, bor_inst) < 0) return -1;
+      
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 0);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2681,8 +2724,11 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       /* (x ^ x) == 0 (恒真) */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
+      
+      /* BXOR reg2, reg1, reg1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction bxor = CREATE_ABCk(OP_BXOR, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, bxor) < 0) return -1;
+      if (emitArithInstr(ctx, bxor) < 0) return -1;
+      
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2693,8 +2739,11 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       if (emitInstruction(ctx, load) < 0) return -1;
       Instruction load0 = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
       if (emitInstruction(ctx, load0) < 0) return -1;
+      
+      /* BAND reg2, reg1, reg2 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction band = CREATE_ABCk(OP_BAND, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, band) < 0) return -1;
+      if (emitArithInstr(ctx, band) < 0) return -1;
+      
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2705,9 +2754,12 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       if (emitInstruction(ctx, load) < 0) return -1;
       Instruction load0 = CREATE_ABx(OP_LOADI, reg2, 0 + OFFSET_sBx);
       if (emitInstruction(ctx, load0) < 0) return -1;
+      
+      /* BOR reg2, reg1, reg2 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction bor = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
+      if (emitArithInstr(ctx, bor) < 0) return -1;
+      
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(random_val), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
@@ -2715,9 +2767,12 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       /* (x & x) == x (恒真) */
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
+      
+      /* BAND reg2, reg1, reg1 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction band = CREATE_ABCk(OP_BAND, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, band) < 0) return -1;
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 1);
+      if (emitArithInstr(ctx, band) < 0) return -1;
+      
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(random_val), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
@@ -2727,8 +2782,11 @@ static int emitAlwaysTruePredicate (CFFContext *ctx, unsigned int *seed) {
       if (emitInstruction(ctx, load) < 0) return -1;
       Instruction loadm1 = CREATE_ABx(OP_LOADI, reg2, -1 + OFFSET_sBx);
       if (emitInstruction(ctx, loadm1) < 0) return -1;
+      
+      /* BOR reg2, reg1, reg2 — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction bor = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor) < 0) return -1;
+      if (emitArithInstr(ctx, bor) < 0) return -1;
+      
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(-1), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2768,10 +2826,9 @@ static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
+      /* MUL — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction mul = CREATE_ABCk(OP_MUL, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, mul) < 0) return -1;
-      
-      /* 注意：不使用 MMBIN，因为它会干扰 VM 执行流程 */
+      if (emitArithInstr(ctx, mul) < 0) return -1;
       
       /* LTI reg2, 0, k=0 (reg2 < 0 ? 恒假) */
       Instruction cmp = CREATE_ABCk(OP_LTI, reg2, int2sC(0), 0, 0);
@@ -2784,10 +2841,10 @@ static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
+      /* SUB — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction sub = CREATE_ABCk(OP_SUB, reg2, reg1, reg1, 0);
-      if (emitInstruction(ctx, sub) < 0) return -1;
+      if (emitArithInstr(ctx, sub) < 0) return -1;
       
-      /* EQI reg2, 0, k=1 (reg2 != 0 ? 恒假，因为k=1表示不等) */
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -2798,11 +2855,11 @@ static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
+      /* ADDI — 后跟 NOP 吸收 VM 的 pc++ */
       Instruction addi = CREATE_ABCk(OP_ADDI, reg2, reg1, int2sC(1), 0);
-      if (emitInstruction(ctx, addi) < 0) return -1;
+      if (emitArithInstr(ctx, addi) < 0) return -1;
       
-      /* EQ reg2, reg1, k=0 (reg2 == reg1 ? 恒假) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg2, reg1, 0, 0);
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(random_val), 0, 0);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
@@ -2812,8 +2869,7 @@ static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
       Instruction load = CREATE_ABx(OP_LOADI, reg1, random_val + OFFSET_sBx);
       if (emitInstruction(ctx, load) < 0) return -1;
       
-      /* EQ reg1, reg1, k=1 (reg1 != reg1 ?) */
-      Instruction cmp = CREATE_ABCk(OP_EQ, reg1, reg1, 0, 1);
+      Instruction cmp = CREATE_ABCk(OP_EQI, reg1, int2sC(random_val), 0, 1);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
     }
@@ -2825,10 +2881,11 @@ static int emitAlwaysFalsePredicate (CFFContext *ctx, unsigned int *seed) {
       
       Instruction load1 = CREATE_ABx(OP_LOADI, reg2, 1 + OFFSET_sBx);
       if (emitInstruction(ctx, load1) < 0) return -1;
-      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
-      if (emitInstruction(ctx, bor_inst) < 0) return -1;
       
-      /* EQI reg2, 0, k=0 (reg2 == 0 ? 恒假) */
+      /* BOR — 后跟 NOP 吸收 VM 的 pc++ */
+      Instruction bor_inst = CREATE_ABCk(OP_BOR, reg2, reg1, reg2, 0);
+      if (emitArithInstr(ctx, bor_inst) < 0) return -1;
+      
       Instruction cmp = CREATE_ABCk(OP_EQI, reg2, int2sC(0), 0, 0);
       if (emitInstruction(ctx, cmp) < 0) return -1;
       break;
@@ -4043,10 +4100,10 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       case OP_LEN: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = ci->top.p; luaV_objlen(L, base + a, s2v(base + b)); break; }
       case OP_CONCAT: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = base + a + b; luaV_concat(L, b); break; }
       case OP_JMP: { pc += (int)(bx - OFFSET_sJ) + 1; continue; }
-      case OP_EQ: { if (luaV_equalobj(L, s2v(base + a), s2v(base + b)) != flags) pc++; break; }
-      case OP_LT: { if (luaV_lessthan(L, s2v(base + a), s2v(base + b)) != flags) pc++; break; }
-      case OP_LE: { if (luaV_lessequal(L, s2v(base + a), s2v(base + b)) != flags) pc++; break; }
-      case OP_EQK: { if (luaV_equalobj(L, s2v(base + a), k + b) != flags) pc++; break; }
+      case OP_EQ: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = ci->top.p; { int cond = luaV_equalobj(L, s2v(base + a), s2v(base + b)); base = ci->func.p + 1; L->top.p = ci->top.p; if (cond != flags) pc++; } break; }
+      case OP_LT: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = ci->top.p; { int cond = luaV_lessthan(L, s2v(base + a), s2v(base + b)); base = ci->func.p + 1; L->top.p = ci->top.p; if (cond != flags) pc++; } break; }
+      case OP_LE: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = ci->top.p; { int cond = luaV_lessequal(L, s2v(base + a), s2v(base + b)); base = ci->func.p + 1; L->top.p = ci->top.p; if (cond != flags) pc++; } break; }
+      case OP_EQK: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); L->top.p = ci->top.p; { int cond = luaV_equalobj(L, s2v(base + a), k + b); base = ci->func.p + 1; L->top.p = ci->top.p; if (cond != flags) pc++; } break; }
       case OP_EQI: { TValue *ra_v = s2v(base + a); int cond = ttisinteger(ra_v) ? (ivalue(ra_v) == (lua_Integer)sC2int(b)) : (ttisfloat(ra_v) ? luai_numeq(fltvalue(ra_v), cast_num(sC2int(b))) : 0); if (cond != flags) pc++; break; }
       case OP_LTI: { TValue *ra_v = s2v(base + a); int cond = ttisinteger(ra_v) ? (ivalue(ra_v) < (lua_Integer)sC2int(b)) : (ttisfloat(ra_v) ? luai_numlt(fltvalue(ra_v), cast_num(sC2int(b))) : 0); if (cond != flags) pc++; break; }
       case OP_LEI: { TValue *ra_v = s2v(base + a); int cond = ttisinteger(ra_v) ? (ivalue(ra_v) <= (lua_Integer)sC2int(b)) : (ttisfloat(ra_v) ? luai_numle(fltvalue(ra_v), cast_num(sC2int(b))) : 0); if (cond != flags) pc++; break; }
@@ -4126,10 +4183,11 @@ int luaO_executeVM (lua_State *L, Proto *f) {
           pc = (int)(ci->u.l.savedpc - f->code);
           continue;
         } else {
-          ci->u.l.savedpc = (const Instruction *)(f->code + vm->size);
+          ci->u.l.savedpc = (const Instruction *)(f->code + pc + 1);
           CallInfo *newci = luaD_precall(L, ra, nresults);
           if (newci == NULL) {
           } else {
+            newci->callstatus |= CIST_FRESH;  /* prevent recursive luaO_executeVM via returning */
             luaV_execute(L, newci);
             ci = L->ci;
           }
@@ -4168,6 +4226,7 @@ int luaO_executeVM (lua_State *L, Proto *f) {
             /* C 函数已执行完毕 */
           } else {
             /* Lua 函数：执行它 */
+            newci->callstatus |= CIST_FRESH;  /* prevent recursive luaO_executeVM via returning */
             luaV_execute(L, newci);
           }
           base = ci->func.p + 1;
@@ -4198,6 +4257,17 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       case OP_RETURN: {
         StkId ra = base + a; int n_ = b - 1;
         if (n_ < 0) n_ = cast_int(L->top.p - ra);
+        if (flags) {  /* may there be open upvalues? */
+          ci->u2.nres = n_;
+          if (L->top.p < ci->top.p)
+            L->top.p = ci->top.p;
+          luaF_close(L, base, CLOSEKTOP, 1);
+          /* stack may have moved; refresh base and ra */
+          base = ci->func.p + 1;
+          ra = base + a;
+        }
+        if (c)  /* vararg function? adjust func to real position */
+          ci->func.p -= ci->u.l.nextraargs + c;
         L->top.p = ra + n_;
         ci->u.l.savedpc = (const Instruction *)(f->code + pc + 1);
         luaD_poscall(L, ci, n_);
@@ -4244,7 +4314,12 @@ int luaO_executeVM (lua_State *L, Proto *f) {
         }
         ci->u.l.savedpc = (const Instruction *)(f->code + pc);
         luaF_newtbcupval(L, ra + 3);
-        pc += bx + 1;
+        /* Standard VM does pc += Bx then falls through to TFORCALL via goto.
+           Here we do pc += Bx (without +1) so that after break→pc++ we land
+           on TFORCALL in the next iteration. Using +1 would skip TFORCALL
+           and jump directly to TFORLOOP, causing stale stack values to be
+           used as iterator results on the first iteration. */
+        pc += bx;
         break;
       }
       case OP_TFORCALL: {
@@ -4298,9 +4373,42 @@ int luaO_executeVM (lua_State *L, Proto *f) {
       case OP_CLOSURE: { if (bx >= 0 && bx < f->sizep) { Proto *p_ = f->p[bx]; LClosure *ncl = luaF_newLclosure(L, p_->sizeupvalues); ncl->p = p_; setclLvalue2s(L, base + a, ncl); for (int i = 0; i < p_->sizeupvalues; i++) { if (p_->upvalues[i].instack) ncl->upvals[i] = luaF_findupval(L, base + p_->upvalues[i].idx); else ncl->upvals[i] = cl->upvals[p_->upvalues[i].idx]; } } break; }
       case OP_NOP: { break; }
       case OP_LFALSESKIP: { setbfvalue(s2v(base + a)); pc++; break; }
-      case OP_MMBIN: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); return 1; }
-      case OP_MMBINI: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); return 1; }
-      case OP_MMBINK: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); return 1; }
+      case OP_MMBIN: {
+        StkId ra = base + a;
+        TValue *rb = s2v(base + b);
+        TMS tm = (TMS)c;
+        /* Get result register from the previous arithmetic instruction */
+        VMInstruction prev = decryptVMInst(vm->code[pc - 1], vm->encrypt_key, pc - 1);
+        StkId result = base + VM_GET_A(prev);
+        ci->u.l.savedpc = (const Instruction *)(f->code + pc);
+        luaT_trybinTM(L, s2v(ra), rb, result, tm);
+        base = ci->func.p + 1;
+        break;
+      }
+      case OP_MMBINI: {
+        StkId ra = base + a;
+        int imm = sC2int(b);
+        TMS tm = (TMS)c;
+        int flip = flags;
+        VMInstruction prev = decryptVMInst(vm->code[pc - 1], vm->encrypt_key, pc - 1);
+        StkId result = base + VM_GET_A(prev);
+        ci->u.l.savedpc = (const Instruction *)(f->code + pc);
+        luaT_trybiniTM(L, s2v(ra), imm, flip, result, tm);
+        base = ci->func.p + 1;
+        break;
+      }
+      case OP_MMBINK: {
+        StkId ra = base + a;
+        TValue *imm = &k[b];
+        TMS tm = (TMS)c;
+        int flip = flags;
+        VMInstruction prev = decryptVMInst(vm->code[pc - 1], vm->encrypt_key, pc - 1);
+        StkId result = base + VM_GET_A(prev);
+        ci->u.l.savedpc = (const Instruction *)(f->code + pc);
+        luaT_trybinassocTM(L, s2v(ra), imm, flip, result, tm);
+        base = ci->func.p + 1;
+        break;
+      }
       case OP_ERRNNIL: { TValue *ra = s2v(base + a); if (!ttisnil(ra)) { ci->u.l.savedpc = (const Instruction *)(f->code + pc); luaG_errnnil(L, cl, bx); } pc++; break; }
       case OP_EXTRAARG: { break; }
       case OP_NEWCONCEPT: { ci->u.l.savedpc = (const Instruction *)(f->code + pc); return 1; }

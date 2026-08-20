@@ -798,7 +798,6 @@ static void read_long_string (LexState *ls, SemInfo *seminfo, size_t sep) {
       }
       case ']': {
         size_t found_sep = skip_sep(ls);
-        
         if (found_sep == sep) {
           save_and_next(ls);  /* skip 2nd ']' */
           
@@ -1284,7 +1283,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           /* 外层 [[：sep == 2 时可能是 map 字面量 [[expr] = val]，
            * 扫描是否有 ']]' 闭合标记来判断 */
           if (sep == 2) {
-            
+
             /* 从 [[ 之后扫描，查找 ']]' */
             const char *p = saved_zp + 2;
             size_t n = saved_zn >= 2 ? saved_zn - 2 : 0;
@@ -1298,75 +1297,28 @@ static int llex (LexState *ls, SemInfo *seminfo) {
               n--;
             }
             if (!found_close) {
-              
-              /* 跨缓冲区扫描：当前缓冲区未找到 ']]'，尝试从文件读取后续数据 */
-              FILE *f = NULL;
-              if (ls->z->reader == getReader) {
-                /* include 文件：data 是 LoadState* */
-                LoadState *lf = (LoadState *)ls->z->data;
-                if (!lf->is_string) f = lf->u.f.f;
-              } else {
-                /* 主文件（luaL_loadfile）：data 是 LoadF* (from lauxlib.c) */
-                f = ((struct LoadF_Match *)ls->z->data)->f;
-              }
-
-              if (f != NULL) {
-                long saved_fpos = ftell(f);
-                if (saved_fpos >= 0) {
-                  char scan_buf[1024];
-                  int found_in_file = 0;
-                  /* 当前缓冲区最后一个字符，用于跨缓冲区边界匹配 ']' + ']' */
-                  char prev_char = (saved_zn > 0) ? saved_zp[saved_zn - 1] : 0;
-
-                  while (1) {
-                    size_t read_n = fread(scan_buf, 1, sizeof(scan_buf), f);
-                    if (read_n == 0) break;
-
-                    /* 检查跨缓冲区边界：prev_char == ']' && scan_buf[0] == ']' */
-                    if (prev_char == ']' && read_n > 0 && scan_buf[0] == ']') {
-                      found_in_file = 1;
-                      break;
-                    }
-
-                    /* 扫描 scan_buf 内部 */
-                    size_t i;
-                    for (i = 0; i + 1 < read_n; i++) {
-                      if (scan_buf[i] == ']' && scan_buf[i + 1] == ']') {
-                        found_in_file = 1;
-                        break;
-                      }
-                    }
-                    if (found_in_file) break;
-
-                    prev_char = (read_n > 0) ? scan_buf[read_n - 1] : 0;
+              /* ']]' 不在当前缓冲区内。
+               * 启发式判断：检查缓冲区内是否有 map 字面量特征 ]= 或 ] =，
+               * 避免直接操作 FILE* 导致内部缓冲区损坏。 */
+              const char *mp = saved_zp + 2;
+              size_t mn = saved_zn >= 2 ? saved_zn - 2 : 0;
+              int is_map = 0;
+              while (mn > 0) {
+                if (*mp == ']' && mn > 1) {
+                  /* 跳过空白后检查是否为 '=' */
+                  size_t k = 1;
+                  while (k < mn && (mp[k] == ' ' || mp[k] == '\t')) k++;
+                  if (k < mn && mp[k] == '=' &&
+                      !(k + 1 < mn && mp[k + 1] == '=')) {
+                    is_map = 1;
+                    break;
                   }
-
-                  fseek(f, saved_fpos, SEEK_SET);
-
-                  if (!found_in_file) {
-                    /* 确实没有 ']]' 闭合，是 map 字面量 [[expr] = val] */
-                    ls->curpos = saved_curpos;
-                    ls->current = saved_current;
-                    ls->buff->n = saved_bufflen;
-                    ls->z->p = saved_zp;
-                    ls->z->n = saved_zn;
-                    next(ls);  /* 只消费第一个 '[' */
-                    return '[';
-                  }
-                  /* found_in_file == true：跨缓冲区找到了 ']]'，是长字符串 */
-                } else {
-                  /* ftell 失败（管道/流输入），无法跨缓冲区扫描，回退到原逻辑 */
-                  ls->curpos = saved_curpos;
-                  ls->current = saved_current;
-                  ls->buff->n = saved_bufflen;
-                  ls->z->p = saved_zp;
-                  ls->z->n = saved_zn;
-                  next(ls);
-                  return '[';
                 }
-              } else {
-                /* 没有 FILE*（字符串输入），数据全在内存中不会跨缓冲区 */
-                /* 没找到 ']]' 就是 map 字面量 */
+                mp++;
+                mn--;
+              }
+              if (is_map) {
+                /* map 字面量 [[expr] = val] */
                 ls->curpos = saved_curpos;
                 ls->current = saved_current;
                 ls->buff->n = saved_bufflen;
@@ -1375,6 +1327,8 @@ static int llex (LexState *ls, SemInfo *seminfo) {
                 next(ls);
                 return '[';
               }
+              /* 无 ]= 特征：假设是长字符串，
+               * read_long_string 通过 zgetc/luaZ_fill 自然处理缓冲区边界 */
             }
           }
           /* 长字符串：恢复状态后重新读取 */
@@ -1390,9 +1344,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           ls->z->n = saved_zn;
           
           sep = skip_sep(ls);
-          
           read_long_string(ls, seminfo, sep);
-          
           return TK_STRING;
         }
         else if (sep == 0) {  /* '[=...' missing second bracket? */

@@ -2138,6 +2138,11 @@ void luaC_newobject(lua_State *L, int class_idx, int nargs) {
       luaL_error(L, "cannot instantiate interface");
       return;
     }
+    /* Trait 只用于方法混入，不能作为普通类创建实例。 */
+    if (flags & CLASS_FLAG_TRAIT) {
+      luaL_error(L, "cannot instantiate trait");
+      return;
+    }
   }
   lua_pop(L, 1);
   LUA_LOGI("[NEWOBJ] flags check done, calling verify_abstracts");
@@ -2986,8 +2991,11 @@ const char *luaC_classname(lua_State *L, int class_idx) {
 void lua_extendiface(lua_State *L, int child_idx, int parent_idx) {
   child_idx = absindex(L, child_idx);
   parent_idx = absindex(L, parent_idx);
+  /* 使用 rawset 避免触发 class __newindex 元方法，
+     否则 __parent 会被误存入 __statics 表 */
+  lua_pushstring(L, CLASS_KEY_PARENT);
   lua_pushvalue(L, parent_idx);
-  lua_setfield(L, child_idx, CLASS_KEY_PARENT);
+  lua_rawset(L, child_idx);
 }
 
 void luaC_newinterface(lua_State *L, TString *name, int parent_idx) {
