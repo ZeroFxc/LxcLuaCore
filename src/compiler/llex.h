@@ -53,7 +53,7 @@ enum RESERVED {
   TK_MODEQ,     /**< %= */
   TK_BANDEQ,    /**< &= */
   TK_BOREQ,     /**< |= */
-  TK_BXOREQ,    /**< ~= */
+  TK_BXOREQ,    /**< 保留(不可达)：~= 已被词法层识别为 TK_NE */
   TK_SHREQ,     /**< >>= */
   TK_SHLEQ,     /**< <<= */
   TK_CONCATEQ,  /**< ..= */

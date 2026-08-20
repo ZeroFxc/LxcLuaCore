@@ -13647,7 +13647,6 @@ static BinOpr getcompoundop (int token) {
     case TK_MODEQ:    return OPR_MOD;     /* %= */
     case TK_BANDEQ:   return OPR_BAND;    /* &= */
     case TK_BOREQ:    return OPR_BOR;     /* |= */
-    case TK_BXOREQ:   return OPR_BXOR;    /* ~= 作为位异或赋值 */
     case TK_SHREQ:    return OPR_SHR;     /* >>= */
     case TK_SHLEQ:    return OPR_SHL;     /* <<= */
     case TK_CONCATEQ: return OPR_CONCAT;  /* ..= */
@@ -13655,7 +13654,6 @@ static BinOpr getcompoundop (int token) {
     case TK_ANDANDEQ: return OPR_AND;     /* &&= 逻辑与赋值（与 AST 解析器对齐） */
     case TK_OROREQ:   return OPR_OR;      /* ||= 逻辑或赋值（与 AST 解析器对齐） */
     case TK_POWEQ:    return OPR_POW;     /* ^= */
-    case TK_NE:       return OPR_BXOR;    /* ~= 在赋值上下文中作为位异或赋值 */
     default:          return OPR_NOBINOPR;
   }
 }

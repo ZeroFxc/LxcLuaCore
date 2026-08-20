@@ -97,7 +97,6 @@ a //= 3     -- a = a // 3
 a %= 2      -- a = a % 2
 a &= 0xFF   -- a = a & 0xFF
 a |= 0x100  -- a = a | 0x100
-a ^= 0x0F   -- 按位异或赋值
 a >>= 2     -- a = a >> 2
 a <<= 1     -- a = a << 1
 a ..= "suffix"  -- a = a .. "suffix"
