@@ -3098,8 +3098,12 @@ void luaC_implement(lua_State *L, int class_idx, int interface_idx) {
         lua_rawget(L, abstracts_idx);
         if (lua_isnil(L, -1)) {
           lua_pop(L, 1);  /* 移除nil */
-          lua_pushvalue(L, -1);  /* 复制key */
-          lua_pushvalue(L, -3);  /* 复制value */
+          /* 此时栈为: ... methods_table, key(方法名), value(参数个数)
+             rawset 需要按 key、value 顺序压栈。原代码用 -1/-3 复制，
+             实际把 value 当 key、把 key 当 value，导致抽象方法表写成
+             {[参数个数]=方法名}，验证时 key 变成整数导致"abstract method '?'"。 */
+          lua_pushvalue(L, -2);  /* 复制key（方法名） */
+          lua_pushvalue(L, -2);  /* 复制value（push key 后原 value 已移至 -2） */
           lua_rawset(L, abstracts_idx);
         } else {
           lua_pop(L, 1);  /* 移除已存在的值 */
