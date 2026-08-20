@@ -3915,11 +3915,12 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               }
             }
           }
-          /* 遍历哈希部分 */
-          if (parents->lsizenode > 0) {
-            for (int i = 0; i < (1 << parents->lsizenode); i++) {
+          /* 遍历哈希部分（注意：不能用 lsizenode>0 守卫，单元素哈希表 lsizenode==0 会漏掉） */
+          {
+            int size = sizenode(parents);
+            for (int i = 0; i < size; i++) {
               Node *n = gnode(parents, i);
-              if (!ttisnil(gval(n))) {
+              if (!isempty(gval(n))) {
                 setobj2s(L, L->top.p, &class_val);
                 L->top.p++;
                 setobj2s(L, L->top.p, gval(n));
@@ -4273,12 +4274,15 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               luaH_setint(L, result, (lua_Integer)(j + 1), v);
           }
         }
-        /* 遍历第一个表的哈希部分 */
-        if (t1->lsizenode > 0) {
+        /* 遍历第一个表的哈希部分
+         * 注意：不能用 lsizenode>0 作为守卫，单元素哈希表的 lsizenode==0
+         * （size=1<<0=1），会导致仅含一个键值对的表被整体跳过。 */
+        {
           unsigned int j;
-          for (j = 0; j < (1u << t1->lsizenode); j++) {
+          int size = sizenode(t1);
+          for (j = 0; j < size; j++) {
             Node *n = gnode(t1, j);
-            if (!ttisnil(gval(n))) {
+            if (!isempty(gval(n))) {
               TValue k;
               getnodekey(L, &k, n);
               luaH_set(L, result, &k, gval(n));
@@ -4295,12 +4299,14 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
               luaH_setint(L, result, (lua_Integer)(j + 1), v);
           }
         }
-        /* 遍历第二个表的哈希部分（覆盖同名键） */
-        if (t2->lsizenode > 0) {
+        /* 遍历第二个表的哈希部分（覆盖同名键）
+         * 同第一个表：不能用 lsizenode>0 作为守卫，会漏掉单元素哈希表。 */
+        {
           unsigned int j;
-          for (j = 0; j < (1u << t2->lsizenode); j++) {
+          int size = sizenode(t2);
+          for (j = 0; j < size; j++) {
             Node *n = gnode(t2, j);
-            if (!ttisnil(gval(n))) {
+            if (!isempty(gval(n))) {
               TValue k;
               getnodekey(L, &k, n);
               luaH_set(L, result, &k, gval(n));
