@@ -1,0 +1,4 @@
+LXCLUA Obfuscator Test Report
+Generated: Mon Aug 17 06:55:25     2026
+
+Total: 90  Pass: 90  CompileFail: 0  RunFail: 0  Timeout: 0  OutputDiff: 0

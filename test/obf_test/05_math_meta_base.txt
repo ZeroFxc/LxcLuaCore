@@ -1,0 +1,23 @@
+42
+3
+4
+5
+1
+4.0
+3.1415926535897931
+inf
+12
+15
+255
+255
+16
+64
+255
+false	test/obf_test/cases/05_math_meta.lua:23: intentional error
+true	42
+false
+Vec(30)
+true
+false
+Hi from obj1
+42

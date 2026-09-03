@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LXCLUA 混淆器功能测试报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #0f1117; color: #d4d4d4; line-height: 1.7; padding: 24px; }
+  h1 { color: #fff; font-size: 28px; margin-bottom: 4px; }
+  .subtitle { color: #858585; font-size: 14px; margin-bottom: 32px; }
+  h2 { color: #569cd6; font-size: 20px; margin: 32px 0 16px; border-bottom: 1px solid #2d2d30; padding-bottom: 8px; }
+  h3 { color: #4ec9b0; font-size: 16px; margin: 24px 0 12px; }
+
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .card { background: #1e1e2e; border: 1px solid #2d2d30; border-radius: 8px; padding: 20px; text-align: center; }
+  .card .num { font-size: 36px; font-weight: 700; }
+  .card .label { font-size: 13px; color: #858585; margin-top: 4px; }
+  .card.pass .num { color: #4ec9b0; }
+  .card.fail .num { color: #f44747; }
+  .card.warn .num { color: #dcdcaa; }
+  .card.total .num { color: #569cd6; }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 13px; }
+  th { background: #1e1e2e; color: #569cd6; padding: 10px 8px; text-align: left; border-bottom: 2px solid #2d2d30; position: sticky; top: 0; }
+  td { padding: 7px 8px; border-bottom: 1px solid #1e1e2e; }
+  tr:hover td { background: #1a1a2e; }
+  .pass { color: #4ec9b0; }
+  .fail { color: #f44747; }
+  .warn { color: #dcdcaa; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .tag-pass { background: #1a3a2a; color: #4ec9b0; }
+  .tag-fail { background: #3a1a1a; color: #f44747; }
+  .tag-warn { background: #3a3a1a; color: #dcdcaa; }
+  .tag-noop { background: #2a2a2a; color: #858585; }
+  .tag-critical { background: #3a1a1a; color: #ff6b6b; }
+
+  .bug-box { background: #1e1e2e; border-left: 4px solid #f44747; border-radius: 0 8px 8px 0; padding: 16px 20px; margin: 12px 0; }
+  .bug-box.medium { border-left-color: #dcdcaa; }
+  .bug-box.info { border-left-color: #569cd6; }
+  .bug-box h4 { color: #f44747; margin-bottom: 8px; }
+  .bug-box.medium h4 { color: #dcdcaa; }
+  .bug-box.info h4 { color: #569cd6; }
+  .bug-box code { background: #0f1117; padding: 2px 6px; border-radius: 3px; color: #ce9178; font-family: 'Consolas', monospace; font-size: 12px; }
+  .bug-box pre { background: #0f1117; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; color: #d4d4d4; font-size: 12px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 20px; font-size: 12px; }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+
+  .progress-bar { height: 8px; border-radius: 4px; background: #2d2d30; overflow: hidden; margin: 4px 0; }
+  .progress-fill { height: 100%; border-radius: 4px; }
+
+  .opt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
+  .opt-card { background: #1e1e2e; border: 1px solid #2d2d30; border-radius: 8px; padding: 14px 16px; }
+  .opt-card .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .opt-card .name { font-weight: 600; font-size: 14px; }
+  .opt-card .desc { font-size: 12px; color: #858585; }
+  .opt-card .bar { margin-top: 8px; }
+
+  @media (max-width: 768px) {
+    body { padding: 12px; }
+    table { font-size: 11px; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+
+<h1>LXCLUA 混淆器功能测试报告</h1>
+<p class="subtitle">生成时间：2026-08-17 02:30 · 测试环境：Windows / git-bash · 工具：luac.exe + lxclua.exe</p>
+
+<div class="summary-cards">
+  <div class="card total"><div class="num">90</div><div class="label">总测试数</div></div>
+  <div class="card pass"><div class="num">63</div><div class="label">通过 (70%)</div></div>
+  <div class="card fail"><div class="num">5</div><div class="label">崩溃 (SIGSEGV)</div></div>
+  <div class="card warn"><div class="num">3</div><div class="label">超时 (死循环)</div></div>
+  <div class="card fail"><div class="num">19</div><div class="label">输出差异</div></div>
+</div>
+
+<h2>测试矩阵</h2>
+<p>6 个测试用例覆盖函数调用/递归/多返回值/变长参数、控制流(if-elseif/while/repeat/for/break/nested)、闭包/upvalue/高阶函数、字符串/表操作、数学/位运算/pcall/元表、边界用例(goto/OOP/协程/尾递归)。</p>
+
+<div class="legend">
+  <span><span class="tag tag-pass">PASS</span> 通过</span>
+  <span><span class="tag tag-fail">FAIL</span> 崩溃/超时</span>
+  <span><span class="tag tag-warn">DIFF</span> 输出差异</span>
+  <span><span class="tag tag-noop">NOOP</span> 独立使用无效(需配合CFF)</span>
+</div>
+
+<table>
+<thead>
+<tr><th>混淆选项</th><th>01_函数</th><th>02_控制流</th><th>03_闭包</th><th>04_字符串表</th><th>05_数学元表</th><th>06_边界</th><th>通过率</th><th>混淆生效</th></tr>
+</thead>
+<tbody>
+<tr><td><b>-f</b> CFF 控制流扁平化</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td>3/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr><td><b>-B</b> 基本块打乱</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-g</b> 虚假块</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-P</b> 不透明谓词</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-r</b> 随机NOP</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-e</b> 状态编码</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-b</b> 二分搜索分发器</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td>3/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr><td><b>-i</b> 函数交织</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-n</b> 嵌套分发器</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr><td><b>-m</b> VM保护</td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-fail">CRASH</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-fail">CRASH</span></td><td><span class="tag tag-fail">TIMEOUT</span></td><td>0/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr><td><b>-E</b> 字符串加密</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td>6/6</td><td><span class="tag tag-noop">独立无效</span></td></tr>
+<tr style="background:#1a1a2e"><td><b>-O1</b> 轻量预设</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td>3/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr style="background:#1a1a2e"><td><b>-O2</b> 中等预设</td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-fail">FAIL</span></td><td><span class="tag tag-fail">TIMEOUT</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td>1/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr style="background:#1a1a2e"><td><b>-O3</b> 重度预设</td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-warn">DIFF</span></td><td>3/6</td><td><span class="pass">✓ 生效</span></td></tr>
+<tr style="background:#1a1a2e"><td><b>-Oa</b> 全部预设</td><td><span class="tag tag-warn">DIFF</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-fail">CRASH</span></td><td><span class="tag tag-pass">PASS</span></td><td><span class="tag tag-fail">CRASH</span></td><td><span class="tag tag-fail">TIMEOUT</span></td><td>2/6</td><td><span class="pass">✓ 生效</span></td></tr>
+</tbody>
+</table>
+
+<h2>混淆生效性验证</h2>
+<p>通过对比混淆前后字节码文件大小，验证混淆是否实际生效。大部分选项单独使用时不改变文件大小——它们依赖 CFF 的 dispatcher 结构才能发挥作用。</p>
+
+<div class="opt-grid">
+  <div class="opt-card">
+    <div class="header"><span class="name">-f CFF</span><span class="tag tag-pass">✓ 生效</span></div>
+    <div class="desc">独立生效。10431 → 11212 字节 (+7.5%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-B BlockShuffle</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时重排基本块（不改变大小，改变顺序）</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-g BogusBlocks</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时 11212 → 19434 (+73%)，大幅膨胀</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-P OpaquePredicates</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时 11212 → 11396 (+1.6%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-r RandomNOP</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时 11212 → 12455 (+11%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-e StateEncode</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时不改变大小（编码值不变长）</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-b BinaryDispatcher</span><span class="tag tag-pass">✓ 生效</span></div>
+    <div class="desc">隐含CFF。10431 → 11573 (+11%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-i FuncInterleave</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时 11212 → 14977 (+34%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-n NestedDispatcher</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时 11212 → 11670 (+4%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-m VMProtect</span><span class="tag tag-pass">✓ 生效</span></div>
+    <div class="desc">独立生效。10431 → 12569 (+21%)</div>
+  </div>
+  <div class="opt-card">
+    <div class="header"><span class="name">-E StringEncryption</span><span class="tag tag-noop">独立无效</span></div>
+    <div class="desc">配合CFF时仅 +5 字节，加密效果存疑</div>
+  </div>
+</div>
+
+<h2>发现的问题</h2>
+
+<div class="bug-box">
+<h4>BUG-1 [严重] VM Protect (-m) 完全不可用</h4>
+<p><b>影响范围</b>：6/6 测试全部失败（2 崩溃 + 1 超时 + 3 输出差异）</p>
+<p><b>根本原因</b>：VM 字节码翻译器未能正确处理以下 opcode 模式：</p>
+<ul style="margin: 8px 0 8px 20px;">
+  <li><b>CALL/CLOSURE</b>：变长参数函数 <code>sum(...)</code> 返回函数引用而非调用结果。输出 <code>function: 0x138490</code> 而非 <code>15</code></li>
+  <li><b>GETUPVAL/闭包</b>：闭包访问 upvalue 时 SIGSEGV（03_closures、05_math_meta）</li>
+  <li><b>TFORPREP/TFORCALL</b>：<code>pairs()</code> 遍历哈希表失败，输出空或 "invalid key to 'next'"</li>
+  <li><b>协程</b>：<code>coroutine.yield/resume</code> 导致无限循环（06_edgecases 超时）</li>
+</ul>
+<pre>期望输出:                    实际输出:
+7                             7
+10    20    30                10    20    30
+55                            55
+10                            10
+15                            function: 0x138490  1  2  3  4  5  19
+30                            function: 0x138490  10  20  35</pre>
+</div>
+
+<div class="bug-box medium">
+<h4>BUG-2 [中等] CFF (-f) / BinaryDispatcher (-b) 主块末尾栈泄漏</h4>
+<p><b>影响范围</b>：CFF 3/6 失败，BinaryDispatcher 3/6 失败（同样的 3 个用例）</p>
+<p><b>症状</b>：主 chunk 最后一个 <code>print()</code> 调用获得分发器残留的栈上值，输出额外的 tab 分隔值</p>
+<p><b>根因分析</b>：CFF dispatcher 在退出状态（exit state）切换时，未正确清理状态寄存器中的残留值。这些值泄漏到 Lua 栈上，被下一个 <code>print</code> 调用作为额外参数接收。</p>
+<p><b>复现</b>：03_closures 最后 <code>print(apply(fn, 7))</code> 应输出 <code>49</code>，实际输出 <code>49\t7\t49\t9\t7\t9</code></p>
+<pre>03_closures 末尾:
+  期望: 49
+  实际: 49    7    49    9    7    9    ← 分发器残留值
+
+04_strings_tables 第12行:
+  期望: 11
+  实际: 11    Hello World    11    HELLO WORLD    3.14    userdata: 0x...    ← 多个print的残留值累积</pre>
+<p><b>注意</b>：非末尾的 print 调用不受影响，说明问题仅出现在 dispatcher 退出路径。</p>
+</div>
+
+<div class="bug-box medium">
+<h4>BUG-3 [中等] -O2 预设加剧 CFF Bug，破坏函数返回值</h4>
+<p><b>影响范围</b>：1/6 通过（最差的预设）</p>
+<p><b>症状</b>：CFF + BogusBlocks + OpaquePredicates + RandomNOP 组合时，函数返回值被破坏</p>
+<ul style="margin: 8px 0 8px 20px;">
+  <li><code>sum(1,2,3,4,5)</code> 返回 <code>0</code> 而非 <code>15</code>——for 循环累加失效</li>
+  <li><code>classify(7)</code> 返回 <code>"zero"</code> 而非 <code>"small"</code>——条件分支被 bogus block 干扰</li>
+  <li><code>pairs()</code> 报错 <code>invalid key to 'next'</code>——迭代器状态被破坏</li>
+  <li>闭包测试无限循环超时</li>
+</ul>
+<p><b>根因</b>：BogusBlocks 插入的虚假代码块可能修改了 CFF dispatcher 的状态转移逻辑，导致条件分支和循环的正确路径被错误跳过。</p>
+</div>
+
+<div class="bug-box info">
+<h4>设计说明：8 个选项独立使用为空操作</h4>
+<p>以下 8 个选项单独使用时不改变字节码，它们依赖 CFF 的 dispatcher 结构才能生效：</p>
+<table style="margin-top: 8px;">
+<thead><tr><th>选项</th><th>独立效果</th><th>配合 CFF 效果</th></tr></thead>
+<tbody>
+<tr><td>-B BlockShuffle</td><td>无（无可重排的块）</td><td>重排 CFF 块顺序（大小不变）</td></tr>
+<tr><td>-g BogusBlocks</td><td>无（无 dispatcher 可插入）</td><td>插入虚假块 +73%</td></tr>
+<tr><td>-P OpaquePredicates</td><td>无</td><td>插入谓词 +1.6%</td></tr>
+<tr><td>-r RandomNOP</td><td>无</td><td>插入 NOP +11%</td></tr>
+<tr><td>-e StateEncode</td><td>无（无状态变量）</td><td>编码状态值（大小不变）</td></tr>
+<tr><td>-i FuncInterleave</td><td>无</td><td>交织函数路径 +34%</td></tr>
+<tr><td>-n NestedDispatcher</td><td>无</td><td>嵌套 dispatcher +4%</td></tr>
+<tr><td>-E StringEncryption</td><td>无</td><td>仅 +5 字节（加密效果存疑）</td></tr>
+</tbody>
+</table>
+<p style="margin-top: 8px;"><b>建议</b>：这是合理的设计（这些选项增强 CFF），但 luac --help 未说明此依赖关系，用户可能误以为独立使用即有效。</p>
+</div>
+
+<h2>各选项详细通过率</h2>
+
+<table>
+<thead>
+<tr><th>选项</th><th>通过</th><th>失败</th><th>通过率</th><th>状态</th></tr>
+</thead>
+<tbody>
+<tr><td>-B BlockShuffle</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-g BogusBlocks</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-P OpaquePredicates</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-r RandomNOP</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-e StateEncode</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-i FuncInterleave</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-n NestedDispatcher</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-E StringEncryption</td><td>6</td><td>0</td><td>100%</td><td><span class="tag tag-pass">可用</span></td></tr>
+<tr><td>-f CFF</td><td>3</td><td>3</td><td>50%</td><td><span class="tag tag-warn">有Bug</span></td></tr>
+<tr><td>-b BinaryDispatcher</td><td>3</td><td>3</td><td>50%</td><td><span class="tag tag-warn">有Bug</span></td></tr>
+<tr><td>-m VMProtect</td><td>0</td><td>6</td><td>0%</td><td><span class="tag tag-critical">不可用</span></td></tr>
+<tr><td>-O1 Light</td><td>3</td><td>3</td><td>50%</td><td><span class="tag tag-warn">有Bug</span></td></tr>
+<tr><td>-O2 Medium</td><td>1</td><td>5</td><td>17%</td><td><span class="tag tag-fail">严重问题</span></td></tr>
+<tr><td>-O3 Heavy</td><td>3</td><td>3</td><td>50%</td><td><span class="tag tag-warn">有Bug</span></td></tr>
+<tr><td>-Oa All</td><td>2</td><td>4</td><td>33%</td><td><span class="tag tag-fail">严重问题</span></td></tr>
+</tbody>
+</table>
+
+<h2>结论与建议</h2>
+
+<div class="bug-box info">
+<h4>可用选项（推荐）</h4>
+<p>以下 8 个选项功能正确，但需配合 <code>-f</code>（CFF）使用才能生效：</p>
+<pre>luac -f -B -g -P -r -e -i -n -o output.out input.lua</pre>
+<p style="margin-top:8px;"><b>-E StringEncryption</b> 虽不报错但加密效果存疑（仅 +5 字节），建议检查实现。</p>
+</div>
+
+<div class="bug-box medium">
+<h4>需修复的选项</h4>
+<ul style="margin: 8px 0 8px 20px;">
+  <li><b>-f CFF / -b BinaryDispatcher</b>：修复 dispatcher 退出状态的栈清理逻辑。在 exit state 转换时调用 <code>luaO_setstack</code> 或等价操作清除残留寄存器值</li>
+  <li><b>-O2 预设</b>：BogusBlocks 插入的虚假块不应影响真实条件分支路径。检查 <code>luaO_insertBogusBlocks</code> 中的状态转移目标是否正确指向 fall-through 块</li>
+</ul>
+</div>
+
+<div class="bug-box">
+<h4>需重写的选项</h4>
+<p><b>-m VMProtect</b>：VM 字节码翻译器存在根本性缺陷，无法正确处理 CALL、CLOSURE、GETUPVAL、TFORPREP 等核心 opcode。建议：</p>
+<ol style="margin: 8px 0 8px 20px;">
+  <li>检查 <code>luaO_convertToVM</code> 中 CALL/CLOSURE 指令的翻译逻辑</li>
+  <li>检查 <code>luaO_executeVM</code> 中 VM_OP_CALL/VM_OP_CLOSURE 的执行逻辑</li>
+  <li>确保 VM_OP_TFORPREP/VM_OP_TFORCALL 正确维护迭代器状态</li>
+  <li>在修复前，从 <code>-Oa</code> 预设中移除 VMProtect</li>
+</ol>
+</div>
+
+<h2>测试文件清单</h2>
+<table>
+<thead><tr><th>文件</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>test/obf_test/run_tests.sh</code></td><td>自动化测试脚本（可重复运行）</td></tr>
+<tr><td><code>test/obf_test/cases/01_functions.lua</code></td><td>函数调用/递归/多返回值/变长参数</td></tr>
+<tr><td><code>test/obf_test/cases/02_controlflow.lua</code></td><td>if-elseif/while/repeat/for/break/nested loops</td></tr>
+<tr><td><code>test/obf_test/cases/03_closures.lua</code></td><td>闭包/upvalue/高阶函数/memoize</td></tr>
+<tr><td><code>test/obf_test/cases/04_strings_tables.lua</code></td><td>字符串操作/表操作/排序/哈希表</td></tr>
+<tr><td><code>test/obf_test/cases/05_math_meta.lua</code></td><td>数学/位运算/pcall/元表/__index/__call</td></tr>
+<tr><td><code>test/obf_test/cases/06_edgecases.lua</code></td><td>goto/OOP继承/协程/尾递归/空函数</td></tr>
+<tr><td><code>test/obf_test/report/results.csv</code></td><td>完整 CSV 结果数据</td></tr>
+<tr><td><code>test/obf_test/report/details.txt</code></td><td>每条测试的详细通过/失败信息</td></tr>
+</tbody>
+</table>
+
+<p style="margin-top: 32px; color: #858585; font-size: 12px;">LXCLUA Obfuscator Test Suite · 90 tests · 6 test cases × 15 configurations</p>
+
+</body>
+</html>

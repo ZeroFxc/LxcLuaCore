@@ -1,0 +1,1 @@
+@test/obf_test/cases/02_controlflow.lua:59: warning: unused local variable 'v' [unused]

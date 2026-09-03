@@ -70,9 +70,6 @@ int luaopen_wasm3(lua_State *L);
 int luaopen_wasmtime(lua_State *L);
 #endif
 
-/* 声明lua2wasm库的初始化函数 */
-int luaopen_lua2wasm(lua_State *L);
-
 /* 声明lexer库的初始化函数 */
 int luaopen_lexer(lua_State *L);
 
@@ -149,7 +146,6 @@ static const luaL_Reg stdlibs[] = {
 #ifndef __EMSCRIPTEN__
   {"wasmtime", luaopen_wasmtime},
 #endif
-  {"lua2wasm", luaopen_lua2wasm},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},
@@ -229,7 +225,6 @@ static const luaL_Reg loadedlibs[] = {
 #ifndef __EMSCRIPTEN__
   {"wasmtime", luaopen_wasmtime},
 #endif
-  {"lua2wasm", luaopen_lua2wasm},
   {LUA_LEXERLIBNAME, luaopen_lexer},
   {"quickjs", luaopen_quickjs},
   {"asyncio", luaopen_asyncio},

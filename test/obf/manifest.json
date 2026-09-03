@@ -1,0 +1,29 @@
+{
+  "versionName": "1.0",
+  "versionCode": "1",
+  "uses_sdk": {
+    "minSdkVersion": "21",
+    "targetSdkVersion": "29"
+  },
+  "package": "dcore.smgr",
+  "application": {
+    "label": "smgr",
+    "debugmode": true
+  },
+  "user_permission": [
+  "WRITE_EXTERNAL_STORAGE",
+  "READ_EXTERNAL_STORAGE",
+  "INTERNET"
+  ],
+  "compilation": true,
+  "skip_compilation": [
+  ],
+  "jmp": {
+    "encryption": false,
+    "dump_obfuscate": false
+  },
+  "print": {
+    "type": "Snackbar",
+    "copy": true
+  }
+}

@@ -30,7 +30,7 @@ override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H $(WASMTIME_INC)
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H $(WASMTIME_INC)
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
@@ -55,8 +55,8 @@ WASM_EXPORT_NAME_LUAC =
 WASM_EXPORT_NAME_LUACCHECK =
 
 # Special flags for compiler modules; -Os reduces code size.
-VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm:pcre2/src
-CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/lua2wasm -Ipcre2 $(WASMTIME_INC)
+VPATH = src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:pcre2/src
+CMCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Ipcre2 $(WASMTIME_INC)
 
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
@@ -66,16 +66,6 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 LUA_A=	liblxclua.a
 CORE_O= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o last_serialize.o last_unparse.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
-# lua2wasm: Lua-to-WASM 编译器模块（编译进 liblxclua.a）
-# 核心编译管线：词法分析→语法分析→代码生成→WAT输出
-LUA2WASM_CORE_O= $(addprefix $(BUILDDIR)/,ast.o lexer_l2w.o parser_l2w.o wat_builder.o codegen_l2w.o builtins_l2w.o xalloc_l2w.o)
-# WAT→WASM 汇编器
-WAT2WASM_CORE_O= $(BUILDDIR)/wat2wasm_core.o
-# Lua 模块入口：luaopen_lua2wasm
-LUA2WASM_LIB_O= $(BUILDDIR)/lua2wasmlib.o
-# CLI 主程序（可选独立编译）
-LUA2WASM_CLI_O= $(BUILDDIR)/lua2wasm_main.o
-WAT2WASM_CLI_O= $(BUILDDIR)/wat2wasm_cli.o
 LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o lmaplib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lnativeparser.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lcrypto.o luuid.o lrsa.o lecc.o lastlib.o)
 # PCRE2 正则引擎库
 PCRE2_CFLAGS = -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
@@ -84,7 +74,7 @@ PCRE2_O= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_
 PCRE2_O_NOJIT= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_stubs.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
 LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
-BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O) $(PCRE2_O)
+BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(PCRE2_O)
 BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS) $(PCRE2_O)
 
 LUA_T=	lxclua
@@ -189,55 +179,6 @@ $(BUILDDIR)/lspsrv_util.o: src/lspsrv/lspsrv_util.c src/lspsrv/lspsrv.h | $(BUIL
 $(BUILDDIR)/pcre2_%.o: pcre2/src/pcre2_%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(PCRE2_CFLAGS) -Ipcre2 -Ipcre2/src -c $< -o $@
 
-# --- lua2wasm: Lua-to-WASM 编译器 ---
-# 核心模块已编译进 $(LUA_A)，可在 Lua 中通过 require("lua2wasm") 使用
-# 以下为可选独立 CLI 工具
-
-# lua2wasm CLI：将 .lua 编译为 .wat / .wasm（独立命令行工具）
-lua2wasm: $(LUA2WASM_CLI_O) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O)
-	$(CC) -o $@ $(LDFLAGS) $(LUA2WASM_CLI_O) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LIBS)
-
-# wat2wasm CLI：WAT 文本转 WASM 二进制（独立命令行工具）
-wat2wasm: $(WAT2WASM_CLI_O) $(WAT2WASM_CORE_O)
-	$(CC) -o $@ $(LDFLAGS) $(WAT2WASM_CLI_O) $(WAT2WASM_CORE_O) $(LIBS)
-
-# --- lua2wasm 编译规则（显式路径，避免与 lxclua 同名文件冲突） ---
-
-$(BUILDDIR)/ast.o: src/lua2wasm/ast.c src/lua2wasm/ast.h src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/lexer_l2w.o: src/lua2wasm/lexer.c src/lua2wasm/lexer.h src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/parser_l2w.o: src/lua2wasm/parser.c src/lua2wasm/parser.h src/lua2wasm/builtins.h src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/wat_builder.o: src/lua2wasm/wat_builder.c src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/codegen_l2w.o: src/lua2wasm/codegen.c src/lua2wasm/codegen.h src/lua2wasm/parser.h src/lua2wasm/wat_builder.h src/lua2wasm/builtins.h src/lua2wasm/xalloc.h src/lua2wasm/prelude_wat.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/builtins_l2w.o: src/lua2wasm/builtins.c src/lua2wasm/builtins.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/xalloc_l2w.o: src/lua2wasm/xalloc.c src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/wat2wasm_core.o: src/lua2wasm/wat2wasm.c src/lua2wasm/wat2wasm.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-# lua2wasm Lua 模块入口（编译进 liblxclua.a）
-$(BUILDDIR)/lua2wasmlib.o: src/lua2wasm/lua2wasmlib.c src/lua2wasm/lexer.h src/lua2wasm/parser.h src/lua2wasm/codegen.h src/lua2wasm/wat2wasm.h src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h src/core/lua.h src/core/lauxlib.h src/core/lualib.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-# 独立 CLI 编译规则
-$(BUILDDIR)/lua2wasm_main.o: src/lua2wasm/main.c src/lua2wasm/codegen.h src/lua2wasm/lexer.h src/lua2wasm/parser.h src/lua2wasm/wat2wasm.h src/lua2wasm/wat_builder.h src/lua2wasm/xalloc.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
-$(BUILDDIR)/wat2wasm_cli.o: src/lua2wasm/wat2wasm_cli.c src/lua2wasm/wat2wasm.h | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CMCFLAGS) -c $< -o $@
-
 $(WEBSERVER_A): $(WEBSERVER_O) $(LUA_A)
 	$(CC) -shared -o $@ $(LDFLAGS) $(WEBSERVER_O) $(LUA_A) $(LIBS) -lws2_32
 
@@ -248,8 +189,6 @@ clean:
 	$(RM) $(ALL_T) $(ALL_A) $(ALL_O) $(QJSC_O) $(QJS_EXE_O) quickjs/repl.c
 	$(RM) lxclua.exe luac.exe luaccheck.exe lxclua.dll qjs.exe qjsc.exe
 	$(RM) lxclua-lsp.exe
-	$(RM) lua2wasm.exe wat2wasm.exe liblua2wasm.a
-	$(RM) lua2wasm_wasm.js lua2wasm_wasm.wasm
 	$(RM) *.o *.a *.dll *.js *.wasm lxclua_standalone.html
 	$(RM) *.lua *.luac *.out *.outa *.log
 
@@ -821,7 +760,7 @@ wasm:
 wasmlsp:
 	PYTHONUTF8=1 $(MAKE) $(LSP_SRV_O) CC="$(EMCC) -std=c23" \
 	"CFLAGS=-O3 -DNDEBUG -fno-exceptions" \
-	"CMCFLAGS=-Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Isrc/lua2wasm" \
+	"CMCFLAGS=-Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs" \
 	"SYSCFLAGS=" \
 	"SYSLIBS="
 	$(EMCC) -std=c23 -o lxclua-lsp.js $(LSP_SRV_O) -lm \

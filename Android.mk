@@ -117,15 +117,6 @@ LOCAL_SRC_FILES := \
 	quickjs/cutils.c \
 	quickjs/quickjs-libc.c \
 	quickjs/dtoa.c \
-	src/lua2wasm/ast.c \
-	src/lua2wasm/lexer.c \
-	src/lua2wasm/parser.c \
-	src/lua2wasm/wat_builder.c \
-	src/lua2wasm/codegen.c \
-	src/lua2wasm/builtins.c \
-	src/lua2wasm/wat2wasm.c \
-	src/lua2wasm/xalloc.c \
-	src/lua2wasm/lua2wasmlib.c \
 	src/utils/lcrypto.c \
 	src/utils/luuid.c \
 	src/utils/lrsa.c \
@@ -163,7 +154,7 @@ LOCAL_SRC_FILES := \
 	pcre2/src/pcre2_valid_utf.c \
 	pcre2/src/pcre2_xclass.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/src/lua2wasm -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 
 # QuickJS 配置

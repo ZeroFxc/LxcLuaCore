@@ -1,0 +1,1 @@
+[DBG] luaC_newobject: MRO type=table, class_idx=1

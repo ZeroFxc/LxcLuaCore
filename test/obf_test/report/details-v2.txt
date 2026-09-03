@@ -1,0 +1,131 @@
+
+=== -f (CFF) ===
+  [PASS] 01_functions | CFF | size: 10431->11052 (changed=YES)
+  [PASS] 02_controlflow | CFF | size: 16423->17648 (changed=YES)
+  [PASS] 03_closures | CFF | size: 18529->19546 (changed=YES)
+  [PASS] 04_strings_tables | CFF | size: 17952->18652 (changed=YES)
+  [PASS] 05_math_meta | CFF | size: 26409->27684 (changed=YES)
+  [PASS] 06_edgecases | CFF | size: 33441->35041 (changed=YES)
+
+=== -B (BlockShuffle) ===
+  [PASS] 01_functions | BlockShuffle | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | BlockShuffle | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | BlockShuffle | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | BlockShuffle | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | BlockShuffle | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | BlockShuffle | size: 33441->33441 (changed=NO)
+
+=== -g (BogusBlocks) ===
+  [PASS] 01_functions | BogusBlocks | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | BogusBlocks | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | BogusBlocks | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | BogusBlocks | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | BogusBlocks | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | BogusBlocks | size: 33441->33441 (changed=NO)
+
+=== -P (OpaquePredicates) ===
+  [PASS] 01_functions | OpaquePredicates | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | OpaquePredicates | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | OpaquePredicates | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | OpaquePredicates | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | OpaquePredicates | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | OpaquePredicates | size: 33441->33441 (changed=NO)
+
+=== -r (RandomNOP) ===
+  [PASS] 01_functions | RandomNOP | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | RandomNOP | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | RandomNOP | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | RandomNOP | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | RandomNOP | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | RandomNOP | size: 33441->33441 (changed=NO)
+
+=== -e (StateEncode) ===
+  [PASS] 01_functions | StateEncode | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | StateEncode | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | StateEncode | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | StateEncode | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | StateEncode | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | StateEncode | size: 33441->33441 (changed=NO)
+
+=== -b (BinaryDispatcher) ===
+  [PASS] 01_functions | BinaryDispatcher | size: 10431->11412 (changed=YES)
+  [PASS] 02_controlflow | BinaryDispatcher | size: 16423->18392 (changed=YES)
+  [PASS] 03_closures | BinaryDispatcher | size: 18529->20127 (changed=YES)
+  [PASS] 04_strings_tables | BinaryDispatcher | size: 17952->19132 (changed=YES)
+  [PASS] 05_math_meta | BinaryDispatcher | size: 26409->28476 (changed=YES)
+  [PASS] 06_edgecases | BinaryDispatcher | size: 33441->35957 (changed=YES)
+
+=== -i (FuncInterleave) ===
+  [PASS] 01_functions | FuncInterleave | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | FuncInterleave | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | FuncInterleave | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | FuncInterleave | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | FuncInterleave | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | FuncInterleave | size: 33441->33441 (changed=NO)
+
+=== -n (NestedDispatcher) ===
+  [PASS] 01_functions | NestedDispatcher | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | NestedDispatcher | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | NestedDispatcher | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | NestedDispatcher | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | NestedDispatcher | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | NestedDispatcher | size: 33441->33441 (changed=NO)
+
+=== -m (VMProtect) ===
+  [DIFF] 01_functions | VMProtect | output differs:
+    < 15
+    < 30
+    > function: 000000000013f5d0	1	2	3	4	5	19
+    > function: 000000000013f5d0	10	20	35
+  [DIFF] 02_controlflow | VMProtect | output differs:
+    < a,b,c
+    > 
+  [CRASH] 03_closures | VMProtect | rc=139 (SIGSEGV) | 8
+  [DIFF] 04_strings_tables | VMProtect | output differs:
+    > 0	nil
+  [CRASH] 05_math_meta | VMProtect | rc=139 (SIGSEGV) | 42
+  [TIMEOUT] 06_edgecases | VMProtect | exceeded 10s
+
+=== -E (StringEncryption) ===
+  [PASS] 01_functions | StringEncryption | size: 10431->10431 (changed=NO)
+  [PASS] 02_controlflow | StringEncryption | size: 16423->16423 (changed=NO)
+  [PASS] 03_closures | StringEncryption | size: 18529->18529 (changed=NO)
+  [PASS] 04_strings_tables | StringEncryption | size: 17952->17952 (changed=NO)
+  [PASS] 05_math_meta | StringEncryption | size: 26409->26409 (changed=NO)
+  [PASS] 06_edgecases | StringEncryption | size: 33441->33441 (changed=NO)
+
+=== -O1 (Preset-O1-Light) ===
+  [PASS] 01_functions | Preset-O1-Light | size: 10431->11052 (changed=YES)
+  [PASS] 02_controlflow | Preset-O1-Light | size: 16423->17648 (changed=YES)
+  [PASS] 03_closures | Preset-O1-Light | size: 18529->19546 (changed=YES)
+  [PASS] 04_strings_tables | Preset-O1-Light | size: 17952->18652 (changed=YES)
+  [PASS] 05_math_meta | Preset-O1-Light | size: 26409->27684 (changed=YES)
+  [PASS] 06_edgecases | Preset-O1-Light | size: 33441->35041 (changed=YES)
+
+=== -O2 (Preset-O2-Medium) ===
+  [PASS] 01_functions | Preset-O2-Medium | size: 10431->25476 (changed=YES)
+  [PASS] 02_controlflow | Preset-O2-Medium | size: 16423->42588 (changed=YES)
+  [PASS] 03_closures | Preset-O2-Medium | size: 18529->43520 (changed=YES)
+  [PASS] 04_strings_tables | Preset-O2-Medium | size: 17952->34086 (changed=YES)
+  [PASS] 05_math_meta | Preset-O2-Medium | size: 26409->56890 (changed=YES)
+  [PASS] 06_edgecases | Preset-O2-Medium | size: 33441->69551 (changed=YES)
+
+=== -O3 (Preset-O3-Heavy) ===
+  [PASS] 01_functions | Preset-O3-Heavy | size: 10431->25124 (changed=YES)
+  [PASS] 02_controlflow | Preset-O3-Heavy | size: 16423->41948 (changed=YES)
+  [PASS] 03_closures | Preset-O3-Heavy | size: 18529->43336 (changed=YES)
+  [PASS] 04_strings_tables | Preset-O3-Heavy | size: 17952->33974 (changed=YES)
+  [PASS] 05_math_meta | Preset-O3-Heavy | size: 26409->55914 (changed=YES)
+  [PASS] 06_edgecases | Preset-O3-Heavy | size: 33441->69543 (changed=YES)
+
+=== -Oa (Preset-Oa-All) ===
+  [DIFF] 01_functions | Preset-Oa-All | output differs:
+    < 15
+    < 30
+    > function: 000000000165a030	1	2	3	4	5	15
+    > function: 000000000165a030	10	20	30
+  [PASS] 02_controlflow | Preset-Oa-All | size: 16423->68291 (changed=YES)
+  [CRASH] 03_closures | Preset-Oa-All | rc=139 (SIGSEGV) | 8
+  [PASS] 04_strings_tables | Preset-Oa-All | size: 17952->51130 (changed=YES)
+  [CRASH] 05_math_meta | Preset-Oa-All | rc=139 (SIGSEGV) | 42
+  [TIMEOUT] 06_edgecases | Preset-Oa-All | exceeded 10s

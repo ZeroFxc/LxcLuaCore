@@ -1,0 +1,28 @@
+[DBG] parse_suffixedexpr: breaking on 'as', token=as
+[DBG] parse_subexpr: detected 'as' binary operator, la=362
+[DBG] codegen AST_EXPR_BINOP: ast_op=23, binop=21
+[DBG] codegen BINOP: lhs codegen start, freereg=3
+[DBG] codegen BINOP: after lhs, v->k=9, v->u.info=0, freereg=3
+[DBG] codegen BINOP: after infix, v->k=8, v->u.info=0, freereg=3
+[DBG] codegen BINOP: after rhs, rhs.k=13, rhs.u.info=2, freereg=3
+[DBG] codegen BINOP: after posfix, v->k=16, v->u.info=16, freereg=3
+[DBG] codegen AST_EXPR_BINOP: ast_op=23, binop=21
+[DBG] codegen BINOP: lhs codegen start, freereg=3
+[DBG] codegen BINOP: after lhs, v->k=9, v->u.info=0, freereg=3
+[DBG] codegen BINOP: after infix, v->k=8, v->u.info=0, freereg=3
+[DBG] codegen BINOP: after rhs, rhs.k=13, rhs.u.info=3, freereg=3
+[DBG] codegen BINOP: after posfix, v->k=16, v->u.info=24, freereg=3
+[DBG] codegen AST_EXPR_BINOP: ast_op=31, binop=22
+[DBG] codegen BINOP: lhs codegen start, freereg=1
+[DBG] codegen BINOP: after lhs, v->k=9, v->u.info=0, freereg=1
+[DBG] codegen BINOP: after infix, v->k=8, v->u.info=0, freereg=1
+[DBG] codegen BINOP: after rhs, rhs.k=13, rhs.u.info=2, freereg=1
+[DBG] luaK_posfix OPR_AS: r1=0 r2=1 e1.k=8 e2.k=8 freereg=2
+[DBG] luaK_posfix OPR_AS: pc=29 e1.k=17
+[DBG] codegen BINOP: after posfix, v->k=17, v->u.info=29, freereg=1
+[VM-TRACE] pc=0 opcode=84 line=1
+[DBG] luaC_newclass: before compute_mro, class_idx=7, name=A
+[DBG] luaC_newclass: after compute_mro, __mro type=table
+[DBG] luaC_newclass: before compute_mro, class_idx=7, name=B
+[DBG] luaC_newclass: after compute_mro, __mro type=table
+[DBG] luaC_newobject: MRO type=table, class_idx=1

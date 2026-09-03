@@ -17,44 +17,6 @@
 #include <stdarg.h>
 #include <time.h>
 
-#if defined(__ANDROID__)
-FILE *gLuaLogFile = NULL;
-
-void lua_log_init(void) {
-  if (gLuaLogFile) return;
-  static const char *paths[] = {
-    "/data/local/tmp/a.log",
-    "/data/data/com.luaforge.studio.lxclua/files/a.log",
-    "/data/user/0/com.luaforge.studio.lxclua/files/a.log",
-    "/sdcard/Android/data/com.luaforge.studio.lxclua/files/a.log",
-    "/sdcard/a.log",
-    NULL
-  };
-  for (int i = 0; paths[i]; i++) {
-    gLuaLogFile = fopen(paths[i], "w");
-    if (gLuaLogFile) {
-      setbuf(gLuaLogFile, NULL); /* unbuffered */
-      time_t now = time(NULL);
-      struct tm *t = localtime(&now);
-      fprintf(gLuaLogFile, "=== LXCLua Debug Log %04d-%02d-%02d %02d:%02d:%02d (path: %s) ===\n",
-              t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, paths[i]);
-      fflush(gLuaLogFile);
-      return;
-    }
-  }
-  /* 所有路径都失败，日志功能静默禁用 */
-}
-
-void lua_log_write(const char *prefix, const char *fmt, ...) {
-  if (!gLuaLogFile) return;
-  va_list ap;
-  va_start(ap, fmt);
-  fprintf(gLuaLogFile, "%s ", prefix);
-  vfprintf(gLuaLogFile, fmt, ap);
-  fprintf(gLuaLogFile, "\n");
-  fflush(gLuaLogFile);
-  va_end(ap);
-}
 
 /*
 ** ARM64-safe 逐字节字符串比较
@@ -83,7 +45,6 @@ int safe_strncmp(const char *s1, const char *s2, size_t n) {
   }
   return (unsigned char)*s1 - (unsigned char)*s2;
 }
-#endif
 
 #include "lua.h"
 
@@ -535,9 +496,6 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   lua_State *L;
   global_State *g;
   LG *l;
-#if defined(__ANDROID__)
-  lua_log_init(); /* 确保日志文件已打开 */
-#endif
   l = cast(LG *, (*f)(ud, NULL, LUA_TTHREAD, sizeof(LG)));
   LUA_LOGI("lua_newstate: sizeof(LG)=%zu, alloc result=%p", sizeof(LG), (void*)l);
   if (l == NULL) {

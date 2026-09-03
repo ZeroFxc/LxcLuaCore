@@ -1,0 +1,1 @@
+@test/obf_test/cases/05_math_meta.lua:60: warning: unused local variable 'self' [unused]

@@ -319,6 +319,75 @@ static char* nirithy_encode(const unsigned char* input, size_t len) {
   return out;
 }
 
+/* ============================================================
+ * Nirithy 壳排版：随机字符表情（框线/颜文字/制表符）+ 分行铺开
+ * 装饰字符必须落在 base64 字母表（0-9 a-z A-Z - _）之外。
+ * ============================================================ */
+static const char* nirithy_emo[] = {
+  "(◕‿◕)", "( ͡° ͜ʖ ͡°)", "(╯°□°)╯︵ ┻━┻",
+  "☜(˚▽˚)☞", "(๑˃̵ᴗ˂̵)و", "(*≧ω≦*)", "( ˘ ³˘)♥",
+  "(๑•̀ㅂ•́)و✧", "ヽ(•̀ω•́ )ゝ", "(￣▽￣)ノ", "ヽ(^◇^*)/",
+  "( •̀ᴗ•́ )و", "(ᵔᴥᵔ)", "(づ￣ ³￣)づ", "\\(•̀ᴗ•́)/",
+  "(°ω°)", "( •̀ω•́ )✧", "(´｡• ᵕ •｡`)", "(˶˃ ᵕ ˂˶)"
+};
+#define NIRITHY_EMO_N (int)(sizeof(nirithy_emo) / sizeof(nirithy_emo[0]))
+
+/* 随机颜文字行 */
+static void nirithy_emo_line(luaL_Buffer *b) {
+  luaL_addstring(b, nirithy_emo[rand() % NIRITHY_EMO_N]);
+  luaL_addchar(b, '\n');
+}
+
+/* 随机框线分隔条 */
+static void nirithy_divider(luaL_Buffer *b) {
+  static const char *sets[4] = { "─", "═", "░", "┄" };
+  const char *ch = sets[rand() % 4];
+  int i, n = 14 + rand() % 22;
+  for (i = 0; i < n; i++) luaL_addstring(b, ch);
+  luaL_addchar(b, '\n');
+}
+
+/* 头/尾装饰框：随机颜文字 + 框线 */
+static void nirithy_banner(luaL_Buffer *b) {
+  const char *emo = nirithy_emo[rand() % NIRITHY_EMO_N];
+  size_t w = strlen(emo) + 6;
+  size_t i;
+  luaL_addstring(b, "╔");
+  for (i = 0; i < w; i++) luaL_addstring(b, "═");
+  luaL_addstring(b, "╗\n");
+  luaL_addstring(b, "║ ");
+  luaL_addstring(b, emo);
+  for (i = 0; i < w; i++) luaL_addchar(b, ' ');
+  luaL_addstring(b, "║\n");
+  luaL_addstring(b, "╚");
+  for (i = 0; i < w; i++) luaL_addstring(b, "═");
+  luaL_addstring(b, "╝\n");
+}
+
+/* 把纯 base64 流按格式铺开：随机长度分行、随机缩进（含制表符）、
+   行间随机插入颜文字/框线分隔条，头尾各一个装饰框。 */
+static void nirithy_write_pretty(luaL_Buffer *b, const char *b64, size_t b64len) {
+  size_t pos = 0;
+  nirithy_banner(b);
+  while (pos < b64len) {
+    size_t chunk = 8 + (size_t)(rand() % 28);
+    size_t i;
+    int indent = rand() % 5;
+    if (chunk > b64len - pos) chunk = b64len - pos;
+    for (i = 0; i < (size_t)indent; i++) luaL_addchar(b, ' ');
+    if (rand() % 4 == 0) luaL_addchar(b, '\t');
+    luaL_addlstring(b, b64 + pos, chunk);
+    luaL_addchar(b, '\n');
+    pos += chunk;
+    if (pos < b64len) {
+      int r = rand() % 6;
+      if (r == 0) nirithy_emo_line(b);
+      else if (r == 1) nirithy_divider(b);
+    }
+  }
+  nirithy_banner(b);
+}
+
 static void nirithy_derive_key(uint64_t timestamp, uint8_t *key) {
   uint8_t input[32];
   uint8_t digest[SHA256_DIGEST_SIZE];
@@ -333,6 +402,7 @@ static void nirithy_derive_key(uint64_t timestamp, uint8_t *key) {
 
 static void aux_envelop(lua_State *L, const char *s, size_t l) {
   uint64_t timestamp = (uint64_t)time(NULL);
+  srand((unsigned)timestamp ^ (unsigned)(size_t)s ^ (unsigned)l);  /* seed pretty-shell decoration */
 
   /* Structure: Timestamp (8) + IV (16) + EncryptedData (l) */
   size_t payload_len = 8 + 16 + l;
@@ -377,7 +447,8 @@ static void aux_envelop(lua_State *L, const char *s, size_t l) {
   luaL_Buffer b;
   luaL_buffinit(L, &b);
   luaL_addstring(&b, "Nirithy==");
-  luaL_addstring(&b, encoded);
+  luaL_addchar(&b, '\n');  /* 签名后换行，排版更规整 */
+  nirithy_write_pretty(&b, encoded, strlen(encoded));
   free(encoded);
 
   luaL_pushresult(&b);
