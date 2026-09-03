@@ -105,7 +105,7 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
  ,opmode(0, 1, 0, 0, 1, iABC)		/* OP_VARARG */
  ,opmode(0, 0, 0, 0, 1, iABC)		/* OP_GETVARG */
  ,opmode(0, 0, 0, 0, 0, iABx)		/* OP_ERRNNIL */
- ,opmode(0, 0, 1, 0, 1, iABC)		/* OP_VARARGPREP */
+ ,opmode(0, 0, 0, 0, 0, iABC)		/* OP_VARARGPREP */
  ,opmode(0, 0, 0, 1, 0, iABC)		/* OP_IS */
  ,opmode(0, 0, 0, 1, 1, iABC)		/* OP_TESTNIL */
  /* 面向对象系统操作码 */
@@ -157,20 +157,6 @@ LUAI_DDEF const lu_byte luaP_opmodes[NUM_OPCODES] = {
 
 
 /*
-** Check whether instruction sets top for next instruction, that is,
-** it results in multiple values.
-*/
-int luaP_isOT (Instruction i) {
-  OpCode op = GET_OPCODE(i);
-  switch (op) {
-    case OP_TAILCALL: return 1;
-    default:
-      return testOTMode(op) && GETARG_C(i) == 0;
-  }
-}
-
-
-/*
 ** Check whether instruction uses top from previous instruction, that is,
 ** it accepts multiple results.
 */
@@ -178,7 +164,9 @@ int luaP_isIT (Instruction i) {
   OpCode op = GET_OPCODE(i);
   switch (op) {
     case OP_SETLIST:
-      return testITMode(GET_OPCODE(i)) && GETARG_vB(i) == 0;
+      return GETARG_vB(i) == 0;
+    case OP_VARARGPREP:
+      return 1;
     default:
       return testITMode(GET_OPCODE(i)) && GETARG_B(i) == 0;
   }

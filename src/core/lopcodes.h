@@ -539,13 +539,21 @@ LUAI_DDEC(const lu_byte luaP_opmodes[NUM_OPCODES];)
 	((testOTMode(GET_OPCODE(i)) && GETARG_C(i) == 0) || \
           GET_OPCODE(i) == OP_TAILCALL)
 
-/* "in top" (uses top from previous instruction) */
-#define isIT(i)		(testITMode(GET_OPCODE(i)) && GETARG_B(i) == 0)
+/* "in top" (uses top from previous instruction; OP_VARARGPREP always uses it) */
+#define isIT(i)		((GET_OPCODE(i) == OP_VARARGPREP) || \
+                         (testITMode(GET_OPCODE(i)) && GETARG_B(i) == 0))
 
 #define opmode(mm,ot,it,t,a,m)  \
     (((mm) << 7) | ((ot) << 6) | ((it) << 5) | ((t) << 4) | ((a) << 3) | (m))
 
-LUAI_FUNC int luaP_isOT (Instruction i);
+/* Check whether instruction sets top for next instruction, that is,
+** it results in multiple values. Used only for tests.
+*/
+#define luaP_isOT(i)  \
+	(GET_OPCODE(i) == OP_TAILCALL || \
+	 ((luaP_opmodes[GET_OPCODE(i)] & (1 << 6)) && GETARG_C(i) == 0))
+
+
 LUAI_FUNC int luaP_isIT (Instruction i);
 
 /* number of list items to accumulate before a SETLIST instruction */
