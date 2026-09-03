@@ -1848,6 +1848,7 @@ LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
   int status;
   LUA_LOGD("[API] lua_load: chunkname='%s' mode='%s'", chunkname, mode);
   lua_lock(L);
+  luaC_checkGC(L);
   if (!chunkname) chunkname = "?";
   luaZ_init(L, &z, reader, data);
   status = luaD_protectedparser(L, &z, chunkname, mode);
