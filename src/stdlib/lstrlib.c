@@ -1711,7 +1711,6 @@ static int lua_nospecials (const char *p, size_t l) {
 static void lua_prepstate (MatchState *ms, lua_State *L,
                        const char *s, size_t ls, const char *p, size_t lp) {
   ms->L = L;
-  ms->matchdepth = MAXCCALLS;
   ms->src_init = s;
   ms->src_end = s + ls;
   ms->p_end = p + lp;
@@ -1719,8 +1718,8 @@ static void lua_prepstate (MatchState *ms, lua_State *L,
 
 /* 原始 Lua 正则：重置匹配状态 */
 static void lua_reprepstate (MatchState *ms) {
+  ms->matchdepth = MAXCCALLS;
   ms->level = 0;
-  lua_assert(ms->matchdepth == MAXCCALLS);
 }
 
 /* 原始 Lua 正则：str_find_aux 实现 */
@@ -1809,8 +1808,8 @@ static int lua_gfind_aux (lua_State *L) {
         ms.p_end = p + lp;
         do {
             const char *res;
+            ms.matchdepth = MAXCCALLS;
             ms.level = 0;
-            lua_assert(ms.matchdepth == MAXCCALLS);
             if ((res=lua_match(&ms, s1, p)) != NULL) {
                 lua_pushinteger(L, (s1 - s) + 1);
                 lua_pushinteger(L, res - s);
