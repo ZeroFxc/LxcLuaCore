@@ -95,6 +95,15 @@ LOCAL_SRC_FILES := \
 	src/utils/lobfuscate.c \
 	src/wasm/lwasm3.c \
 	src/wasm/lwasmtime.c \
+	src/wasm/wmt_util.c \
+	src/wasm/wmt_engine.c \
+	src/wasm/wmt_module.c \
+	src/wasm/wmt_instance.c \
+	src/wasm/wmt_value.c \
+	src/wasm/wmt_linker.c \
+	src/wasm/wmt_wasi.c \
+	src/wasm/wmt_component.c \
+	src/wasm/wmt_async.c \
 	src/bin/lquickjs.c \
 	src/wasm/m3_api_libc.c \
 	src/wasm/m3_api_meta_wasi.c \
@@ -154,7 +163,7 @@ LOCAL_SRC_FILES := \
 	pcre2/src/pcre2_valid_utf.c \
 	pcre2/src/pcre2_xclass.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 
 # QuickJS 配置

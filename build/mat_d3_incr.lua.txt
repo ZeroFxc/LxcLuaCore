@@ -1,5 +1,0 @@
---- STDOUT ---
---- STDERR ---
-./lxclua.exe: build/d3_incr.lua:3: ')' expected
-    3 | assert(x == 2, "prefix ++ failed")
-      |              ^ here

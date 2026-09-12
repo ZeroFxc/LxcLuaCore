@@ -13,9 +13,8 @@
 - [5. src/stdlib/ — 标准库](#5-srcstdlib--标准库)
 - [6. src/utils/ — 工具库](#6-srcutils--工具库)
 - [7. src/lspsrv/ — LSP 服务器](#7-srclspsrv--lsp-服务器)
-- [8. src/lua2wasm/ — Lua 到 WASM 编译器](#8-srclua2wasm--lua-到-wasm-编译器)
-- [9. src/wasm/ — WASM 运行时](#9-srcwasm--wasm-运行时)
-- [10. src/bin/ — 应用程序](#10-srcbin--应用程序)
+- [8. src/wasm/ — WASM 运行时](#8-srcwasm--wasm-运行时)
+- [9. src/bin/ — 应用程序](#9-srcbin--应用程序)
 
 ---
 
@@ -351,50 +350,7 @@
 
 ---
 
-## 8. src/lua2wasm/ — Lua 到 WASM 编译器
-
-**目录**：`src/lua2wasm/`  
-**文件数**：21 个（含 1 个 `.wat` 预置模块）  
-**依赖**：核心层  
-**功能**：将 Lua 源码编译为 WebAssembly 模块的完整编译器管线。  
-**构建产物**：`lua2wasm` / `lua2wasm.exe`、`wat2wasm` / `wat2wasm.exe`
-
-### 编译管线
-
-```
-Lua 源码 ──→ lexer (词法分析) ──→ parser (语法分析) ──→ AST ──→ codegen (代码生成) ──→ WAT ──→ wat2wasm (汇编) ──→ WASM
-```
-
-### 文件列表
-
-| 文件 | 类型 | 功能描述 |
-|------|------|----------|
-| `main.c` | 源文件 | CLI 主程序入口，实现 `lua2wasm` 命令行工具，解析命令行参数，调用编译管线将 Lua 源码编译为 WASM 模块。 |
-| `lua2wasmlib.c` | 源文件 | Lua 模块入口，提供 `require("lua2wasm")` 的 Lua C 模块封装，允许在 Lua 代码中调用编译功能。 |
-| `emscripten_entry.c` | 源文件 | Emscripten 入口，提供 WebAssembly/Emscripten 平台下的编译入口适配。 |
-| `lexer.h` | 头文件 | 词法分析器头文件，声明 Lua 子集词法分析器的 Token 类型和接口。 |
-| `lexer.c` | 源文件 | 词法分析器实现，将 Lua 源码字符流分解为 Token 序列，支持 Lua 子集语法。 |
-| `parser.h` | 头文件 | 语法分析器头文件，声明递归下降解析器接口和 AST 构建函数。 |
-| `parser.c` | 源文件 | 语法分析器实现，递归下降解析 Token 流，生成 AST 树。 |
-| `ast.h` | 头文件 | AST 数据结构头文件，定义 lua2wasm 编译器专用的 AST 节点类型和操作。 |
-| `ast.c` | 源文件 | AST 数据结构实现，包括 AST 节点创建、内存管理、节点遍历等。 |
-| `codegen.h` | 头文件 | 代码生成器头文件，声明 AST → WAT 文本格式的代码生成接口。 |
-| `codegen.c` | 源文件 | 代码生成器实现，遍历 AST 树生成 WAT（WebAssembly Text Format）文本格式代码。 |
-| `wat_builder.h` | 头文件 | WAT 构建器头文件，声明 WAT 文本格式的构建和输出接口。 |
-| `wat_builder.c` | 源文件 | WAT 构建器实现，提供 WAT 文本格式的流式构建和输出，管理 S-表达式层级、缩进、格式化。 |
-| `wat2wasm.h` | 头文件 | WAT→WASM 转换器头文件，声明 WAT 文本格式到 WASM 二进制格式的汇编器接口。 |
-| `wat2wasm.c` | 源文件 | WAT→WASM 转换器核心实现，将 WAT 文本格式解析并编码为 WASM 二进制模块，包括类型段、函数段、代码段、导入/导出段等。 |
-| `wat2wasm_cli.c` | 源文件 | 独立 `wat2wasm` 命令行工具，提供 WAT→WASM 汇编的 CLI 接口。 |
-| `builtins.h` | 头文件 | 内置函数头文件，声明 WASM 内置函数（内存管理、字符串操作、数学函数等）。 |
-| `builtins.c` | 源文件 | 内置函数实现，提供 WASM 运行时所需的内置函数，如内存分配（`malloc`/`free`）、字符串操作、数值转换等。 |
-| `prelude.wat` | WAT 文件 | WAT 预置模块，包含所有 WASM 模块共用的预置代码（导入声明、内存初始化、内置函数导出等）。 |
-| `prelude_wat.h` | 头文件 | 预置模块头文件，将 `prelude.wat` 的内容嵌入为 C 字符串常量，供编译时内联。 |
-| `xalloc.h` | 头文件 | 跨平台内存分配头文件，声明包装后的内存分配/释放函数。 |
-| `xalloc.c` | 源文件 | 跨平台内存分配实现，提供统一的内存分配接口，封装平台差异。 |
-
----
-
-## 9. src/wasm/ — WASM 运行时
+## 8. src/wasm/ — WASM 运行时
 
 **目录**：`src/wasm/`  
 **文件数**：37 个  
@@ -455,7 +411,7 @@ Lua 源码 ──→ lexer (词法分析) ──→ parser (语法分析) ──
 
 ---
 
-## 10. src/bin/ — 应用程序
+## 9. src/bin/ — 应用程序
 
 **目录**：`src/bin/`  
 **文件数**：5 个  

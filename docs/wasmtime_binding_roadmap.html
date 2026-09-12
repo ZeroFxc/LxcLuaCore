@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wasmtime 绑定扩充路线图 — LXCLUA-NCore</title>
+<style>
+  :root {
+    --p0: #E15759; --p1: #F28E2B; --p2: #4E79A7; --p3: #9AA0A6;
+    --bg: #f7f8fa; --card: #ffffff; --line: #e5e7eb;
+    --text: #1A1B1C; --muted: #6B7280;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 24px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  h2 { font-size: 17px; margin: 28px 0 12px; padding-left: 10px; border-left: 4px solid var(--p2); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h3 { font-size: 14px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 20px; color: #fff; font-weight: 600; }
+  .b-p0 { background: var(--p0); } .b-p1 { background: var(--p1); }
+  .b-p2 { background: var(--p2); } .b-p3 { background: var(--p3); }
+  .card p { font-size: 13px; color: var(--muted); }
+  .meta { font-size: 12px; margin-top: 8px; color: var(--text); }
+  .meta b { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 10px; overflow: hidden; font-size: 13px; }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #eef1f5; font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  code { background: #eef1f5; padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: Consolas, monospace; }
+  pre { background: #1e2330; color: #d6e2f0; padding: 14px 16px; border-radius: 8px; font-size: 12px; overflow-x: auto; line-height: 1.5; margin-top: 8px; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .note { font-size: 12px; color: var(--muted); background: #f0f3f7; border: 1px solid var(--line); padding: 10px 14px; border-radius: 8px; margin-top: 12px; }
+  .status { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 20px; background: #eef1f5; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>wasmtime 绑定扩充路线图</h1>
+  <div class="sub">LXCLUA-NCore · lwasmtime.c 现状分析 · 基于 wasmtime v48.0.1 C API 头文件调研 · 2026-09-04</div>
+
+  <h2>一、结论</h2>
+  <div class="card">
+    <p>完全可以继续扩充，且<b>v48 预编译库已经把能力全部编译进去了</b>（<code>conf.h</code> 显示 WASI、WASI_HTTP、WAT、CACHE、ASYNC、COMPONENT_MODEL、GC、THREADS、POOLING_ALLOCATOR、COREDUMP、ADDR2LINE、DEMANGLE 全部开启），只是 <code>lwasmtime.c</code> 还没有绑定这些 C API。当前绑定已覆盖 Engine/Store/Module/Instance/Func/Memory/Global/Table/Linker 的基础面（含 fuel、epoch、GC、shared-memory、externref），但 WASI、Component、Async、WAT 转换、Trap 对象、Linker 深化等高级面是空白。</p>
+  </div>
+
+  <h2>二、优先级矩阵（价值 × 工作量）</h2>
+  <div class="cards">
+    <div class="card"><h3><span class="badge b-p0">P0</span> WASI 系统接口</h3>
+      <p>让 WASM 模块访问文件、环境变量、标准 IO 与网络。绑定链路极简：config → context → linker 一行。</p>
+      <div class="meta"><b>价值 5/5</b> · 成本 2/5</div></div>
+    <div class="card"><h3><span class="badge b-p0">P0</span> WAT→WASM 转换</h3>
+      <p>单函数 <code>wasmtime_wat2wasm</code> 封装，Lua 侧直接编译 WAT 文本，替代已移除的 wat2wasm。</p>
+      <div class="meta"><b>价值 4/5</b> · 成本 1/5</div></div>
+    <div class="card"><h3><span class="badge b-p1">P1</span> Trap 对象 + trap code</h3>
+      <p>暴露陷阱分类（内存越界/除零/栈溢出/out-of-fuel/interrupt），错误可诊断。</p>
+      <div class="meta"><b>价值 3/5</b> · 成本 2/5</div></div>
+    <div class="card"><h3><span class="badge b-p1">P1</span> Linker 深化</h3>
+      <p>define_instance / define / allow_shadowing / 未知导入兜底 / instantiate_pre，打通模块间互操作。</p>
+      <div class="meta"><b>价值 4/5</b> · 成本 2/5</div></div>
+    <div class="card"><h3><span class="badge b-p1">P1</span> 模块编译缓存</h3>
+      <p>config 加载磁盘缓存，重复加载大模块显著提速。</p>
+      <div class="meta"><b>价值 3/5</b> · 成本 2/5</div></div>
+    <div class="card"><h3><span class="badge b-p2">P2</span> Async 异步调用</h3>
+      <p>continuation 机制接 Lua 协程/事件循环，支持异步 WASM 函数 await。</p>
+      <div class="meta"><b>价值 3/5</b> · 成本 4/5</div></div>
+    <div class="card"><h3><span class="badge b-p2">P2</span> Component Model</h3>
+      <p>下一代 WASM 组件（WIT 接口），120+ 新 API，工程量最大，愿景最大。</p>
+      <div class="meta"><b>价值 4/5</b> · 成本 5/5</div></div>
+    <div class="card"><h3><span class="badge b-p2">P2</span> SharedMemory 深化</h3>
+      <p>补 <code>wasmtime_sharedmemory_grow</code> 与线程模型细节。</p>
+      <div class="meta"><b>价值 2/5</b> · 成本 1/5</div></div>
+    <div class="card"><h3><span class="badge b-p3">P3</span> GC 引用类型操作</h3>
+      <p>structref/arrayref/eqref 的创建与转换，补齐 GC 类型面。</p>
+      <div class="meta"><b>价值 2/5</b> · 成本 3/5</div></div>
+    <div class="card"><h3><span class="badge b-p3">P3</span> Pooling 资源配额</h3>
+      <p>内存池配置，性能与资源隔离。</p>
+      <div class="meta"><b>价值 2/5</b> · 成本 2/5</div></div>
+    <div class="card"><h3><span class="badge b-p3">P3</span> Coredump/日志/栈回溯</h3>
+      <p>崩溃转储 + addr2line 栈还原，调试利器。</p>
+      <div class="meta"><b>价值 2/5</b> · 成本 3/5</div></div>
+  </div>
+
+  <h2>三、推荐落地顺序与关键 API 形态</h2>
+  <table>
+    <tr><th>步骤</th><th>功能</th><th>核心 C API 调用链</th><th>对应 Lua API（建议）</th></tr>
+    <tr><td>①</td><td>WAT 转换</td><td><code>wasmtime_wat2wasm(wat, len, &wasm)</code></td><td><code>wasmtime.wat2wasm(wat_string)</code></td></tr>
+    <tr><td>②</td><td>WASI</td><td><code>wasi_config_new()</code> → <code>wasmtime_context_set_wasi(ctx, cfg)</code> → <code>wasmtime_linker_define_wasi(linker)</code></td><td><code>wasmtime.newWasi{argv=…, env=…, stdin=…, preopenDirs=…}</code></td></tr>
+    <tr><td>③</td><td>Trap 诊断</td><td><code>wasmtime_trap_new_code()</code> / <code>wasmtime_trap_code()</code></td><td><code>trap:code()</code> / <code>trap:message()</code></td></tr>
+    <tr><td>④</td><td>Linker 深化</td><td><code>wasmtime_linker_define_instance()</code> / <code>define()</code> / <code>allow_shadowing()</code></td><td><code>linker:defineInstance()</code> 等</td></tr>
+    <tr><td>⑤</td><td>编译缓存</td><td><code>wasmtime_config_cache_config_load(cfg, path)</code></td><td><code>newEngine{cache="./.cache"}</code></td></tr>
+    <tr><td>⑥</td><td>Async</td><td><code>wasmtime_async_call()</code> + <code>wasmtime_async_continuation_t</code></td><td>配合 leventloop/lpromise 的 await 语义</td></tr>
+    <tr><td>⑦</td><td>Component</td><td><code>wasmtime_component_new()</code> + component linker/instance 全套</td><td><code>wasmtime.newComponent()</code> 系列</td></tr>
+  </table>
+
+  <div class="note">注：价值/工作量评分为基于 C API 头文件与封装工程量的工程师评估建议，非客观度量。已核验的事实包括：v48 预编译库 conf.h 开启的功能开关、各候选 API 在头文件中的真实存在性与签名。</div>
+</div>
+</body>
+</html>

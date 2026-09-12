@@ -1,3 +1,0 @@
-=== 1. local var: type ===
-hello world
-bad:	this should warn

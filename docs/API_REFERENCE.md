@@ -624,15 +624,6 @@ local instance = wasm3.instantiate(module, {
 
 ---
 
-### lua2wasm - Lua 转 WASM 编译器
-
-**require**: `require("lua2wasm")`
-**源文件**: `src/lua2wasm/`
-
-将 Lua 代码编译为 WebAssembly 模块。
-
----
-
 ### quickjs - JavaScript 引擎集成
 
 **require**: `require("quickjs")`
@@ -741,7 +732,6 @@ end)
 | `ByteCode` | 始终 | 字节码操作 |
 | `wasm3` | 始终 | WASM运行时 |
 | `wasmtime` | 非Emscripten | WASM运行时 |
-| `lua2wasm` | 始终 | Lua转WASM |
 | `lexer` | 始终 | 词法分析 |
 | `quickjs` | 始终 | JS引擎 |
 | `asyncio` | 始终 | 异步IO |

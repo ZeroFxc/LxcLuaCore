@@ -221,7 +221,6 @@
 | `BUILD_LUA_LIB` | 构建 Lua 静态库 | OFF |
 | `BUILD_LUA_DLL` | 构建 Lua 动态库 | OFF |
 | `BUILD_LSP` | 构建 LSP 服务器 | ON |
-| `BUILD_LUA2WASM` | 构建 Lua→WASM 编译器 | ON |
 | `BUILD_TESTS` | 构建测试 | ON |
 | `ENABLE_LTO` | 启用链接时优化 | OFF |
 | `ENABLE_Obfuscation` | 启用混淆支持 | ON |

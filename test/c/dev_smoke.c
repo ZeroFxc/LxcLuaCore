@@ -9,7 +9,6 @@
 /* 函数签名: lua_CFunction = int (*)(lua_State *) */
 int luaopen_wasm3(lua_State *L) { (void)L; return 0; }
 int luaopen_wasmtime(lua_State *L) { (void)L; return 0; }
-int luaopen_lua2wasm(lua_State *L) { (void)L; return 0; }
 
 /* 简单内存分配器，使用默认 malloc/free */
 static void *smoke_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {

@@ -81,13 +81,12 @@
 | **HTTP 库** | libhttp.c | ★★★★☆ | 客户端 + 服务端 + WebSocket + URL/Base64 |
 | **UUID** | luuid.c | ★★★☆☆ | UUID v4（随机）和 v5（SHA-1 命名空间） |
 
-### 2.6 WebAssembly 层 (src/wasm/ + src/lua2wasm/)
+### 2.6 WebAssembly 层 (src/wasm/)
 
 | 模块 | 文件 | 成熟度 | 说明 |
 |------|------|--------|------|
 | **wasmtime 绑定** | lwasmtime.c | ★★★★☆ | 3,971 行，完整的 28 个 host 回调，GC/reference-types 支持，externref，共享内存 |
 | **wasm3 绑定** | m3_compile.c等 | ★★★★☆ | 2,931 行，轻量级 WASM3 运行时集成 |
-| **lua2wasm 编译器** | codegen.c/parser.c | ★★★★☆ | 4,729 + 1,661 行，Lua→WASM 端到端编译管线 |
 
 ### 2.7 LSP 服务器 (src/lspsrv/)
 
@@ -276,7 +275,7 @@ __is_trait       /* trait 标记 */
 | 前缀 ++var 未实现 | lparser.c | 仅后缀 var++ 作为语句级实现 |
 | 参数数量上限 | lparser.c | 函数参数受 MAXVARS=512 限制 |
 | 混淆影响性能 | lobfuscate.c | CFF 会显著降低执行速度（3-10x） |
-| WASM 需外部库 | lwasmtime.c | wasmtime-v45+ C API 库需单独提供 |
+| WASM 需外部库 | lwasmtime.c | wasmtime-v48+ C API 库需单独提供 |
 
 ---
 

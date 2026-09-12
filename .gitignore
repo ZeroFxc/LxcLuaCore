@@ -1,0 +1,29 @@
+# ===== 构建产物（二进制 / 静态库 / 目标文件 / 编译产物）=====
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.luac
+*.shell
+
+# pcre2 源码自带的文本清单（.so 后缀但非二进制，保留）
+!pcre2/maint/manifest-*.so
+
+# ===== 构建中间目录 =====
+/build/obj/
+
+# ===== build/ 下的测试输出与日志 =====
+/build/*.txt
+*.log
+
+# ===== 本地临时输出 / 备份 =====
+/wasi_out.txt
+*.bak
+
+# ===== 第三方预编译 SDK 与源码检出（不入库）=====
+/wasmtime/wasmtime-v*/
+/wasmtime-main/

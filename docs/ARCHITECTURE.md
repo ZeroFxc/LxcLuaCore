@@ -32,11 +32,11 @@ LXCLUA-NCore 采用 **五层分层架构**，从下到上依次为：核心层�
 │                          src/bin/                                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                              扩展子系统 (Extension Subsystems)                    │
-│  ┌──────────────┐  ┌──────────────────────┐  ┌──────────────────────┐            │
-│  │ LSP 服务器   │  │ WASM 运行时           │  │ lua2wasm 编译器      │            │
-│  │ src/lspsrv/  │  │ src/wasm/ (wasm3 +    │  │ src/lua2wasm/        │            │
-│  │              │  │   wasmtime)           │  │ (Lua→WASM 编译管线)  │            │
-│  └──────────────┘  └──────────────────────┘  └──────────────────────┘            │
+│  ┌──────────────┐  ┌──────────────────────┐                                      │
+│  │ LSP 服务器   │  │ WASM 运行时           │                                       │
+│  │ src/lspsrv/  │  │ src/wasm/ (wasm3 +    │                                       │
+│  │              │  │   wasmtime)           │                                       │
+│  └──────────────┘  └──────────────────────┘                                      │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                              扩展层 (Extension Layer)                            │
 │  ┌────────────────────────────┐  ┌──────────────────────────────────────┐        │
@@ -397,13 +397,7 @@ NativeVM 指令执行流程:
 源码 ──→ [编译] ──→ 字节码 ──→ [lbctc] ──→ C 源代码 ──→ [GCC/Clang] ──→ 原生可执行程序
 ```
 
-### 4.4 Lua → WASM 编译管线
-
-```
-源码 ──→ [lexer_l2w] ──→ [parser_l2w] ──→ AST ──→ [codegen_l2w] ──→ WAT ──→ [wat2wasm] ──→ WASM
-```
-
-### 4.5 JIT 编译管线
+### 4.4 JIT 编译管线
 
 ```
 字节码 ──→ [ljit_analyze] ──→ [ljit_translate] ──→ IR ──→ [ljit_opt_*] ──→ [ljit_regalloc] ──→ [ljit_codegen] ──→ 原生码
@@ -447,7 +441,7 @@ NativeVM 指令执行流程:
 
 ### 5.5 wasmtime WebAssembly 运行时
 
-- **版本**：v45.0.1
+- **版本**：v48.0.1
 - **用途**：支持 WASM GC 提案的 WebAssembly 运行时，通过 `require("wasmtime")` 调用
 - **集成方式**：预编译的 C API 库，平台特定（Windows/MinGW, Linux, Android）
 - **Lua 绑定**：`src/wasm/lwasmtime.c`
@@ -489,27 +483,6 @@ LXCLUA-NCore 内置了完整的语言服务器协议 (LSP) 实现，提供 IDE �
 - `lxclua_wasm.c`：LXCLUA 的 WASM 导出接口封装
 - `m3_*.c/h`：wasm3 核心引擎（约 15 个模块）
 
-### 6.3 lua2wasm 编译器 (`src/lua2wasm/`)
-
-将 Lua 源码编译为 WebAssembly 模块的完整编译器管线。
-
-| 模块 | 文件 | 功能描述 |
-|------|------|----------|
-| **词法分析** | `lexer.c`, `lexer.h` | Lua 子集词法分析器 |
-| **语法分析** | `parser.c`, `parser.h` | 递归下降解析器，生成 AST |
-| **AST 定义** | `ast.c`, `ast.h` | AST 节点类型定义和操作 |
-| **代码生成** | `codegen.c`, `codegen.h` | AST → WAT 文本格式代码生成 |
-| **WAT 构建器** | `wat_builder.c`, `wat_builder.h` | WAT 文本格式的构建和输出 |
-| **内置函数** | `builtins.c`, `builtins.h` | WASM 内置函数（内存管理、字符串等） |
-| **WAT→WASM** | `wat2wasm.c`, `wat2wasm.h` | WAT 文本格式到 WASM 二进制的汇编器 |
-| **Lua 模块** | `lua2wasmlib.c` | `require("lua2wasm")` 的 Lua C 模块入口 |
-| **CLI 主程序** | `main.c` | 独立 `lua2wasm` 命令行工具 |
-| **WAT2WASM CLI** | `wat2wasm_cli.c` | 独立 `wat2wasm` 命令行工具 |
-| **内存分配** | `xalloc.c`, `xalloc.h` | 跨平台内存分配包装 |
-| **WASM 预置** | `prelude.wat`, `prelude_wat.h` | WASM 模块预置代码 |
-
----
-
 ## 7. 构建系统
 
 ### 7.1 Makefile 结构
@@ -540,8 +513,6 @@ LXCLUA-NCore 内置了完整的语言服务器协议 (LSP) 实现，提供 IDE �
 | `lxclua.dll` | Windows 动态链接库 |
 | `lxclua-lsp` / `lxclua-lsp.exe` | LSP 语言服务器 |
 | `lxclua.js` / `lxclua.wasm` | WebAssembly 构建产物 |
-| `lua2wasm` / `lua2wasm.exe` | Lua→WASM 编译器 CLI |
-| `wat2wasm` / `wat2wasm.exe` | WAT→WASM 汇编器 CLI |
 
 ### 7.3 链接关系
 
@@ -571,10 +542,6 @@ liblxclua.a
 │   └── wasm3 核心: m3_*.o (15 个文件)
 ├── QJS_O (QuickJS)
 │   └── quickjs, libregexp, libunicode, cutils, quickjs-libc, dtoa
-├── LUA2WASM_O (Lua→WASM 编译器)
-│   ├── 核心: ast, lexer_l2w, parser_l2w, wat_builder, codegen_l2w, builtins_l2w, xalloc_l2w
-│   ├── 汇编: wat2wasm_core
-│   └── 模块: lua2wasmlib
 └── PCRE2_O (PCRE2 正则引擎)
     └── pcre2_*.o (约 30 个文件)
 ```
@@ -667,7 +634,6 @@ lua/
 │   ├── bin/            # 应用层：lxclua、luac、luaccheck、lbcdump、lquickjs
 │   ├── jit/            # SLJIT 后端：跨平台 JIT 原生代码生成
 │   ├── wasm/           # WASM 运行时：wasm3 解释器、wasmtime 绑定
-│   ├── lua2wasm/       # Lua→WASM 编译器
 │   └── lspsrv/         # LSP 语言服务器
 ├── pcre2/              # PCRE2 正则表达式引擎（第三方）
 ├── quickjs/            # QuickJS JavaScript 引擎（第三方）

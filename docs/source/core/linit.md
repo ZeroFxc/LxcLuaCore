@@ -55,7 +55,6 @@
 | `ByteCode` | `luaopen_ByteCode` | vm/lbytecode.c |
 | `wasm3` | `luaopen_wasm3` | wasm/lwasm3.c |
 | `wasmtime` | `luaopen_wasmtime` | wasm/lwasmtime.c（非 Emscripten） |
-| `lua2wasm` | `luaopen_lua2wasm` | lua2wasm/lua2wasmlib.c |
 | `quickjs` | `luaopen_quickjs` | bin/lquickjs 对应库 |
 | `asyncio` | `luaopen_asyncio` | utils/laio.c |
 | `vmcustom` | `luaopen_vmcustom` | vm/lvmustom.c |
@@ -100,15 +99,15 @@ LUALIB_API void luaL_openselectedlibs (lua_State *L, int load, int preload);
 脚本 `v_linit.lua`（`run_lua.sh`，Windows 构建）：
 
 ```
-PRESENT(41):	ByteCode _G ast asyncio bit bit32 bool coroutine crypto debug
- ecc fs http io lexer logtable lua2wasm map math nativeparser nativevm os
+PRESENT(40):	ByteCode _G ast asyncio bit bit32 bool coroutine crypto debug
+ ecc fs http io lexer logtable map math nativeparser nativevm os
  package patch ptr quickjs rsa string struct table tcc thread translator
  userdata utf8 uuid vm vmcustom vmprotect wasm3 wasmtime
 MISSING(1):	process
 type check:	table	table	table	table
 ```
 
-结论：41 个全局名在位（含 `_G` 自身与别名 `bit32`），唯一缺席的是
+结论：40 个全局名在位（含 `_G` 自身与别名 `bit32`），唯一缺席的是
 `process`（`#ifdef __linux__` 限定，Windows 构建不注册）；`wasmtime` 在册。
 与 `stdlibs[]` 源码清单逐一吻合。
 

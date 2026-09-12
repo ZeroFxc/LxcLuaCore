@@ -11,7 +11,6 @@
 /* wasm 相关模块的空 stub（链接用，不实际加载） */
 int luaopen_wasm3(lua_State *L) { (void)L; return 0; }
 int luaopen_wasmtime(lua_State *L) { (void)L; return 0; }
-int luaopen_lua2wasm(lua_State *L) { (void)L; return 0; }
 
 /* 转译后生成的模块入口函数声明（由 basic_syntax.c 提供） */
 extern int luaopen_module(lua_State *L);

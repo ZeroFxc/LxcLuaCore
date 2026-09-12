@@ -40,38 +40,7 @@ local function check_ok(label, cond)
     end
 end
 
--- ================================================================
--- Section A: Full Host Import 测试 (runLua2wasm)
--- ================================================================
-print("=":rep(60))
-print("Section A: Full Host Import — 覆盖全部可用 host 回调")
-print("=":rep(60))
 
-do
-    local wasm_bytes = read_file("test_wasm_fullhost.wasm")
-    if not wasm_bytes then print("SKIP: wasm not found\n"); goto section_b end
-    print("WASM 大小: " .. #wasm_bytes .. " 字节")
-
-    -- runLua2wasm 内部自检
-    local output, err = wasmtime.runLua2wasm(wasm_bytes)
-    check_ok("A1. runLua2wasm 无错误", output ~= nil)
-
-    -- 手动编译获取 verify_all 结果
-    local engine = wasmtime.newEngine()
-    local store  = wasmtime.newStore(engine)
-    local mod    = wasmtime.newModule(engine, wasm_bytes)
-    check_ok("A2. 模块编译成功", mod ~= nil)
-
-    -- validate
-    local v_ok, v_msg = wasmtime.validate(engine, wasm_bytes)
-    check_ok("A3. validate 通过", v_ok == true)
-
-    print("  [INFO] runLua2wasm 已自动: 创建linker→注册28个host import→实例化→调用main()")
-    print("  [INFO] 内部测试: host.math(10种) host.math2(3种) host.fmt(5模式)")
-    print("  [INFO] 内部测试: host.os_time host.os_time_table host.os_clock")
-    print("  [INFO] 内部测试: host.os_tmpname host.os_exit host.fs_seek host.fs_close host.read")
-end
-;;::section_b;::
 
 print("")
 

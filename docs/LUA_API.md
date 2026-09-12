@@ -1161,21 +1161,7 @@ WebAssembly 运行时和编译工具。
 | `wasmtime.instantiate(module [, imports])` | 实例化模块 |
 | `wasmtime.load_file(filename)` | 从文件加载 WASM 模块 |
 
-### 7.3 lua2wasm — Lua 到 WASM 编译器
-
-| 属性 | 值 |
-|------|-----|
-| **require 名称** | `require("lua2wasm")` |
-| **源文件** | `src/lua2wasm/lua2wasmlib.c` |
-| **加载条件** | 始终 |
-
-将 Lua 源码编译为 WebAssembly 模块的完整编译器。
-
-| 函数 | 说明 |
-|------|------|
-| `lua2wasm.compile(code [, options])` | 将 Lua 代码编译为 WASM 二进制 |
-
-### 7.4 quickjs — QuickJS JavaScript 引擎
+### 7.3 quickjs — QuickJS JavaScript 引擎
 
 | 属性 | 值 |
 |------|-----|
@@ -1256,24 +1242,23 @@ WebAssembly 运行时和编译工具。
 | 23 | `ByteCode` | VM 模块 | 始终 | 字节码操作 |
 | 24 | `wasm3` | WASM | 始终 | WASM 运行时（wasm3） |
 | 25 | `wasmtime` | WASM | 非 Emscripten | WASM 运行时（wasmtime） |
-| 26 | `lua2wasm` | WASM | 始终 | Lua 转 WASM |
-| 27 | `lexer` | 编译转换 | 始终 | 词法分析 |
-| 28 | `quickjs` | WASM | 始终 | JS 引擎集成 |
-| 29 | `asyncio` | 编译转换 | 始终 | 异步 I/O |
-| 30 | `jit` | VM 模块 | 非 `LUA_NOJIT` | JIT 编译 |
-| 31 | `vmcustom` | VM 模块 | 始终 | 自定义操作码 |
-| 32 | `nativevm` | VM 模块 | 始终 | 原生 VM 接口 |
-| 33 | `nativeparser` | VM 模块 | 始终 | 原生解析器 |
-| 34 | `translator` | 编译转换 | 始终 | 代码翻译 |
-| 35 | `logtable` | 系统集成 | 始终 | 日志表 |
-| 36 | `crypto` | 密码学 | 始终 | 密码算法 |
-| 37 | `uuid` | 密码学 | 始终 | UUID 生成 |
-| 38 | `rsa` | 密码学 | 始终 | RSA 加密 |
-| 39 | `ecc` | 密码学 | 始终 | ECC 加密 |
-| 40 | `map` | 扩展模块 | 始终 | Map 数据结构 |
-| 41 | `ast` | 编译转换 | 始终 | AST 操作 |
-| 42 | `process` | 系统集成 | 仅 Linux | 进程管理 |
-| 43 | `libc` | 平台相关 | 仅 Android | C 标准库调用 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
+| 33 |
+| 34 |
+| 35 |
+| 36 |
+| 37 |
+| 38 |
+| 39 |
+| 40 |
+| 41 |
+| 42 |
 
 **语法级内置特性（非 require 模块）：**
 

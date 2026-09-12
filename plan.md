@@ -24,10 +24,9 @@
 6. utils/   (20 个 .c) — 加密/异步/网络/大整数等
 7. bin/     (5 个 .c) — lua/luac/luaccheck/lbcdump/lquickjs CLI
 8. lspsrv/  (10 个 .c)
-9. lua2wasm/ (11 个 .c)
-10. wasm/   (17 个 .c) — m3_* 为 vendored wasm3，写简明文档
-11. 重构 docs/README.md 总索引 + 与主题文档交叉引用
-12. 全量校验: 链接有效性、示例全部重跑一遍
+9. wasm/   (17 个 .c) — m3_* 为 vendored wasm3，写简明文档
+10. 重构 docs/README.md 总索引 + 与主题文档交叉引用
+11. 全量校验: 链接有效性、示例全部重跑一遍
 
 ## 文档模板（每篇）
 - 文件与职责（一句话）
@@ -44,7 +43,7 @@
 - [x] **core/ 完成 19/19**（全部含运行验证）+ core/README.md 索引
 - [x] compiler/llex.md 完成 + compiler/README.md（模块索引 + 已验证语法清单）
 - [ ] compiler 剩余 11 个文件（lparser 15426 行优先）
-- [ ] vm/stdlib/utils/bin/lspsrv/lua2wasm/wasm 未开始（多会话任务）
+- [ ] vm/stdlib/utils/bin/lspsrv/wasm 未开始（多会话任务）
 
 ## 发现与决策
 - lxclua.exe 依赖正确 PATH（见上）。所有示例运行统一经 run_lua.sh。

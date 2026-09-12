@@ -9,7 +9,6 @@
 /* wasm stubs */
 int luaopen_wasm3(lua_State *L) { (void)L; return 0; }
 int luaopen_wasmtime(lua_State *L) { (void)L; return 0; }
-int luaopen_lua2wasm(lua_State *L) { (void)L; return 0; }
 
 /* 缺失的扩展 API 声明（库中有定义但头文件未导出） */
 LUA_API void lua_extendiface(lua_State *L, int child_idx, int parent_idx);

@@ -11,7 +11,7 @@ LXCLUA-NCore is a highly customized, high-performance embedded scripting engine 
 *   **Security and Obfuscation:** A multi-layered obfuscation engine supporting control flow flattening (CFF), bogus blocks, string encryption via rolling XOR, integer arithmetic obfuscation (LCG-based), and binary dispatcher injection.
 *   **Bytecode-to-C Generation (tcc):** Converts Lua bytecode to C source code via `require("tcc")`, enabling external compilation for performance optimization. This is an offline transpilation approach, not traditional JIT compilation.
 *   **Real JIT Compilation (jit):** A separate `require("jit")` module based on sljit provides actual just-in-time compilation at runtime.
-*   **WebAssembly (WASM) Integration:** Built-in `wasm3` runtime execution directly from Lua, supporting high-performance sandbox execution with environment manipulation. Also includes `wasmtime` runtime and `lua2wasm` compiler.
+*   **WebAssembly (WASM) Integration:** Built-in `wasm3` runtime execution directly from Lua, supporting high-performance sandbox execution with environment manipulation. Also includes the `wasmtime` JIT runtime.
 *   **Exposed Lexer / AST (`lexer`):** Exposes internal C parsing primitives (like `build_tree`, `find_label`, `get_block_bounds`) to Lua, allowing powerful AST manipulation, refactoring, and customized CFF logic written entirely in pure Lua.
 *   **LSP Server:** Complete Language Server Protocol implementation (`lxclua-lsp`) supporting definition jump, hover tooltip, code diagnostics, autocompletion, formatting, and rename refactoring.
 *   **Bare-Metal Foundation:** An included `os/` directory providing Multiboot support, VGA, Serial I/O, and basic interrupts for running the engine directly on bare metal (x86).

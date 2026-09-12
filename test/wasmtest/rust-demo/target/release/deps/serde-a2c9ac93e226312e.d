@@ -1,0 +1,14 @@
+E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\deps\serde-a2c9ac93e226312e.d: C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\build\serde-ea6e617c06f39871\out/private.rs
+
+E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\deps\libserde-a2c9ac93e226312e.rlib: C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\build\serde-ea6e617c06f39871\out/private.rs
+
+E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\deps\libserde-a2c9ac93e226312e.rmeta: C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\build\serde-ea6e617c06f39871\out/private.rs
+
+C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\ruilo\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\release\build\serde-ea6e617c06f39871\out/private.rs:
+
+# env-dep:OUT_DIR=E:\\Soft\\Proje\\LXCLUA-NCore\\lua\\test\\wasmtest\\rust-demo\\target\\release\\build\\serde-ea6e617c06f39871\\out

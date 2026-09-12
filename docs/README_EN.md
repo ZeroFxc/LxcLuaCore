@@ -58,7 +58,6 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 | `asyncio` | Async I/O and Promises |
 | `wasm3` | WebAssembly runtime (wasm3) |
 | `wasmtime` | WebAssembly runtime (wasmtime) |
-| `lua2wasm` | Lua to WASM compiler |
 | `quickjs` | QuickJS JavaScript engine integration |
 | `vmcustom` | Custom opcode extension system |
 | `translator` | Code translation utilities |
@@ -202,7 +201,7 @@ Issues and Pull Requests are welcome. Please refer to the [Contributing Guidelin
 - [Lua API Reference](docs/LUA_API.md) — Full Lua C API reference
 
 ### Technical Deep Dives
-- [Deep Dive](docs/DEEP_DIVE.md) — Technical deep dive into 6 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM, lua2wasm
+- [Deep Dive](docs/DEEP_DIVE.md) — Technical deep dive into 5 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM
 - [WASM Runtime](docs/WASM_RUNTIME.md) — WebAssembly runtime integration
 - [LSP Server](docs/LSP_SERVER.md) — Language Server Protocol implementation
 - [AST System](docs/AST_SYSTEM.md) — Abstract syntax tree structure and operations

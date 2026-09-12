@@ -18,14 +18,14 @@
 
 ### Step 1: Download wasmtime Prebuilt Library
 
-**LXCLUA-NCore requires wasmtime v45.0.1 C API** for WASM runtime support. The prebuilt binaries are NOT included in the repository and must be downloaded manually.
+**LXCLUA-NCore requires wasmtime v48.0.1 C API** for WASM runtime support. The prebuilt binaries are NOT included in the repository and must be downloaded manually.
 
 #### Linux x64
 
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-linux.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-x86_64-linux-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-x86_64-linux-c-api.tar.xz
 tar -xf wasmtime-linux.tar.xz -C wasmtime/
 rm wasmtime-linux.tar.xz
 ```
@@ -34,7 +34,7 @@ Expected directory structure after extraction:
 
 ```
 wasmtime/
-└── wasmtime-v45.0.1-x86_64-linux-c-api/
+└── wasmtime-v48.0.1-x86_64-linux-c-api/
     ├── include/
     │   └── wasmtime.h (and other headers)
     └── lib/
@@ -47,7 +47,7 @@ wasmtime/
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-mingw.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-x86_64-mingw-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-x86_64-mingw-c-api.tar.xz
 tar -xf wasmtime-mingw.tar.xz -C wasmtime/
 rm wasmtime-mingw.tar.xz
 ```
@@ -56,7 +56,7 @@ Expected directory structure:
 
 ```
 wasmtime/
-└── wasmtime-v45.0.1-x86_64-mingw-c-api/
+└── wasmtime-v48.0.1-x86_64-mingw-c-api/
     ├── include/
     │   └── wasmtime.h
     └── lib/
@@ -69,7 +69,7 @@ wasmtime/
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-android.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-aarch64-android-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-aarch64-android-c-api.tar.xz
 tar -xf wasmtime-android.tar.xz -C wasmtime/
 rm wasmtime-android.tar.xz
 ```
@@ -201,14 +201,14 @@ make clean
 
 ### 第一步：下载 wasmtime 预编译库
 
-**LXCLUA-NCore 需要 wasmtime v45.0.1 C API** 来支持 WASM 运行时。预编译库**不包含在仓库中**，必须手动下载。
+**LXCLUA-NCore 需要 wasmtime v48.0.1 C API** 来支持 WASM 运行时。预编译库**不包含在仓库中**，必须手动下载。
 
 #### Linux x64
 
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-linux.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-x86_64-linux-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-x86_64-linux-c-api.tar.xz
 tar -xf wasmtime-linux.tar.xz -C wasmtime/
 rm wasmtime-linux.tar.xz
 ```
@@ -217,7 +217,7 @@ rm wasmtime-linux.tar.xz
 
 ```
 wasmtime/
-└── wasmtime-v45.0.1-x86_64-linux-c-api/
+└── wasmtime-v48.0.1-x86_64-linux-c-api/
     ├── include/
     │   └── wasmtime.h（及其他头文件）
     └── lib/
@@ -230,7 +230,7 @@ wasmtime/
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-mingw.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-x86_64-mingw-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-x86_64-mingw-c-api.tar.xz
 tar -xf wasmtime-mingw.tar.xz -C wasmtime/
 rm wasmtime-mingw.tar.xz
 ```
@@ -239,7 +239,7 @@ rm wasmtime-mingw.tar.xz
 
 ```
 wasmtime/
-└── wasmtime-v45.0.1-x86_64-mingw-c-api/
+└── wasmtime-v48.0.1-x86_64-mingw-c-api/
     ├── include/
     │   └── wasmtime.h
     └── lib/
@@ -252,7 +252,7 @@ wasmtime/
 ```bash
 mkdir -p wasmtime
 curl -L -o wasmtime-android.tar.xz \
-  https://github.com/bytecodealliance/wasmtime/releases/download/v45.0.1/wasmtime-v45.0.1-aarch64-android-c-api.tar.xz
+  https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.1/wasmtime-v48.0.1-aarch64-android-c-api.tar.xz
 tar -xf wasmtime-android.tar.xz -C wasmtime/
 rm wasmtime-android.tar.xz
 ```

@@ -1,5 +1,0 @@
---- STDOUT ---
---- STDERR ---
-./lxclua.exe: build/s19_ternary_range.lua:2: '<name>' expected
-    2 | local r = x > 3 ? "big" : "small"
-      |                          ^ here

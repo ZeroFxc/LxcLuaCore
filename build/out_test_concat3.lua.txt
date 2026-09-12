@@ -1,3 +1,0 @@
-r1:	xx
-r2:	xxx
-r3:	xxxx

@@ -8,7 +8,7 @@ mkdir -p "$OUTDIR"
 RUNNER="test/c/lbctc_runner2.c"
 
 SYSLIBS="-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32"
-MYCFLAGS="-Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -Iwasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api/include"
+MYCFLAGS="-Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -Iwasmtime/wasmtime-v48.0.1-x86_64-mingw-c-api/include"
 
 # 分段定义: 起始行 结束行 名称
 # 注意：从 719 行开始的段落需要 printf/error，从 1690 开始的还需要 ok/assert_eq/assert_true

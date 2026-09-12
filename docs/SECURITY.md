@@ -48,7 +48,6 @@ The following components are within the security scope of this project:
 | HTTP / Networking | `libhttp.c` | SSRF, injection |
 | Multi-threading | `lthread.c`, `lthreadlib.c` | Race conditions, deadlocks |
 | LSP Server | `src/lspsrv/` | DoS via crafted input |
-| Lua-to-WASM | `src/lua2wasm/` | Code generation bugs |
 
 ### Response Timeline
 
@@ -129,7 +128,6 @@ Cryptographic modules — `crypto` (SHA-256, AES, HMAC, CSPRNG, CRC32), `rsa`, `
 | HTTP / 网络 | `libhttp.c` | SSRF、注入 |
 | 多线程 | `lthread.c`、`lthreadlib.c` | 竞态条件、死锁 |
 | LSP 服务器 | `src/lspsrv/` | 构造输入导致 DoS |
-| Lua-to-WASM | `src/lua2wasm/` | 代码生成缺陷 |
 
 ### 响应时间线
 

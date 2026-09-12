@@ -53,7 +53,6 @@ A high-performance embedded scripting engine based on **Lua 5.5 (Custom)** with 
 | `asyncio` | `require("asyncio")` | Async I/O and Promises |
 | `wasm3` | `require("wasm3")` | WebAssembly runtime (wasm3) |
 | `wasmtime` | `require("wasmtime")` | WebAssembly runtime (wasmtime) |
-| `lua2wasm` | `require("lua2wasm")` | Lua to WASM compiler |
 | `quickjs` | `require("quickjs")` | QuickJS JavaScript engine integration |
 | `vmcustom` | `require("vmcustom")` | Custom opcode extension system |
 | `nativevm` | `require("nativevm")` | Native VM interface |
@@ -773,7 +772,7 @@ int lua_dump_obfuscated(lua_State *L, lua_Writer writer, void *data,
 
 ### New Documents (Based on Code Analysis)
 - [Project Status & Maturity Report](PROJECT_STATUS.md) -- Objective assessment based on full source analysis: code scale, module maturity, technical specs
-- [Technical Deep Dive](DEEP_DIVE.md) -- In-depth analysis of 6 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM, lua2wasm
+- [Technical Deep Dive](DEEP_DIVE.md) -- In-depth analysis of 5 core subsystems: 64-bit instruction format, OOP, obfuscation, crypto, NativeVM
 - [Embedding Guide](EMBEDDING_GUIDE.md) -- Complete guide for embedding LXCLUA in C/C++ projects
 - [Code of Conduct](CODE_OF_CONDUCT.md) -- Community participation guidelines
 - [Changelog](../../CHANGELOG.md) -- Version history and changes

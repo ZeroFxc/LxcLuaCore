@@ -17,13 +17,13 @@ RANLIB= ranlib
 RM= rm -f
 UNAME= uname
 
-# wasmtime: 支持 WASM GC 提案的运行时（v45.0.1 预编译库，用于桌面对 Windows MinGW）
-WASMTIME_DIR = wasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api
+# wasmtime: 支持 WASM GC 提案的运行时（v48.0.1 预编译库，用于桌面对 Windows MinGW）
+WASMTIME_DIR = wasmtime/wasmtime-v48.0.1-x86_64-mingw-c-api
 WASMTIME_INC = -I$(WASMTIME_DIR)/include
 WASMTIME_LIB = $(WASMTIME_DIR)/lib/libwasmtime.a -lbcrypt -luserenv -lole32 -lntdll
 WASMTIME_DLL = $(WASMTIME_DIR)/lib/wasmtime.dll
 # wasmtime Android 预编译库（aarch64）
-WASMTIME_ANDROID_DIR = wasmtime/wasmtime-v45.0.1-aarch64-android-c-api
+WASMTIME_ANDROID_DIR = wasmtime/wasmtime-v48.0.1-aarch64-android-c-api
 
 SYSCFLAGS= -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE
 override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
@@ -73,7 +73,9 @@ PCRE2_O= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_
 # PCRE2 不含 JIT 编译（用于 wasm 等不支持 JIT 的平台）
 PCRE2_O_NOJIT= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_stubs.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
 QJS_O= quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutils.o quickjs/quickjs-libc.o quickjs/dtoa.o
-LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WASM3_O)
+# wasmtime 绑定（模块化：入口 + 功能模块）
+WMT_O= $(BUILDDIR)/wmt_util.o $(BUILDDIR)/wmt_engine.o $(BUILDDIR)/wmt_module.o $(BUILDDIR)/wmt_instance.o $(BUILDDIR)/wmt_value.o $(BUILDDIR)/wmt_linker.o $(BUILDDIR)/wmt_wasi.o $(BUILDDIR)/wmt_component.o $(BUILDDIR)/wmt_async.o
+LIB_O_WASM= $(BUILDDIR)/lwasm3.o $(BUILDDIR)/lwasmtime.o $(WMT_O) $(WASM3_O)
 BASE_O= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(PCRE2_O)
 BASE_O_WASM= $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS) $(PCRE2_O)
 
@@ -661,18 +663,18 @@ ios:
 
 Linux linux:
 	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread -lssl -lcrypto" SYSLDFLAGS="-s" \
-	"WASMTIME_DIR=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api" \
-	"WASMTIME_LIB=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api/lib/libwasmtime.a" \
-	"WASMTIME_DLL=wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api/lib/libwasmtime.so"
+	"WASMTIME_DIR=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api" \
+	"WASMTIME_LIB=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api/lib/libwasmtime.a" \
+	"WASMTIME_DLL=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api/lib/libwasmtime.so"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 	@# -- 生成聚合头
 	$(MAKE) gen-header
 
 termux:
 	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm -lssl -lcrypto" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld" \
-	"WASMTIME_DIR=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api" \
-	"WASMTIME_LIB=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/lib/libwasmtime.a" \
-	"WASMTIME_DLL=wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/lib/libwasmtime.so"
+	"WASMTIME_DIR=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api" \
+	"WASMTIME_LIB=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/lib/libwasmtime.a" \
+	"WASMTIME_DLL=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/lib/libwasmtime.so"
 	strip --strip-unneeded $(LUA_T) $(LUAC_T) || true
 	@# -- 生成聚合头
 	$(MAKE) gen-header

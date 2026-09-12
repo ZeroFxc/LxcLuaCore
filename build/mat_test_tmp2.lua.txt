@@ -1,5 +1,0 @@
---- STDOUT ---
---- STDERR ---
-./lxclua.exe: test/luatest\test_tmp2.lua:42: '<name>' expected
-    42 |     local obj <close> = setmetatable({}, mt)
-      | ^ here

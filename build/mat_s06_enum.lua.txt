@@ -1,5 +1,0 @@
---- STDOUT ---
---- STDERR ---
-./lxclua.exe: build/s06_enum.lua:2: ''{'' expected
-    2 |   Red
-      | ^ here

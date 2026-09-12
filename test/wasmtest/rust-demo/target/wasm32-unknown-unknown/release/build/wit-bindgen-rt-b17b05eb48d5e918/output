@@ -1,0 +1,2 @@
+cargo:rustc-link-lib=wit_bindgen_cabi_realloc0_40_0
+cargo:rustc-link-search=native=E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\wasm32-unknown-unknown\release\build\wit-bindgen-rt-b17b05eb48d5e918\out

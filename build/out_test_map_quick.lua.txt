@@ -1,2 +1,0 @@
-m[10] =	from_table
-OK

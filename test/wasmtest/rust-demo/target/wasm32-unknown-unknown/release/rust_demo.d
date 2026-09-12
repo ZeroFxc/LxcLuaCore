@@ -1,0 +1,1 @@
+E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\target\wasm32-unknown-unknown\release\rust_demo.wasm: E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\src\bindings.rs E:\Soft\Proje\LXCLUA-NCore\lua\test\wasmtest\rust-demo\src\lib.rs

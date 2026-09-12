@@ -11,7 +11,7 @@
 - [3. 混淆引擎架构](#3-混淆引擎架构)
 - [4. 密码学库实现](#4-密码学库实现)
 - [5. NativeVM 原生虚拟机](#5-nativevm-原生虚拟机)
-- [6. Lua-to-WASM 编译管线](#6-lua-to-wasm-编译管线)
+- [6. wasmtime Engine 配置](#6-wasmtime-engine-配置)
 
 ---
 
@@ -528,139 +528,8 @@ typedef struct {
 
 ---
 
-## 6. Lua-to-WASM 编译管线
+## 6. wasmtime Engine 配置
 
-### 6.1 整体架构
-
-```
-                    ┌─────────────────┐
-                    │   Lua 源码文件   │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  lua2wasm 编译器  │
-                    │  (codegen.c +    │
-                    │   parser.c)      │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   WASM 二进制码   │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  wasmtime 运行时  │
-                    │  (lwasmtime.c +  │
-                    │   28 host funcs) │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │     执行结果     │
-                    └─────────────────┘
-```
-
-### 6.2 lua2wasm 编译器后端
-
-```c
-/* src/lua2wasm/codegen.c — 4,729 行
-** 将 LXCLUA AST → WASM 二进制
-**
-** 主要模块:
-**   - 类型映射: LXCLUA 类型 → WASM 类型 (i32/i64/f32/f64/externref)
-**   - 函数编译: function → WASM func + locals + body
-**   - 内存布局: 模拟 Lua 堆的 WASM 线性内存
-**   - GC 集成: 调用 wasmtime GC 提案的引用类型
-**   - Host 函数映射: 28 个回调 → WASM import
-*/
-```
-
-### 6.3 28 个 Host 回调函数
-
-```c
-/* lwasmtime.c 注册的 host 函数 */
-
-/* I/O */
-l2w_print_cb        /* print(...)        — 捕获到 output_buf */
-l2w_write_raw_cb    /* io.write(...)     — 原始输出 */
-l2w_write_err_cb    /* io.stderr:write   — 错误输出 */
-l2w_read_cb         /* io.read(...)      — 从 stdin_data 读取 */
-
-/* 格式化 */
-l2w_fmt_cb          /* string.format     — 返回格式化字符串 */
-l2w_fmt_spec_cb     /* string.format 内部辅助 */
-
-/* 数学 */
-l2w_math_cb         /* math.*            — 一元数学函数 */
-l2w_math2_cb        /* math 二元函数     — 如 math.atan2, math.pow */
-
-/* 类型转换 */
-l2w_parse_num_cb    /* tonumber          — 解析数字 */
-l2w_read_num_cb     /* io.read("*number") — 读取数字 */
-
-/* 文件系统 */
-l2w_fs_open_cb      /* io.open           — 文件句柄表管理 */
-l2w_fs_read_cb      /* file:read         — 从文件读 */
-l2w_fs_write_cb     /* file:write        — 写文件 */
-l2w_fs_seek_cb      /* file:seek         — 定位 */
-l2w_fs_flush_cb     /* file:flush        — 刷新缓冲 */
-l2w_fs_close_cb     /* file:close        — 关闭文件 */
-
-/* 操作系统 */
-l2w_os_time_cb      /* os.time           → int64 */
-l2w_os_time_table_cb/* os.time(table)    → 冻结时间 */
-l2w_os_clock_cb     /* os.clock          → CPU 秒 */
-l2w_os_getenv_cb    /* os.getenv         — 读取环境变量 */
-l2w_os_exit_cb      /* os.exit           — 终止执行 */
-l2w_os_date_cb      /* os.date           → 日期字符串 */
-l2w_os_remove_cb    /* os.remove         — 删除文件 */
-l2w_os_rename_cb    /* os.rename         — 重命名 */
-l2w_os_tmpname_cb   /* os.tmpname        → 临时文件名 */
-
-/* 其他 */
-l2w_obj_id_cb       /* 对象唯一 ID 计数器 */
-l2w_warn_cb         /* warn(...)         — 警告输出 */
-```
-
-### 6.4 lua2wasm 端到端流程
-
-```lua
--- Lua 使用示例:
-local lua2wasm = require("lua2wasm")
-local wasmtime = require("wasmtime")
-
--- 步骤 1: 编译 Lua → WASM
-local wasm_bytes = lua2wasm.wcompile([[
-    local function fib(n)
-        if n < 2 then return n end
-        return fib(n-1) + fib(n-2)
-    end
-    return fib(10)
-]])
-
--- 步骤 2: 一键运行 WASM
-local result = wasmtime.runLua2wasm(wasm_bytes)
-print(result)  -- → 55
-```
-
-```c
-/* 内部实现:
-**   1. lua2wasm.wcompile(lua_code)
-**      a. 调用 lparser.c 的解析器 → AST
-**      b. 调用 codegen.c → WASM 二进制码
-**      c. 返回 WASM 字节串 (lightuserdata + size)
-**
-**   2. wasmtime.runLua2wasm(wasm_bytes)
-**      a. 创建 Engine (带 GC 支持)
-**      b. 创建 Store
-**      c. 编译 Module (wasmtime_module_new)
-**      d. 创建 Linker + 注册 28 个 host func
-**      e. 实例化: linker:instantiate(store, module)
-**      f. 查找 _start 入口函数并调用
-**      g. 捕获 print 输出 → output_buf
-**      h. 返回 output_buf 作为 Lua 字符串
-*/
-```
-
-### 6.5 Engine 配置选项
 
 ```lua
 local engine = wasmtime.newEngine{
@@ -695,7 +564,6 @@ local engine = wasmtime.newEngine{
 | NI_MAX | 47 | lnativevm.c | NativeVM 操作码总数 |
 | VM_MAP_SIZE | 256 | lobfuscate.h | VM 保护映射表大小 |
 | CSPRNG_ROUNDS | 20 | csprng.c | ChaCha20 轮数 |
-| L2W_MAX_FILES | 64 | lwasmtime.c | lua2wasm 最大文件句柄数 |
 
 ## 附录 B: 文件格式
 

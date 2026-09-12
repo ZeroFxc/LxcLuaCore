@@ -11,7 +11,6 @@
 3. [混淆引擎架构](#3-混淆引擎架构)
 4. [密码学库实现](#4-密码学库实现)
 5. [NativeVM 原生虚拟机](#5-nativevm-原生虚拟机)
-6. [Lua-to-WASM 编译管线](#6-lua-to-wasm-编译管线)
 
 ---
 
@@ -402,77 +401,3 @@ NLang 是 NativeVM 的源语言，语法类似 Lua 但使用原生指令编译:
 ```
 
 ---
-
-## 6. Lua-to-WASM 编译管线
-
-### 6.1 架构概览
-
-```
-Lua 源码
-    │
-    ▼
-┌──────────────────┐
-│  Lua 解析器       │ 复用标准解析器 (lparser.c)
-│  (Parser)        │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│  Lua AST         │ 转换为 lua2wasm 内部 AST
-│  (Adaptation)    │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│  WASM 代码生成器  │ codegen.c (4,527 行)
-│  (Codegen)       │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│  WAT 生成器       │ wat2wasm.c (2,380 行)
-│  (WAT Writer)    │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│  WASM 二进制编码  │ 使用 wabt 库将 WAT 编译为 WASM
-│  (Binary)        │
-└──────┬───────────┘
-       │
-       ▼
-    .wasm 文件
-```
-
-### 6.2 28 个 Host 回调
-
-Lua 标准库函数通过 WASM 的 host 导入机制暴露:
-
-| 类别 | 函数 |
-|------|------|
-| 基础 | `print`, `type`, `tostring`, `tonumber`, `pcall` |
-| 数学 | `math_abs`, `math_floor`, `math_sqrt`, `math_sin`, `math_cos` |
-| 字符串 | `string_len`, `string_sub`, `string_find`, `string_gsub` |
-| 表 | `table_insert`, `table_remove`, `table_sort`, `table_concat` |
-| IO | `io_write`, `io_read`, `io_open`, `io_close` |
-| 内存 | `malloc`, `free`, `memcpy`, `memset` |
-
-### 6.3 端到端流程
-
-```
-1. 解析 Lua 源码为 AST
-2. 遍历 AST，生成 WASM 函数体
-3. 为每个 Lua 函数创建一个 WASM 函数
-4. 使用 WASM 局部变量模拟 Lua 寄存器
-5. 使用 WASM 全局变量模拟 Lua 全局表
-6. 生成 WAT 文本格式
-7. 调用 wabt 编译为 WASM 二进制
-8. 输出 .wasm 文件
-```
-
-**已知限制**:
-- 不支持协程 (coroutine)
-- 不支持 debug 库
-- 不支持动态加载 (load/loadstring)
-- 元表支持有限
-- 闭包捕获需要额外处理

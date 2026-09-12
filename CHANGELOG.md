@@ -50,7 +50,6 @@
 - 完整 OOP 系统（class/interface/trait/sealed/singleton，C3 线性化 MRO）
 - 原生 NativeVM 虚拟机（独立指令集、40+ 操作码、两遍汇编器）
 - NLang 2.0 编译器（Lua-like 语言 → NativeVM 字节码）
-- Lua2WASM 编译器（Lua 源码 → WebAssembly 模块）
 - wasmtime GC + externref 绑定（28 个 host 回调）
 - QuickJS 引擎集成
 - SHA-256 / AES / HMAC / CRC32 密码算法库

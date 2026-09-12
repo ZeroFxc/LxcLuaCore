@@ -13,7 +13,6 @@ src/
 ├── vm/          — 虚拟机 (执行引擎/保护/内省/原生VM)
 ├── stdlib/      — 标准库 (base/string/math/table/io/class 等)
 ├── utils/       — 工具库 (BigInt/加密/线程/Promise/事件循环/异步IO)
-├── lua2wasm/    — Lua→WASM 编译器
 ├── wasm/        — WASM 运行时绑定 (wasmtime/wasm3)
 ├── lspsrv/      — LSP 服务器
 └── bin/         — 可执行文件入口
@@ -26,7 +25,7 @@ core ← compiler ← vm ← stdlib
   ↑                    ↑
 utils ──────────────── utils
   ↑
-lua2wasm / wasm / lspsrv
+wasm / lspsrv
 ```
 
 - `core` 层无依赖（除了标准 C 库）
@@ -244,7 +243,6 @@ typedef uint64_t lua_Unsigned;    // 总是 64 位无符号
 | `BUILD_LUA_LIB` | BOOL | OFF | 构建静态库 |
 | `BUILD_LUA_DLL` | BOOL | OFF | 构建动态库 |
 | `BUILD_LSP` | BOOL | ON | 构建 LSP 服务器 |
-| `BUILD_LUA2WASM` | BOOL | ON | 构建 Lua→WASM |
 | `BUILD_TESTS` | BOOL | ON | 构建测试 |
 | `ENABLE_LTO` | BOOL | OFF | 链接时优化 |
 | `ENABLE_OBFUSCATION` | BOOL | ON | 混淆支持 |

@@ -1,5 +1,0 @@
---- STDOUT ---
---- STDERR ---
-./lxclua.exe: test/lbctc/014_match.lua:20: match expression requires '=>' arrow form for each case
-    20 |     case "hello" => "str:hello"
-      | ^ here

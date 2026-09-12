@@ -40,7 +40,7 @@ LXCLUA-NCore 使用 GNU Make 作为构建系统，主 Makefile 位于 `lua/Makef
 
 | 变量 | 默认值 | 说明 |
 | ---- | ------ | ---- |
-| `WASMTIME_DIR` | `wasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api` | wasmtime 预编译库目录（默认 MinGW） |
+| `WASMTIME_DIR` | `wasmtime/wasmtime-v48.0.1-x86_64-mingw-c-api` | wasmtime 预编译库目录（默认 MinGW） |
 | `WASMTIME_INC` | `-I$(WASMTIME_DIR)/include` | wasmtime 头文件路径 |
 | `WASMTIME_LIB` | `$(WASMTIME_DIR)/lib/libwasmtime.a -lbcrypt -luserenv -lole32 -lntdll` | wasmtime 静态库及 Windows 系统依赖 |
 | `WASMTIME_DLL` | `$(WASMTIME_DIR)/lib/wasmtime.dll` | wasmtime 动态库路径 |
@@ -58,7 +58,7 @@ LXCLUA-NCore 使用 GNU Make 作为构建系统，主 Makefile 位于 `lua/Makef
 | 变量 | 值 | 说明 |
 | ---- | --- | ---- |
 | `BUILDDIR` | `build/obj` | 所有 `.o` 目标文件的输出目录 |
-| `VPATH` | `src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:src/lua2wasm:pcre2/src` | Make 的源文件搜索路径 |
+| `VPATH` | `src/core:src/stdlib:src/vm:src/compiler:src/utils:src/wasm:src/bin:pcre2/src` | Make 的源文件搜索路径 |
 
 ### 1.2 目标文件变量
 
@@ -107,18 +107,18 @@ LIB_O = build/obj/lauxlib.o build/obj/lpatchlib.o build/obj/lbaselib.o ...
 #### BASE_O — 完整静态库目标文件
 
 ```
-BASE_O = $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O) $(PCRE2_O)
+BASE_O = $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(PCRE2_O)
 ```
 
 包含所有需要链接进 `liblxclua.a` 的 `.o` 文件。
 
-#### BASE_O_WASM — WASM 构建用目标文件（不含 lua2wasm）
+#### BASE_O_WASM — WASM 构建用目标文件
 
 ```
 BASE_O_WASM = $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(MYOBJS) $(PCRE2_O)
 ```
 
-与 `BASE_O` 的区别：不含 `QJS_O`、`LUA2WASM_CORE_O`、`WAT2WASM_CORE_O`、`LUA2WASM_LIB_O`。
+与 `BASE_O` 的区别：不含 `QJS_O`（QuickJS 引擎）。
 
 #### LIB_O_WASM — WASM 运行时模块
 
@@ -150,15 +150,7 @@ QJS_O = quickjs/quickjs.o quickjs/libregexp.o quickjs/libunicode.o quickjs/cutil
 
 QuickJS 输出到 `quickjs/` 目录而非 `build/obj/`。
 
-#### LUA2WASM_CORE_O — Lua-to-WASM 编译器
 
-```
-LUA2WASM_CORE_O = build/obj/ast.o build/obj/lexer_l2w.o build/obj/parser_l2w.o
-                  build/obj/wat_builder.o build/obj/codegen_l2w.o build/obj/builtins_l2w.o
-                  build/obj/xalloc_l2w.o
-```
-
-#### PCRE2_O — PCRE2 正则引擎（含 JIT）
 
 ```
 PCRE2_O = build/obj/pcre2_auto_possess.o build/obj/pcre2_chartables.o ...
@@ -332,19 +324,11 @@ Android Termux 环境编译，使用 Clang C23 标准。
 make lsp-linux
 ```
 
-### 2.11 `make lua2wasm`
-
-编译独立的 `lua2wasm` CLI 工具（Lua 源码 → WAT/WASM 编译器）。
-
-### 2.12 `make wat2wasm`
-
-编译独立的 `wat2wasm` CLI 工具（WAT 文本 → WASM 二进制汇编器）。
-
-### 2.13 `make all`
+### 2.11 `make all`
 
 编译所有目标：`$(LUA_A) $(LUA_T) $(LUAC_T) $(LUACCHECK_T)`
 
-### 2.14 `make clean`
+### 2.12 `make clean`
 
 清理所有编译产物，包括：
 - `build/obj/` 目录
@@ -429,7 +413,7 @@ make lsp-linux
 
 ```
 -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm
--Isrc/bin -Iquickjs -Isrc/lua2wasm -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
+-Isrc/bin -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 $(WASMTIME_INC)
 ```
 
@@ -442,7 +426,6 @@ $(WASMTIME_INC)
 | `src/utils` | 加密、IO、JSON、HTTP、大整数等工具 |
 | `src/wasm` | wasm3/wasmtime 绑定 |
 | `src/bin` | 解释器入口、QuickJS 绑定 |
-| `src/lua2wasm` | Lua-to-WASM 编译器 |
 | `quickjs` | QuickJS 引擎 |
 | `pcre2` | PCRE2 正则引擎 |
 | `wasmtime/...` | wasmtime C API 头文件 |
@@ -506,7 +489,7 @@ Windows 平台使用 MSYS2 MinGW64 工具链，适配要点：
 - **链接方式**：使用 `-Wl,-E` 导出动态符号，支持 `dlopen` 加载 C 扩展模块
 - **系统库**：链接 `libssl`、`libcrypto`（OpenSSL）、`libdl`、`libpthread`
 - **符号裁剪**：编译后执行 `strip --strip-unneeded` 减小二进制体积
-- **wasmtime**：使用 Linux 预编译的 `wasmtime-v45.0.1-x86_64-linux-c-api`
+- **wasmtime**：使用 Linux 预编译的 `wasmtime-v48.0.1-x86_64-linux-c-api`
 
 ### 4.3 Termux (Android)
 
@@ -515,7 +498,7 @@ Android Termux 环境编译，适配要点：
 - **编译器**：使用 `clang` 而非 GCC，支持 C23 标准
 - **链接器**：使用 LLD（`-fuse-ld=lld`），性能优于 BFD/Gold
 - **无 X11**：隐式不包含 X11 相关代码（Termux 无 X11 环境）
-- **wasmtime**：使用 Android aarch64 预编译的 `wasmtime-v45.0.1-aarch64-android-c-api`
+- **wasmtime**：使用 Android aarch64 预编译的 `wasmtime-v48.0.1-aarch64-android-c-api`
 
 ### 4.4 Emscripten / WASM
 
@@ -526,7 +509,7 @@ WebAssembly 编译，适配要点：
 - **JIT 禁用**：WASM 不支持运行时 JIT 编译，使用 `CORE_O_NOJIT` 和 `PCRE2_O_NOJIT`
 - **无 wasmtime**：WASM 目标不需要 wasmtime 运行时库
 - **wasm3 运行时**：保留 wasm3 引擎用于 WASM 模块加载
-- **QuickJS 和 lua2wasm 排除**：WASM 构建不包含 QuickJS 和 lua2wasm 编译器模块
+- **QuickJS 排除**：WASM 构建不包含 QuickJS 引擎模块
 - **内存管理**：初始内存 32MB，允许动态增长，栈大小 5MB
 - **文件系统**：启用虚拟文件系统（`-sFILESYSTEM=1`）
 - **模块化**：ES 模块封装（`-sMODULARIZE=1`），各产物独立模块名
@@ -642,8 +625,6 @@ $(CC) -shared -o lxclua.dll
 
 | 产物 | 说明 |
 | ---- | ---- |
-| `lua2wasm` / `lua2wasm.exe` | Lua-to-WASM 编译器 CLI（`make lua2wasm`） |
-| `wat2wasm` / `wat2wasm.exe` | WAT-to-WASM 汇编器 CLI（`make wat2wasm`） |
 | `qjs` / `qjs.exe` | QuickJS 解释器（随 `make all` 生成） |
 | `qjsc` / `qjsc.exe` | QuickJS 编译器（随 `make all` 生成） |
 
@@ -683,26 +664,7 @@ JIT（Just-In-Time）编译器是 LXCLUA-NCore 的核心性能特性，包含以
 - 使用 `lvmustom.o` 提供自定义 VM 桩实现（替代 JIT 加速路径）
 - 使用 `pcre2_jit_stubs.o` 替代 `pcre2_jit_compile.o`（PCRE2 JIT 桩）
 
-### 6.4 lua2wasm 编译器编译流程
-
-`lua2wasm` 将 Lua 源码编译为 WAT/WASM 格式，核心模块直接编译进 `liblxclua.a`，可在 Lua 中通过 `require("lua2wasm")` 使用。
-
-编译管线：
-1. **词法分析**：`lexer_l2w.o`（`src/lua2wasm/lexer.c`，注意与 `llex.o` 区分）
-2. **语法分析**：`parser_l2w.o`（`src/lua2wasm/parser.c`）
-3. **AST 构建**：`ast.o`（`src/lua2wasm/ast.c`）
-4. **代码生成**：`codegen_l2w.o`（`src/lua2wasm/codegen.c`）
-5. **WAT 输出**：`wat_builder.o`（`src/lua2wasm/wat_builder.c`）
-6. **内建函数**：`builtins_l2w.o`（`src/lua2wasm/builtins.c`）
-7. **WAT→WASM 汇编**：`wat2wasm_core.o`（`src/lua2wasm/wat2wasm.c`）
-8. **Lua 模块入口**：`lua2wasmlib.o`（`src/lua2wasm/lua2wasmlib.c`）
-9. **内存分配**：`xalloc_l2w.o`（`src/lua2wasm/xalloc.c`）
-
-独立 CLI 工具额外编译：
-- `lua2wasm_main.o`（`src/lua2wasm/main.c`）→ `lua2wasm` 可执行文件
-- `wat2wasm_cli.o`（`src/lua2wasm/wat2wasm_cli.c`）→ `wat2wasm` 可执行文件
-
-### 6.5 QuickJS 集成编译
+### 6.4 QuickJS 集成编译
 
 QuickJS 引擎编译到 `quickjs/` 目录（非 `build/obj/`）：
 
@@ -742,7 +704,7 @@ $(BUILDDIR)/pcre2_%.o: pcre2/src/pcre2_%.c | $(BUILDDIR)
 ## 7. 编译依赖关系图
 
 ```
-src/*.c, src/vm/jit/*.c, src/lua2wasm/*.c, pcre2/src/*.c, quickjs/*.c
+src/*.c, src/vm/jit/*.c, pcre2/src/*.c, quickjs/*.c
     │
     │  $(CC) $(CFLAGS) $(MYCFLAGS) -c
     ▼
@@ -776,8 +738,6 @@ make wasm           # WebAssembly (Emscripten)
 make wasmlsp        # WASM LSP 服务器
 
 # 独立工具
-make lua2wasm       # Lua-to-WASM 编译器
-make wat2wasm       # WAT-to-WASM 汇编器
 make lsp            # Windows LSP 服务器
 make lsp-linux      # Linux LSP 服务器
 make head           # 生成合并头文件 lxclua.h

@@ -1,0 +1,16 @@
+[package]
+name = "rust-demo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.40.0"
+wit-bindgen-rt = "0.40.0"
+
+[package.metadata.component]
+package = "demo:test"
+
+[workspace]

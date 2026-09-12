@@ -1,0 +1,42 @@
+package demo:test;
+
+interface types {
+  record pair {
+    x: u32,
+    y: u32,
+  }
+  enum color {
+    red,
+    green,
+    blue,
+  }
+  variant maybe {
+    none,
+    some(u32),
+  }
+  flags perms {
+    read,
+    write,
+    exec,
+  }
+}
+
+/// 综合类型 + WASI 演示 world
+world demo {
+  use types.{pair, color, maybe, perms};
+
+  export add: func(a: u32, b: u32) -> u32;
+  export sub: func(a: s32, b: s32) -> s32;
+  export mul-f: func(a: f32, b: f32) -> f32;
+  export div-d: func(a: f64, b: f64) -> f64;
+  export greet: func(name: string) -> string;
+  export sum-list: func(xs: list<u32>) -> u32;
+  export double-list: func(xs: list<u32>) -> list<u32>;
+  export make-pair: func(a: u32, b: u32) -> pair;
+  export swap-pair: func(p: pair) -> pair;
+  export try-get: func(flag: bool) -> result<u32, string>;
+  export pick: func(choice: color, val: u32) -> option<u32>;
+  export echo-maybe: func(v: maybe) -> maybe;
+  export count-flags: func(f: perms) -> u32;
+  export not-bool: func(b: bool) -> bool;
+}

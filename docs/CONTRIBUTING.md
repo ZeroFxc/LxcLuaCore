@@ -18,7 +18,7 @@ Before contributing, please familiarize yourself with the project's five-layer a
 │  src/bin/ (lua, luac, luaccheck) ─ Entry points             │
 ├─────────────────────────────────────────────────────────────┤
 │                   Extension Layer                            │
-│  src/wasm/ src/lua2wasm/ src/lspsrv/ ─ External integrations│
+│  src/wasm/ src/lspsrv/ ─ External integrations│
 ├─────────────────────────────────────────────────────────────┤
 │                  Standard Library Layer                      │
 │  src/stdlib/ (lclass, laio, lthread, lstruct) ─ Libraries   │
@@ -396,7 +396,7 @@ When making changes to performance-critical code (VM loop, GC, compiler):
 │  src/bin/ (lua, luac, luaccheck) ─ 入口程序                  │
 ├─────────────────────────────────────────────────────────────┤
 │                     扩展层                                   │
-│  src/wasm/ src/lua2wasm/ src/lspsrv/ ─ 外部集成              │
+│  src/wasm/ src/lspsrv/ ─ 外部集成              │
 ├─────────────────────────────────────────────────────────────┤
 │                    标准库层                                  │
 │  src/stdlib/ (lclass, laio, lthread, lstruct) ─ 库实现       │

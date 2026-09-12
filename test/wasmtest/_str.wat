@@ -1,0 +1,50 @@
+(component
+  (type $li (list u32))
+  (type $li2 (list u32))
+  (export $liX "li" (type $li))
+  (export $li2X "li2" (type $li2))
+  (core module $M
+    (memory (export "memory") 1)
+    (data (i32.const 0) "\40\00\00\00")  ;; bump 指针初始 = 64
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+      ;; (old_ptr, old_size, align, new_size) -> new_ptr
+      ;; bump allocator：分配指针存于 memory[0]，按 align 对齐
+      (local $base i32)
+      (local $aligned i32)
+      (local.set $base (i32.load (i32.const 0)))
+      ;; aligned = (base + align - 1) & ~(align - 1)
+      (local.set $aligned
+        (i32.and
+          (i32.add (local.get $base) (i32.sub (local.get 2) (i32.const 1)))
+          (i32.sub (i32.const 0) (local.get 2))))
+      (i32.store (i32.const 0) (i32.add (local.get $aligned) (local.get 3)))
+      (local.get $aligned))
+    (func (export "string_len") (param i32 i32) (result i32)
+      local.get 1)
+    (func (export "list_sum") (param i32 i32) (result i32)
+      (local $sum i32)
+      (local $i i32)
+      (local $ptr i32)
+      (local.set $ptr (local.get 0))
+      (block $done
+        (loop $l
+          (br_if $done (i32.ge_u (local.get $i) (local.get 1)))
+          (local.set $sum (i32.add (local.get $sum)
+            (i32.load (i32.add (local.get $ptr) (i32.mul (local.get $i) (i32.const 4))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+      (local.get $sum))
+    (func (export "list_tail") (param i32 i32) (result i32 i32)
+      ;; 尝试返回 list<u32>：core (ptr, len) -> (ptr, len)
+      ;; 简化：返回空 list (ptr=0, len=0)
+      (i32.const 0)
+      (i32.const 0))
+  )
+  (core instance $i (instantiate $M))
+  (alias core export $i "memory" (core memory $mem))
+  (alias core export $i "realloc" (core func $realloc))
+  (func (export "string-len") (param "s" string) (result u32)
+    (canon lift (core func $i "string_len") (memory $mem) (realloc $realloc)))
+  (func (export "list-sum") (param "l" $liX) (result u32)
+    (canon lift (core func $i "list_sum") (memory $mem) (realloc $realloc)))
+)

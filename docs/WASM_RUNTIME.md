@@ -1,6 +1,6 @@
 # LXCLUA-NCore WASM 运行时集成文档
 
-LXCLUA-NCore 集成了完整的 WebAssembly 工具链，包括两个 WASM 运行时（wasm3 和 wasmtime）、一个 Lua→WASM 编译器（lua2wasm），以及将 Lua C API 导出为 WASM 模块的包装层。
+LXCLUA-NCore 集成了完整的 WebAssembly 运行时支持，包括两个 WASM 运行时（wasm3 和 wasmtime），以及将 Lua C API 导出为 WASM 模块的包装层。
 
 ---
 
@@ -9,14 +9,14 @@ LXCLUA-NCore 集成了完整的 WebAssembly 工具链，包括两个 WASM 运行
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Lua 代码层                                │
-│  require("wasm3")    require("wasmtime")    require("lua2wasm") │
+│  require("wasm3")    require("wasmtime")                        │
 ├─────────────────────────────────────────────────────────────────┤
-│   lwasm3.c          lwasmtime.c             lua2wasmlib.c       │
-│   (Lua 绑定)        (Lua 绑定)              (Lua 绑定)           │
+│   lwasm3.c          lwasmtime.c                                  │
+│   (Lua 绑定)        (Lua 绑定)                                   │
 ├─────────────────────────────────────────────────────────────────┤
-│   wasm3 (v0.5.1)    wasmtime (v45.0.1)     lua2wasm 编译器      │
-│   解释器引擎         JIT 运行时             lexer → parser →     │
-│   m3_*.c 核心       支持 GC 提案             codegen → wat2wasm  │
+│   wasm3 (v0.5.1)    wasmtime (v48.0.1)                          │
+│   解释器引擎         JIT 运行时                                   │
+│   m3_*.c 核心       支持 GC 提案                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │   lxclua_wasm.c                                                 │
 │   Lua C API → WASM 导出（供 wasm3 嵌入 Lua 引擎）               │
@@ -28,9 +28,9 @@ LXCLUA-NCore 集成了完整的 WebAssembly 工具链，包括两个 WASM 运行
 | 特性 | wasm3 | wasmtime |
 |------|-------|----------|
 | 类型 | 解释器 | JIT 编译器 |
-| WASM GC 提案 | 不支持 | 支持（v45.0.1） |
+| WASM GC 提案 | 不支持 | 支持（v48.0.1） |
 | 体积 | 极小（纯 C） | 较大（预编译库） |
-| 适用场景 | 嵌入式、WASM 自身编译 | 运行 lua2wasm 编译产物 |
+| 适用场景 | 嵌入式、WASM 自身编译 | 高性能 JIT、WASM GC 模块 |
 | 平台 | 全平台（含 Emscripten） | Windows / Android |
 | 预编译库 | 无（源码编译） | 有（x86_64-mingw / aarch64-android） |
 
@@ -170,7 +170,7 @@ local results = {func:call(42)}
 
 ### 3.1 概述
 
-wasmtime 是 Bytecode Alliance 开发的高性能 WASM JIT 运行时。LXCLUA-NCore 集成 wasmtime v45.0.1，**完整支持 WASM GC 提案**（包括 `anyref`、`structref`、`arrayref`、`externref`、`exnref`、`eqref`），这是运行 lua2wasm 编译产物的关键依赖。
+wasmtime 是 Bytecode Alliance 开发的高性能 WASM JIT 运行时。LXCLUA-NCore 集成 wasmtime v48.0.1，**完整支持 WASM GC 提案**（包括 `anyref`、`structref`、`arrayref`、`externref`、`exnref`、`eqref`），
 
 ### 3.2 预编译库
 
@@ -178,8 +178,8 @@ wasmtime 是 Bytecode Alliance 开发的高性能 WASM JIT 运行时。LXCLUA-NC
 
 | 平台 | 路径 | 库文件 |
 |------|------|--------|
-| Windows (x86_64, MinGW) | `wasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api/` | `lib/libwasmtime.a` |
-| Android (aarch64) | `wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/` | `lib/libwasmtime.a`, `lib/libwasmtime.so` |
+| Windows (x86_64, MinGW) | `wasmtime/wasmtime-v48.0.1-x86_64-mingw-c-api/` | `lib/libwasmtime.a` |
+| Android (aarch64) | `wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/` | `lib/libwasmtime.a`, `lib/libwasmtime.so` |
 
 每个预编译目录包含：
 - `include/` — C API 头文件（`wasmtime.h`, `wasm.h` 等）
@@ -190,7 +190,7 @@ wasmtime 是 Bytecode Alliance 开发的高性能 WASM JIT 运行时。LXCLUA-NC
 
 | 文件 | 说明 |
 |------|------|
-| `src/wasm/lwasmtime.c` | wasmtime 的 Lua C 绑定，~3000+ 行，实现完整的 wasmtime C API 封装 |
+| `src/wasm/lwasmtime.c` | wasmtime 的 Lua C 绑定，实现完整的 wasmtime C API 封装 |
 
 ### 3.4 模块架构
 
@@ -209,33 +209,7 @@ wasmtime 是 Bytecode Alliance 开发的高性能 WASM JIT 运行时。LXCLUA-NC
 | Table | `wasmtime_table_t` | 函数表 |
 | SharedMemory | `wasmtime_sharedmemory_t` | 线程安全共享内存 |
 
-### 3.5 lua2wasm Host 回调环境
 
-`lwasmtime.c` 定义了一个完整的 `l2w_host_t` 宿主编译环境，包含 28 个 host 回调函数，用于桥接 WASM 模块与宿主系统：
-
-| 回调分类 | 函数 | 说明 |
-|----------|------|------|
-| 输出 | `l2w_print_cb`, `l2w_write_raw_cb` | 捕获 print/write 输出到缓冲区 |
-| 格式化 | `l2w_fmt_cb`, `l2w_fmt_spec_cb` | 字符串格式化（模拟 Lua 的 `string.format`） |
-| 数学 | `l2w_math_cb`, `l2w_math2_cb` | 数学函数（floor, ceil, sqrt 等） |
-| 输入 | `l2w_read_cb`, `l2w_read_num_cb` | io.read 支持 |
-| 解析 | `l2w_parse_num_cb` | 字符串转数字 |
-| 对象 | `l2w_obj_id_cb` | 对象 ID 生成 |
-| 文件系统 | `l2w_fs_open_cb` 等 7 个 | 文件 I/O（open/read/write/seek/flush/close） |
-| 系统 | `l2w_os_time_cb` 等 7 个 | os.time/date/clock/getenv/exit/remove/rename/tmpname |
-| 警告 | `l2w_warn_cb`, `l2w_write_err_cb` | warn 和 stderr 输出 |
-
-`l2w_host_t` 结构体提供：
-- **输出捕获**：`output_buf` 动态增长缓冲区，捕获所有 print/write 输出
-- **格式化缓冲区**：`fmt_buf`（16KB）线程本地格式化缓冲
-- **文件表**：`files[64]` + `file_paths[64]`，支持最多 64 个打开文件
-- **stdin 支持**：`stdin_data` / `stdin_pos` 提供可编程的 stdin 输入
-- **冻结时间**：`frozen_time` 用于测试确定性
-- **对象 ID 计数器**：`next_obj_id` 用于对象标识
-
-**anyref 操作辅助函数**：通过回调 WASM 导出函数（`lua_tag`, `lua_get_int`, `lua_get_float`, `lua_get_bool`, `lua_str_len`, `lua_str_word`, `lua_make_int`, `lua_make_float` 等）实现 anyref 值的类型检查和转换。
-
-### 3.6 Lua API 用法
 
 ```lua
 local wasmtime = require("wasmtime")
@@ -340,180 +314,10 @@ local shmem = wasmtime.newSharedMemory(engine, min_pages, max_pages)
 local sz    = shmem:size()
 local ptr   = shmem:data()  -- lightuserdata 指针
 
--- ===== lua2wasm 一键端到端 =====
-local output = wasmtime.runLua2wasm(wasm_bytes)
 ```
 
-### 3.7 lua2wasm 端到端流程
 
-```lua
-local lua2wasm = require("lua2wasm")
-local wasmtime = require("wasmtime")
-
--- 编译 Lua 源码为 WASM 二进制
-local wasm = lua2wasm.wcompile("print('hello from lua2wasm!')")
-
--- 一键运行
-local output = wasmtime.runLua2wasm(wasm)
-print(output)  --> "hello from lua2wasm!"
-```
-
----
-
-## 4. lua2wasm 编译器
-
-### 4.1 概述
-
-lua2wasm 是一个将 Lua 源码编译为 WebAssembly 的编译器，生成的 WASM 模块依赖 WASM GC 提案，因此需要 wasmtime 运行时执行。编译器以 Lua C 模块 (`require("lua2wasm")`) 的形式嵌入 LXCLUA-NCore，同时也提供独立的 CLI 工具。
-
-### 4.2 编译管线
-
-```
-Lua 源码
-    │
-    ▼
-┌──────────────┐
-│  lexer.c     │  词法分析：将源码字符串转换为 Token 流
-│  TokenList   │
-└──────────────┘
-    │
-    ▼
-┌──────────────┐
-│  parser.c    │  语法分析：构建 AST（抽象语法树）
-│  ast.c       │  NodePool 管理节点内存
-│  ParseResult │  输出 Function 表、Global 表、主 Block
-└──────────────┘
-    │
-    ▼
-┌──────────────┐
-│  codegen.c   │  代码生成：遍历 AST 生成 WAT 指令
-│  builtins.c  │  内置函数（print, type, tonumber 等）
-│  prelude.wat │  预置模块（类型定义、运行时结构体）
-│  WatBuilder  │  WAT 文本缓冲区
-└──────────────┘
-    │
-    ▼
-┌──────────────┐
-│ wat2wasm.c   │  WAT→WASM 汇编：将 WAT 文本转为 WASM 二进制
-│  DCE 优化    │  死代码消除（默认开启）
-└──────────────┘
-    │
-    ▼
-  WASM 二进制
-```
-
-### 4.3 核心源文件
-
-| 文件 | 说明 |
-|------|------|
-| `lexer.c` / `lexer.h` | 词法分析器，生成 TokenList |
-| `parser.c` / `parser.h` | 语法分析器，生成 ParseResult（含 AST 和函数表） |
-| `ast.c` / `ast.h` | AST 节点定义和 NodePool 内存管理 |
-| `codegen.c` / `codegen.h` | 代码生成器，遍历 AST 输出 WAT |
-| `builtins.c` / `builtins.h` | 内置函数定义（print, type, tonumber, tostring 等） |
-| `wat_builder.c` / `wat_builder.h` | WAT 文本构建器（动态增长缓冲区） |
-| `wat2wasm.c` / `wat2wasm.h` | WAT→WASM 二进制汇编器（自包含，无外部依赖） |
-| `xalloc.c` / `xalloc.h` | 内存分配包装（带 OOM 检查） |
-| `prelude.wat` | 预置 WAT 模块（运行时类型定义、表结构、闭包等） |
-| `lua2wasmlib.c` | Lua 模块入口（`require("lua2wasm")`） |
-| `main.c` | lua2wasm CLI 工具入口 |
-| `wat2wasm_cli.c` | wat2wasm CLI 工具入口 |
-| `emscripten_entry.c` | Emscripten/浏览器端编译入口 |
-
-### 4.4 prelude.wat — 预置运行时
-
-`prelude.wat` 定义了 WASM GC 类型系统，是 lua2wasm 编译产物的运行时基础：
-
-| 类型 | 定义 | 说明 |
-|------|------|------|
-| `$LuaArr` | `(array (mut i8))` | 字节数组（字符串存储） |
-| `$LuaString` | `(struct (field $bytes (ref $LuaArr)))` | 字符串类型 |
-| `$LuaFloat` | `(struct (field $v f64))` | 浮点数类型 |
-| `$LuaInt` | `(struct (field $v i64))` | 整数类型 |
-| `$LuaBool` | `(struct (field $b i32))` | 布尔类型 |
-| `$LuaClosure` | `(struct (field $code ...) (field $upvals ...))` | 闭包（函数 + 上值） |
-| `$LuaTable` | `(struct (field $keys ...) (field $vals ...) (field $idx ...))` | Lua 表（键值对数组 + 哈希索引） |
-| `$Box` | `(struct (field $v (mut anyref)))` | 可变引用盒（用于上值） |
-| `$ArgArr` | `(array (mut anyref))` | 参数数组 |
-| `$UpvalArr` | `(array (mut (ref $Box)))` | 上值数组 |
-| `$Tbc` | `(struct (field $items ...) (field $len ...))` | to-be-closed 变量栈 |
-| `$CapArr` | `(array (mut i32))` | 模式匹配捕获缓冲区 |
-| `$LineArr` | `(array (mut i32))` | 调用帧行号栈 |
-| `$Builder` | `(struct (field $arr ...) (field $len ...))` | 可变字节缓冲区（string.gsub） |
-
-### 4.5 内置函数（builtins.c）
-
-编译器内置了 Lua 标准库的核心函数实现，直接编译为 WASM 指令，不依赖宿主环境：
-
-- **类型操作**：`type`, `tonumber`, `tostring`, `rawequal`, `rawget`, `rawset`, `rawlen`
-- **输出**：`print`
-- **表操作**：`next`, `pairs`, `ipairs`, `setmetatable`, `getmetatable`
-- **字符串**：`string.format`, `string.sub`, `string.len`, `string.byte`, `string.char` 等
-- **数学**：`math.abs`, `math.floor`, `math.ceil`, `math.sqrt`, `math.max`, `math.min` 等
-- **错误处理**：`error`, `pcall`, `xpcall`, `assert`
-- **其他**：`select`, `tostring`, `tonumber`
-
-### 4.6 wat2wasm 汇编器
-
-`wat2wasm.c` 是一个**自包含的 WAT→WASM 二进制汇编器**，仅依赖 C 标准库。它专门针对 lua2wasm 输出的 WAT 子集（WasmGC + 类型化函数引用 + 异常处理），不支持通用 WAT 的所有构造。
-
-**关键特性：**
-- **死代码消除（DCE）**：当 `dce=1` 时，从模块导出和全局初始化器出发，沿调用/ref.func 边追踪可达函数，删除不可达函数体，减小输出体积
-- 零外部依赖，可独立链接为 CLI 工具或嵌入编译器
-
-### 4.7 Emscripten 支持
-
-`emscripten_entry.c` 提供浏览器端编译入口，仅在 `__EMSCRIPTEN__` 宏定义时编译：
-
-| 导出函数 | 说明 |
-|----------|------|
-| `lua2wasm_compile(source)` | 编译 Lua 源码为 WAT 文本 |
-| `lua2wasm_compile_ex(source, tree_shake)` | 编译（可选 tree-shaking） |
-| `lua2wasm_assemble(wat, out_len, err, errcap)` | WAT 汇编为 WASM 二进制 |
-| `lua2wasm_free(p)` | 释放编译结果内存 |
-
-`tree_shake` 参数：开启后仅输出 AST 实际引用的内置函数和 `_G` 条目，让 wasm-opt 可以 DCE 未使用的函数体。默认关闭，因为 `_G.foo` 自省需要所有内置函数。
-
-### 4.8 Lua API 用法
-
-```lua
-local lua2wasm = require("lua2wasm")
-
--- 编译 Lua 源码为 WAT 文本
-local wat = lua2wasm.compile([[
-    local function add(a, b)
-        return a + b
-    end
-    return add(1, 2)
-]])
-
--- 直接编译为 WASM 二进制（compile + assemble 一步完成）
-local wasm = lua2wasm.wcompile("return 1 + 2")
-
--- 将 WAT 文本汇编为 WASM 二进制
-local wasm = lua2wasm.assemble(wat)
-
--- 关闭 DCE 优化
-local wasm = lua2wasm.assemble(wat, true)  -- 第二个参数 true = 不执行 DCE
-```
-
-### 4.9 CLI 工具
-
-```bash
-# lua2wasm CLI：将 .lua 编译为 .wat / .wasm
-make lua2wasm
-./lua2wasm input.lua            # 输出 WAT 到 stdout
-./lua2wasm input.lua -o out.wat # 输出到文件
-./lua2wasm input.lua --wasm     # 输出 WASM 二进制
-
-# wat2wasm CLI：WAT 文本转 WASM 二进制
-make wat2wasm
-./wat2wasm input.wat -o output.wasm
-```
-
----
-
-## 5. lxclua_wasm.c — Lua C API 的 WASM 导出
+ — Lua C API 的 WASM 导出
 
 ### 5.1 概述
 
@@ -576,7 +380,7 @@ const char* name = lua_wasm_getglobal_string(L, "name");
 
 ```makefile
 # wasmtime 预编译库路径
-WASMTIME_DIR = wasmtime/wasmtime-v45.0.1-x86_64-mingw-c-api
+WASMTIME_DIR = wasmtime/wasmtime-v48.0.1-x86_64-mingw-c-api
 WASMTIME_INC = -I$(WASMTIME_DIR)/include
 WASMTIME_LIB = $(WASMTIME_DIR)/lib/libwasmtime.a -lbcrypt -luserenv -lole32 -lntdll
 
@@ -585,22 +389,12 @@ WASM3_O = m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o \
           m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o \
           m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o
 
-# lua2wasm 编译器核心
-LUA2WASM_CORE_O = ast.o lexer_l2w.o parser_l2w.o wat_builder.o codegen_l2w.o \
-                  builtins_l2w.o xalloc_l2w.o
-
-# WAT→WASM 汇编器
-WAT2WASM_CORE_O = wat2wasm_core.o
-
-# Lua 模块入口
-LUA2WASM_LIB_O = lua2wasmlib.o
 
 # WASM 运行时绑定（wasm3 + wasmtime）
 LIB_O_WASM = lwasm3.o lwasmtime.o $(WASM3_O)
 
 # 基础对象（桌面/原生构建，含 wasmtime）
-BASE_O = $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) \
-         $(LUA2WASM_CORE_O) $(WAT2WASM_CORE_O) $(LUA2WASM_LIB_O) $(PCRE2_O)
+BASE_O = $(CORE_O) $(LIB_O) $(LIB_O_WASM) $(QJS_O) $(MYOBJS) $(PCRE2_O)
 ```
 
 ### 6.2 编译目标
@@ -666,48 +460,19 @@ WASM_CFLAGS  = -O3 -DNDEBUG
 WASM_LDFLAGS = -sWASM=1 -sSTANDALONE_WASM=1 -sALLOW_MEMORY_GROWTH=1 --no-entry
 ```
 
-#### `make lua2wasm` — lua2wasm CLI 工具
 
-```bash
-make lua2wasm
-# 生成 lua2wasm.exe（独立命令行工具）
-```
-
-#### `make wat2wasm` — wat2wasm CLI 工具
-
-```bash
-make wat2wasm
-# 生成 wat2wasm.exe（WAT→WASM 汇编器）
-```
-
-### 6.3 平台特定配置
 
 ```makefile
 # Linux x86_64
-WASMTIME_DIR = wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api
-WASMTIME_LIB = wasmtime/wasmtime-v45.0.1-x86_64-linux-c-api/lib/libwasmtime.a
+WASMTIME_DIR = wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api
+WASMTIME_LIB = wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api/lib/libwasmtime.a
 
 # Android aarch64
-WASMTIME_DIR = wasmtime/wasmtime-v45.0.1-aarch64-android-c-api
-WASMTIME_LIB = wasmtime/wasmtime-v45.0.1-aarch64-android-c-api/lib/libwasmtime.a
+WASMTIME_DIR = wasmtime/wasmtime-v48.0.1-aarch64-android-c-api
+WASMTIME_LIB = wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/lib/libwasmtime.a
 ```
 
-### 6.4 对象文件命名策略
 
-为避免 lua2wasm 与 lxclua 核心的同名文件冲突，编译器模块使用显式后缀命名：
-
-| 源文件 | 对象文件 |
-|--------|----------|
-| `src/lua2wasm/lexer.c` | `build/obj/lexer_l2w.o` |
-| `src/lua2wasm/parser.c` | `build/obj/parser_l2w.o` |
-| `src/lua2wasm/codegen.c` | `build/obj/codegen_l2w.o` |
-| `src/lua2wasm/builtins.c` | `build/obj/builtins_l2w.o` |
-| `src/lua2wasm/xalloc.c` | `build/obj/xalloc_l2w.o` |
-| `src/lua2wasm/wat2wasm.c` | `build/obj/wat2wasm_core.o` |
-
----
-
-## 7. 典型使用场景
 
 ### 7.1 在 Lua 中加载和执行 WASM 模块（wasm3）
 
@@ -729,27 +494,7 @@ local result = add:call(3, 4)
 print(result)  --> 7
 ```
 
-### 7.2 将 Lua 编译为 WASM 并用 wasmtime 执行
-
-```lua
-local lua2wasm = require("lua2wasm")
-local wasmtime = require("wasmtime")
-
--- 编译 Lua 源码
-local wasm = lua2wasm.wcompile([[
-    local t = {}
-    for i = 1, 10 do
-        t[i] = i * i
-    end
-    return table.concat(t, ", ")
-]])
-
--- 一键运行
-local result = wasmtime.runLua2wasm(wasm)
-print(result)  --> "1, 4, 9, 16, 25, 36, 49, 64, 81, 100"
-```
-
-### 7.3 在浏览器中运行 Lua（Emscripten）
+（Emscripten）
 
 ```html
 <script src="lxclua.js"></script>
@@ -799,24 +544,8 @@ src/wasm/
 ├── m3_api_meta_wasi.c          # WASI 元接口
 └── m3_api_tracer.c/.h          # API 追踪
 
-src/lua2wasm/
-├── lexer.c / lexer.h           # 词法分析
-├── parser.c / parser.h         # 语法分析
-├── ast.c / ast.h               # AST 节点
-├── codegen.c / codegen.h       # 代码生成
-├── builtins.c / builtins.h     # 内置函数
-├── wat_builder.c / wat_builder.h  # WAT 构建器
-├── wat2wasm.c / wat2wasm.h     # WAT→WASM 汇编器
-├── xalloc.c / xalloc.h         # 内存分配
-├── prelude.wat                 # 预置运行时类型
-├── lua2wasmlib.c               # Lua 模块入口
-├── main.c                      # CLI 工具
-├── wat2wasm_cli.c              # wat2wasm CLI
-└── emscripten_entry.c          # Emscripten 入口
-
-wasmtime/
-├── wasmtime-v45.0.1-x86_64-mingw-c-api/   # Windows MinGW 预编译
-├── wasmtime-v45.0.1-x86_64-windows-c-api/ # Windows MSVC 预编译
-├── wasmtime-v45.0.1-aarch64-android-c-api/# Android aarch64 预编译
+├── wasmtime-v48.0.1-x86_64-mingw-c-api/   # Windows MinGW 预编译
+├── wasmtime-v48.0.1-x86_64-windows-c-api/ # Windows MSVC 预编译
+├── wasmtime-v48.0.1-aarch64-android-c-api/# Android aarch64 预编译
 └── Android.mk                              # Android NDK 构建
 ```
