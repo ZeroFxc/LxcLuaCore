@@ -46,6 +46,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <poll.h>
 
 #if defined(__FreeBSD__)
 extern char **environ;
@@ -87,6 +88,7 @@ typedef sig_t sighandler_t;
 typedef struct {
     struct list_head link;
     int fd;
+    int poll_fd_index; /* temporary use in js_os_poll() */
     JSValue rw_func[2];
 } JSOSRWHandler;
 
@@ -134,6 +136,7 @@ typedef struct {
     struct list_head link;
     JSWorkerMessagePipe *recv_pipe;
     JSValue on_message_func;
+    int poll_fd_index; /* temporary use in js_os_poll() */
 } JSWorkerMessageHandler;
 
 typedef struct {
@@ -152,6 +155,10 @@ typedef struct JSThreadState {
     int next_timer_id; /* for setTimeout() */
     /* not used in the main thread */
     JSWorkerMessagePipe *recv_pipe, *send_pipe;
+#if !defined(_WIN32)
+    struct pollfd *poll_fds;
+    int poll_fds_size;
+#endif    
 } JSThreadState;
 
 static uint64_t os_pending_signals;
@@ -623,7 +630,7 @@ int js_module_check_attributes(JSContext *ctx, void *opaque,
     int ret;
     const char *cstr;
     size_t cstr_len;
-
+    
     if (JS_GetOwnPropertyNames(ctx, &tab, &len, attributes, JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
         return -1;
     ret = 0;
@@ -680,7 +687,7 @@ JSModuleDef *js_module_loader(JSContext *ctx,
 {
     JSModuleDef *m;
     int res;
-
+    
     if (has_suffix(module_name, ".so")) {
         m = js_module_loader_so(ctx, module_name);
     } else {
@@ -2428,7 +2435,7 @@ static int js_os_poll(JSContext *ctx)
         list_empty(&ts->port_list)) {
         return -1; /* no more events */
     }
-
+    
     if (!list_empty(&ts->os_timers)) {
         cur_time = get_time_ms();
         min_delay = 10000;
@@ -2507,16 +2514,44 @@ static int js_os_poll(JSContext *ctx)
 
 #else
 
+static no_inline int js_poll_expand(JSThreadState *ts)
+{
+    struct pollfd *new_fds;
+    int new_size = max_int(ts->poll_fds_size +
+                           ts->poll_fds_size / 2, 16);
+    new_fds = realloc(ts->poll_fds, new_size * sizeof(struct pollfd));
+    if (!new_fds)
+        return -1;
+    ts->poll_fds = new_fds;
+    ts->poll_fds_size = new_size;
+    return 0;
+}
+
+static int js_poll_add_poll_fd(JSThreadState *ts, int *pnfds, int fd, int events)
+{
+    struct pollfd *fds;
+    int nfds;
+    nfds = *pnfds;
+    if (unlikely(nfds >= ts->poll_fds_size)) {
+        if (js_poll_expand(ts))
+            return -1;
+    }
+    fds = &ts->poll_fds[nfds++];
+    fds->fd = fd;
+    fds->events = events;
+    fds->revents = 0;
+    *pnfds = nfds;
+    return 0;
+}
+
 static int js_os_poll(JSContext *ctx)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
-    int ret, fd_max, min_delay;
+    int min_delay, nfds;
     int64_t cur_time, delay;
-    fd_set rfds, wfds;
     JSOSRWHandler *rh;
     struct list_head *el;
-    struct timeval tv, *tvp;
 
     /* only check signals in the main thread */
     if (!ts->recv_pipe &&
@@ -2558,46 +2593,49 @@ static int js_os_poll(JSContext *ctx)
                 min_delay = delay;
             }
         }
-        tv.tv_sec = min_delay / 1000;
-        tv.tv_usec = (min_delay % 1000) * 1000;
-        tvp = &tv;
     } else {
-        tvp = NULL;
+        min_delay = -1; /* infinite */
     }
 
-    FD_ZERO(&rfds);
-    FD_ZERO(&wfds);
-    fd_max = -1;
+    nfds = 0;
     list_for_each(el, &ts->os_rw_handlers) {
+        int events;
+
         rh = list_entry(el, JSOSRWHandler, link);
-        fd_max = max_int(fd_max, rh->fd);
+        events = 0;
         if (!JS_IsNull(rh->rw_func[0]))
-            FD_SET(rh->fd, &rfds);
+            events |= POLLIN;
         if (!JS_IsNull(rh->rw_func[1]))
-            FD_SET(rh->fd, &wfds);
+            events |= POLLOUT;
+        if (events) {
+            rh->poll_fd_index = nfds;
+            if (js_poll_add_poll_fd(ts, &nfds, rh->fd, events))
+                return -1;
+        }
     }
 
     list_for_each(el, &ts->port_list) {
         JSWorkerMessageHandler *port = list_entry(el, JSWorkerMessageHandler, link);
         if (!JS_IsNull(port->on_message_func)) {
             JSWorkerMessagePipe *ps = port->recv_pipe;
-            fd_max = max_int(fd_max, ps->waker.read_fd);
-            FD_SET(ps->waker.read_fd, &rfds);
+            port->poll_fd_index = nfds;
+            if (js_poll_add_poll_fd(ts, &nfds, ps->waker.read_fd, POLLIN))
+                return -1;
         }
     }
 
-    ret = select(fd_max + 1, &rfds, &wfds, NULL, tvp);
-    if (ret > 0) {
+    nfds = poll(ts->poll_fds, nfds, min_delay);
+    if (nfds > 0) {
         list_for_each(el, &ts->os_rw_handlers) {
             rh = list_entry(el, JSOSRWHandler, link);
             if (!JS_IsNull(rh->rw_func[0]) &&
-                FD_ISSET(rh->fd, &rfds)) {
+                (ts->poll_fds[rh->poll_fd_index].revents & (POLLERR | POLLHUP | POLLNVAL | POLLIN))) {
                 call_handler(ctx, rh->rw_func[0]);
                 /* must stop because the list may have been modified */
                 goto done;
             }
             if (!JS_IsNull(rh->rw_func[1]) &&
-                FD_ISSET(rh->fd, &wfds)) {
+                (ts->poll_fds[rh->poll_fd_index].revents & (POLLERR | POLLHUP | POLLNVAL | POLLOUT))) {
                 call_handler(ctx, rh->rw_func[1]);
                 /* must stop because the list may have been modified */
                 goto done;
@@ -2607,8 +2645,7 @@ static int js_os_poll(JSContext *ctx)
         list_for_each(el, &ts->port_list) {
             JSWorkerMessageHandler *port = list_entry(el, JSWorkerMessageHandler, link);
             if (!JS_IsNull(port->on_message_func)) {
-                JSWorkerMessagePipe *ps = port->recv_pipe;
-                if (FD_ISSET(ps->waker.read_fd, &rfds)) {
+                if (ts->poll_fds[port->poll_fd_index].revents != 0) {
                     if (handle_posted_message(rt, ctx, port))
                         goto done;
                 }
@@ -3268,12 +3305,12 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             if (chdir(cwd) < 0)
                 _exit(127);
         }
-        if (uid != -1) {
-            if (setuid(uid) < 0)
-                _exit(127);
-        }
         if (gid != -1) {
             if (setgid(gid) < 0)
+                _exit(127);
+        }
+        if (uid != -1) {
+            if (setuid(uid) < 0)
                 _exit(127);
         }
 
@@ -3309,7 +3346,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
     for(i = 0; i < exec_argc; i++)
         JS_FreeCString(ctx, exec_argv[i]);
     js_free(ctx, exec_argv);
-    if (envp != environ) {
+    if (envp && envp != environ) {
         char **p;
         p = envp;
         while (*p != NULL) {
@@ -3710,7 +3747,7 @@ static JSValue js_worker_ctor(JSContext *ctx, JSValueConst new_target,
         goto oom_fail;
 
     args->strip_flags = JS_GetStripInfo(rt);
-
+    
     obj = js_worker_ctor_internal(ctx, new_target,
                                   args->send_pipe, args->recv_pipe);
     if (JS_IsException(obj))
@@ -3879,7 +3916,7 @@ void js_std_set_worker_new_context_func(JSContext *(*func)(JSRuntime *rt))
 #define OS_PLATFORM "win32"
 #elif defined(__APPLE__)
 #define OS_PLATFORM "darwin"
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 #define OS_PLATFORM "js"
 #else
 #define OS_PLATFORM "linux"
@@ -4028,7 +4065,7 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val,
 {
     int i;
     JSValueConst v;
-
+    
     for(i = 0; i < argc; i++) {
         if (i != 0)
             putchar(' ');
@@ -4164,6 +4201,10 @@ void js_std_free_handlers(JSRuntime *rt)
     }
 #endif
 
+#if !defined(_WIN32)
+    free(ts->poll_fds);
+#endif
+
     free(ts);
     JS_SetRuntimeOpaque(rt, NULL); /* fail safe */
 }
@@ -4264,7 +4305,7 @@ void js_std_loop(JSContext *ctx)
         }
 
         js_std_promise_rejection_check(ctx);
-
+        
         if (!os_poll_func || os_poll_func(ctx))
             break;
     }
@@ -4348,7 +4389,7 @@ void js_std_eval_binary_json_module(JSContext *ctx,
 {
     JSValue obj;
     JSModuleDef *m;
-
+    
     obj = JS_ReadObject(ctx, buf, buf_len, 0);
     if (JS_IsException(obj))
         goto exception;
@@ -4359,3 +4400,4 @@ void js_std_eval_binary_json_module(JSContext *ctx,
         exit(1);
     }
 }
+

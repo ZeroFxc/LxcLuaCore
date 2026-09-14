@@ -19,7 +19,7 @@ extern "C" {
  *
  * @return           0 on success, non-zero on failure.
  */
-int SHA256(const uint8_t* msg, size_t msgLen, uint8_t* digest);
+int LX_SHA256(const uint8_t* msg, size_t msgLen, uint8_t* digest);
 
 /**
  * Computes HMAC-SHA256 (Hash-based Message Authentication Code).

@@ -86,7 +86,7 @@ static int l_sha256(lua_State *L) {
   size_t len;
   const char *data = luaL_checklstring(L, arg_idx, &len);
   uint8_t digest[SHA256_DIGEST_SIZE];
-  SHA256((const uint8_t *)data, len, digest);
+  LX_SHA256((const uint8_t *)data, len, digest);
   push_hex(L, digest, SHA256_DIGEST_SIZE);
   return 1;
 }
@@ -101,7 +101,7 @@ static int l_sha256_raw(lua_State *L) {
   size_t len;
   const char *data = luaL_checklstring(L, arg_idx, &len);
   uint8_t digest[SHA256_DIGEST_SIZE];
-  SHA256((const uint8_t *)data, len, digest);
+  LX_SHA256((const uint8_t *)data, len, digest);
   lua_pushlstring(L, (const char *)digest, SHA256_DIGEST_SIZE);
   return 1;
 }

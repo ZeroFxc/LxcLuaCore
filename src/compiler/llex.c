@@ -117,7 +117,7 @@ static void nirithy_derive_key(uint64_t timestamp, uint8_t *key) {
   memcpy(input, &timestamp, 8);
   memcpy(input + 8, "NirithySalt", 11);
 
-  SHA256(input, 19, digest);
+  LX_SHA256(input, 19, digest);
   memcpy(key, digest, 16);
 }
 

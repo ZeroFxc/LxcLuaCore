@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* 全局 registry 锁：所有线程共享同一 LUA_REGISTRYINDEX 表，
+ * luaL_ref/luaL_unref 并发分配/释放 ref 号有竞态，必须持此锁。
+ * l_mutex_t 是递归锁，同一线程重入安全。 */
+static l_mutex_t g_registry_lock;
+
 /**
  * @brief Thread handle structure for managing Lua threads.
  */
@@ -103,6 +108,7 @@ static void *thread_entry(void *arg) {
  */
 static void register_thread_handle(lua_State *L, lua_State *L_thread, int th_idx) {
     th_idx = lua_absindex(L, th_idx);
+    l_mutex_lock(&g_registry_lock);
     if (lua_getfield(L, LUA_REGISTRYINDEX, "_THREAD_MAP") != LUA_TTABLE) {
         lua_pop(L, 1);
         lua_newtable(L);
@@ -117,6 +123,7 @@ static void register_thread_handle(lua_State *L, lua_State *L_thread, int th_idx
     lua_pushvalue(L, th_idx);
     lua_settable(L, -3);
     lua_pop(L, 1);
+    l_mutex_unlock(&g_registry_lock);
 }
 
 /**
@@ -146,7 +153,9 @@ static int thread_create(lua_State *L) {
     lua_pop(L, 1);
 
     // Anchor L1 to prevent collection
+    l_mutex_lock(&g_registry_lock);
     th->ref = luaL_ref(L, LUA_REGISTRYINDEX); // Pops L1 from stack
+    l_mutex_unlock(&g_registry_lock);
 
     // Copy function and arguments to new thread
     lua_pushvalue(L, 1);
@@ -159,7 +168,9 @@ static int thread_create(lua_State *L) {
 
     ThreadArg *ta = (ThreadArg *)malloc(sizeof(ThreadArg));
     if (!ta) {
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+        l_mutex_unlock(&g_registry_lock);
         return luaL_error(L, "out of memory");
     }
     ta->L_thread = L1;
@@ -167,7 +178,9 @@ static int thread_create(lua_State *L) {
 
     if (l_thread_create(&th->thread, thread_entry, ta) != 0) {
         free(ta);
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+        l_mutex_unlock(&g_registry_lock);
         return luaL_error(L, "failed to create thread");
     }
 
@@ -211,7 +224,9 @@ static int thread_join(lua_State *L) {
         }
     }
 
+    l_mutex_lock(&g_registry_lock);
     luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+    l_mutex_unlock(&g_registry_lock);
     th->L_thread = NULL;
 
     return nres + 1;
@@ -355,7 +370,9 @@ static int thread_gc(lua_State *L) {
     ThreadHandle *th = (ThreadHandle *)luaL_checkudata(L, 1, "lthread");
     if (th->L_thread != NULL && !th->joined && !th->detached) {
         l_thread_detach(th->thread);
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+        l_mutex_unlock(&g_registry_lock);
         th->L_thread = NULL;
         th->detached = 1;
     }
@@ -383,7 +400,9 @@ static int thread_detach(lua_State *L) {
         return luaL_error(L, "invalid thread handle");
 
     l_thread_detach(th->thread);
+    l_mutex_lock(&g_registry_lock);
     luaL_unref(L, LUA_REGISTRYINDEX, th->ref);
+    l_mutex_unlock(&g_registry_lock);
     th->L_thread = NULL;
     th->detached = 1;
     return 0;
@@ -407,7 +426,9 @@ static int channel_create_impl(lua_State *L, int type_idx) {
     ch->type_ref = LUA_NOREF;
     if (type_idx != 0) {
         lua_pushvalue(L, type_idx);
+        l_mutex_lock(&g_registry_lock);
         ch->type_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        l_mutex_unlock(&g_registry_lock);
     }
     luaL_getmetatable(L, "lthread.channel");
     lua_setmetatable(L, -2);
@@ -448,10 +469,16 @@ static int thread_channel(lua_State *L) {
 static int channel_gc(lua_State *L) {
     Channel *ch = (Channel *)luaL_checkudata(L, 1, "lthread.channel");
     l_mutex_lock(&ch->lock);
+    /* 先收集待释放的 ref，解锁后在全局锁下统一 unref（避免 ch->lock→全局锁 的锁序反转） */
+    int count = 0;
     ChannelElem *curr = ch->head;
+    while (curr) { count++; curr = curr->next; }
+    int *refs = (int *)malloc(sizeof(int) * (count > 0 ? count : 1));
+    int i = 0;
+    curr = ch->head;
     while (curr) {
         ChannelElem *next = curr->next;
-        luaL_unref(L, LUA_REGISTRYINDEX, curr->ref);
+        refs[i++] = curr->ref;
         free(curr);
         curr = next;
     }
@@ -464,10 +491,15 @@ static int channel_gc(lua_State *L) {
         l = next;
     }
     ch->listeners = NULL;
-    if (ch->type_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, ch->type_ref);
-    }
+    int type_ref = ch->type_ref;
     l_mutex_unlock(&ch->lock);
+
+    l_mutex_lock(&g_registry_lock);
+    for (i = 0; i < count; i++) luaL_unref(L, LUA_REGISTRYINDEX, refs[i]);
+    if (type_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, type_ref);
+    l_mutex_unlock(&g_registry_lock);
+    free(refs);
+
     l_mutex_destroy(&ch->lock);
     l_cond_destroy(&ch->cond);
     return 0;
@@ -522,11 +554,15 @@ static int channel_send(lua_State *L) {
         lua_pop(L, 1);
     }
 
+    l_mutex_lock(&g_registry_lock);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX); // pops value
+    l_mutex_unlock(&g_registry_lock);
 
     ChannelElem *elem = (ChannelElem *)malloc(sizeof(ChannelElem));
     if (!elem) {
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        l_mutex_unlock(&g_registry_lock);
         return luaL_error(L, "out of memory");
     }
     elem->ref = ref;
@@ -536,7 +572,9 @@ static int channel_send(lua_State *L) {
     if (ch->closed) {
         l_mutex_unlock(&ch->lock);
         free(elem);
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        l_mutex_unlock(&g_registry_lock);
         return luaL_error(L, "channel is closed");
     }
 
@@ -584,11 +622,15 @@ static int channel_try_send(lua_State *L) {
         lua_pop(L, 1);
     }
 
+    l_mutex_lock(&g_registry_lock);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX); // pops value
+    l_mutex_unlock(&g_registry_lock);
 
     ChannelElem *elem = (ChannelElem *)malloc(sizeof(ChannelElem));
     if (!elem) {
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        l_mutex_unlock(&g_registry_lock);
         return luaL_error(L, "out of memory");
     }
     elem->ref = ref;
@@ -596,7 +638,9 @@ static int channel_try_send(lua_State *L) {
 
     if (l_mutex_trylock(&ch->lock) != 0) {
         free(elem);
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        l_mutex_unlock(&g_registry_lock);
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -604,7 +648,9 @@ static int channel_try_send(lua_State *L) {
     if (ch->closed) {
         l_mutex_unlock(&ch->lock);
         free(elem);
+        l_mutex_lock(&g_registry_lock);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        l_mutex_unlock(&g_registry_lock);
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -663,8 +709,10 @@ static int channel_receive(lua_State *L) {
     free(elem);
     l_mutex_unlock(&ch->lock);
 
+    l_mutex_lock(&g_registry_lock);
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
     luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    l_mutex_unlock(&g_registry_lock);
     return 1;
 }
 
@@ -696,8 +744,10 @@ static int channel_try_receive(lua_State *L) {
     free(elem);
     l_mutex_unlock(&ch->lock);
 
+    l_mutex_lock(&g_registry_lock);
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
     luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    l_mutex_unlock(&g_registry_lock);
     return 1;
 }
 
@@ -947,8 +997,10 @@ static int thread_pick(lua_State *L) {
                 if (closed && ref == LUA_NOREF) {
                     lua_pushnil(L);
                 } else {
+                    l_mutex_lock(&g_registry_lock);
                     lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
                     luaL_unref(L, LUA_REGISTRYINDEX, ref);
+                    l_mutex_unlock(&g_registry_lock);
                 }
                 lua_call(L, 1, 1);
                 return 1;
@@ -1026,8 +1078,10 @@ static int thread_pick(lua_State *L) {
                 if (closed && ref == LUA_NOREF) {
                     lua_pushnil(L);
                 } else {
+                    l_mutex_lock(&g_registry_lock);
                     lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
                     luaL_unref(L, LUA_REGISTRYINDEX, ref);
+                    l_mutex_unlock(&g_registry_lock);
                 }
                 lua_call(L, 1, 1);
                 return 1;
@@ -1039,6 +1093,231 @@ static int thread_pick(lua_State *L) {
 
     return 0;
 }
+
+/* ================== 同步原语: mutex / cond / rwlock / semaphore ================== */
+
+typedef struct {
+    l_mutex_t mutex;
+} l_mutex_ud;
+
+typedef struct {
+    l_cond_t cond;
+} l_cond_ud;
+
+typedef struct {
+    l_rwlock_t rwlock;
+} l_rwlock_ud;
+
+/* 信号量: 原生 l_sem_t（POSIX sem_t / Windows CreateSemaphore） */
+typedef struct {
+    l_sem_t sem;
+} l_sem_ud;
+
+static l_mutex_ud *lthr_check_mutex(lua_State *L, int idx) {
+    return (l_mutex_ud *)luaL_checkudata(L, idx, "lthread.mutex");
+}
+
+static l_cond_ud *lthr_check_cond(lua_State *L, int idx) {
+    return (l_cond_ud *)luaL_checkudata(L, idx, "lthread.cond");
+}
+
+static l_rwlock_ud *lthr_check_rwlock(lua_State *L, int idx) {
+    return (l_rwlock_ud *)luaL_checkudata(L, idx, "lthread.rwlock");
+}
+
+static l_sem_ud *lthr_check_sem(lua_State *L, int idx) {
+    return (l_sem_ud *)luaL_checkudata(L, idx, "lthread.semaphore");
+}
+
+/* ---- mutex ---- */
+
+static int lthr_mutex_new(lua_State *L) {
+    l_mutex_ud *ud = (l_mutex_ud *)lua_newuserdata(L, sizeof(l_mutex_ud));
+    l_mutex_init(&ud->mutex);
+    luaL_getmetatable(L, "lthread.mutex");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static int lthr_mutex_lock(lua_State *L) {
+    l_mutex_ud *ud = lthr_check_mutex(L, 1);
+    l_mutex_lock(&ud->mutex);
+    return 0;
+}
+
+static int lthr_mutex_unlock(lua_State *L) {
+    l_mutex_ud *ud = lthr_check_mutex(L, 1);
+    l_mutex_unlock(&ud->mutex);
+    return 0;
+}
+
+static int lthr_mutex_trylock(lua_State *L) {
+    l_mutex_ud *ud = lthr_check_mutex(L, 1);
+    lua_pushboolean(L, l_mutex_trylock(&ud->mutex) == 0);
+    return 1;
+}
+
+static int lthr_mutex_gc(lua_State *L) {
+    l_mutex_ud *ud = lthr_check_mutex(L, 1);
+    l_mutex_destroy(&ud->mutex);
+    return 0;
+}
+
+/* ---- cond ---- */
+
+static int lthr_cond_new(lua_State *L) {
+    l_cond_ud *ud = (l_cond_ud *)lua_newuserdata(L, sizeof(l_cond_ud));
+    l_cond_init(&ud->cond);
+    luaL_getmetatable(L, "lthread.cond");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/* c:wait(mutex [, timeout_seconds]) -> 返回 boolean；带超时时 false=超时 */
+static int lthr_cond_wait(lua_State *L) {
+    l_cond_ud *c = lthr_check_cond(L, 1);
+    l_mutex_ud *m = lthr_check_mutex(L, 2);
+    int timeout_ms = -1;
+    if (lua_isnumber(L, 3)) {
+        timeout_ms = (int)(lua_tonumber(L, 3) * 1000);
+        if (timeout_ms < 0) timeout_ms = 0;
+    }
+    if (timeout_ms >= 0) {
+        int r = l_cond_wait_timeout(&c->cond, &m->mutex, timeout_ms);
+        lua_pushboolean(L, r == 0); /* true=被唤醒, false=超时 */
+        return 1;
+    }
+    l_cond_wait(&c->cond, &m->mutex);
+    return 0;
+}
+
+static int lthr_cond_signal(lua_State *L) {
+    l_cond_ud *c = lthr_check_cond(L, 1);
+    l_cond_signal(&c->cond);
+    return 0;
+}
+
+static int lthr_cond_broadcast(lua_State *L) {
+    l_cond_ud *c = lthr_check_cond(L, 1);
+    l_cond_broadcast(&c->cond);
+    return 0;
+}
+
+static int lthr_cond_gc(lua_State *L) {
+    l_cond_ud *c = lthr_check_cond(L, 1);
+    l_cond_destroy(&c->cond);
+    return 0;
+}
+
+/* ---- rwlock ---- */
+
+static int lthr_rwlock_new(lua_State *L) {
+    l_rwlock_ud *ud = (l_rwlock_ud *)lua_newuserdata(L, sizeof(l_rwlock_ud));
+    l_rwlock_init(&ud->rwlock);
+    luaL_getmetatable(L, "lthread.rwlock");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static int lthr_rwlock_rdlock(lua_State *L) {
+    l_rwlock_ud *ud = lthr_check_rwlock(L, 1);
+    l_rwlock_rdlock(&ud->rwlock);
+    return 0;
+}
+
+static int lthr_rwlock_wrlock(lua_State *L) {
+    l_rwlock_ud *ud = lthr_check_rwlock(L, 1);
+    l_rwlock_wrlock(&ud->rwlock);
+    return 0;
+}
+
+static int lthr_rwlock_unlock(lua_State *L) {
+    l_rwlock_ud *ud = lthr_check_rwlock(L, 1);
+    l_rwlock_unlock(&ud->rwlock);
+    return 0;
+}
+
+static int lthr_rwlock_gc(lua_State *L) {
+    l_rwlock_ud *ud = lthr_check_rwlock(L, 1);
+    l_rwlock_destroy(&ud->rwlock);
+    return 0;
+}
+
+/* ---- semaphore（原生 l_sem_t） ---- */
+
+static int lthr_sem_new(lua_State *L) {
+    unsigned int init = (unsigned int)luaL_optinteger(L, 1, 0);
+    l_sem_ud *ud = (l_sem_ud *)lua_newuserdata(L, sizeof(l_sem_ud));
+    l_sem_init(&ud->sem, init);
+    luaL_getmetatable(L, "lthread.semaphore");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/* s:wait([timeout_seconds]) -> boolean；无超时永远 true，带超时时 false=超时 */
+static int lthr_sem_wait(lua_State *L) {
+    l_sem_ud *ud = lthr_check_sem(L, 1);
+    if (lua_isnumber(L, 2)) {
+        long ms = (long)(lua_tonumber(L, 2) * 1000);
+        if (ms < 0) ms = 0;
+        lua_pushboolean(L, l_sem_wait_timeout(&ud->sem, ms) == 0);
+        return 1;
+    }
+    l_sem_wait(&ud->sem);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* s:try_wait() -> boolean；非阻塞获取信号 */
+static int lthr_sem_try_wait(lua_State *L) {
+    l_sem_ud *ud = lthr_check_sem(L, 1);
+    lua_pushboolean(L, l_sem_trywait(&ud->sem) == 0);
+    return 1;
+}
+
+static int lthr_sem_post(lua_State *L) {
+    l_sem_ud *ud = lthr_check_sem(L, 1);
+    l_sem_post(&ud->sem);
+    return 0;
+}
+
+static int lthr_sem_gc(lua_State *L) {
+    l_sem_ud *ud = lthr_check_sem(L, 1);
+    l_sem_destroy(&ud->sem);
+    return 0;
+}
+
+static const luaL_Reg mutex_methods[] = {
+    {"lock", lthr_mutex_lock},
+    {"unlock", lthr_mutex_unlock},
+    {"trylock", lthr_mutex_trylock},
+    {"__gc", lthr_mutex_gc},
+    {NULL, NULL}
+};
+
+static const luaL_Reg cond_methods[] = {
+    {"wait", lthr_cond_wait},
+    {"signal", lthr_cond_signal},
+    {"broadcast", lthr_cond_broadcast},
+    {"__gc", lthr_cond_gc},
+    {NULL, NULL}
+};
+
+static const luaL_Reg rwlock_methods[] = {
+    {"rdlock", lthr_rwlock_rdlock},
+    {"wrlock", lthr_rwlock_wrlock},
+    {"unlock", lthr_rwlock_unlock},
+    {"__gc", lthr_rwlock_gc},
+    {NULL, NULL}
+};
+
+static const luaL_Reg semaphore_methods[] = {
+    {"wait", lthr_sem_wait},
+    {"try_wait", lthr_sem_try_wait},
+    {"post", lthr_sem_post},
+    {"__gc", lthr_sem_gc},
+    {NULL, NULL}
+};
 
 static const luaL_Reg thread_methods[] = {
     {"join", thread_join},
@@ -1072,6 +1351,10 @@ static const luaL_Reg thread_funcs[] = {
     {"over", thread_over},
     {"self", thread_self},
     {"current", thread_self}, /* Alias for self */
+    {"mutex", lthr_mutex_new},
+    {"cond", lthr_cond_new},
+    {"rwlock", lthr_rwlock_new},
+    {"semaphore", lthr_sem_new},
     {NULL, NULL}
 };
 
@@ -1082,6 +1365,8 @@ static const luaL_Reg thread_funcs[] = {
  * @return 1 (the table).
  */
 int luaopen_thread(lua_State *L) {
+    l_mutex_init(&g_registry_lock);
+
     luaL_newmetatable(L, "lthread");
     lua_pushvalue(L, -1);
     lua_setfield(L, -2, "__index");
@@ -1091,6 +1376,26 @@ int luaopen_thread(lua_State *L) {
     lua_pushvalue(L, -1);
     lua_setfield(L, -2, "__index");
     luaL_setfuncs(L, channel_methods, 0);
+
+    luaL_newmetatable(L, "lthread.mutex");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    luaL_setfuncs(L, mutex_methods, 0);
+
+    luaL_newmetatable(L, "lthread.cond");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    luaL_setfuncs(L, cond_methods, 0);
+
+    luaL_newmetatable(L, "lthread.rwlock");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    luaL_setfuncs(L, rwlock_methods, 0);
+
+    luaL_newmetatable(L, "lthread.semaphore");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    luaL_setfuncs(L, semaphore_methods, 0);
 
     luaL_newlib(L, thread_funcs);
     return 1;

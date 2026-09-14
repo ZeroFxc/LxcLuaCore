@@ -1036,7 +1036,7 @@ static int ecc_sign(lua_State *L,
                     const uint256_t *priv_key) {
   /* Step 1: 计算数据的 SHA-256 哈希 */
   uint8_t hash[32];
-  SHA256(data, data_len, hash);
+  LX_SHA256(data, data_len, hash);
 
   /* 将哈希转为 uint256_t */
   uint256_t z;
@@ -1122,7 +1122,7 @@ static int ecc_verify_internal(lua_State *L,
 
   /* Step 1: 计算数据哈希 */
   uint8_t hash[32];
-  SHA256(data, data_len, hash);
+  LX_SHA256(data, data_len, hash);
 
   uint256_t z;
   u256_from_bytes(&z, hash);
@@ -1218,7 +1218,7 @@ static int ecc_recover_internal(lua_State *L,
 
   /* 计算消息哈希 */
   uint8_t hash[32];
-  SHA256(data, data_len, hash);
+  LX_SHA256(data, data_len, hash);
 
   uint256_t z;
   u256_from_bytes(&z, hash);
@@ -1541,7 +1541,7 @@ static int l_ecc_debug_verify(lua_State *L) {
 
   /* 计算哈希 z */
   uint8_t hash[32];
-  SHA256((const uint8_t *)data, data_len, hash);
+  LX_SHA256((const uint8_t *)data, data_len, hash);
   uint256_t z;
   u256_from_bytes(&z, hash);
   if (u256_ge(&z, &SECP256K1_N)) {

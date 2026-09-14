@@ -1,29 +1,106 @@
-# ===== 构建产物（二进制 / 静态库 / 目标文件 / 编译产物）=====
-*.exe
-*.dll
-*.so
-*.dylib
-*.a
-*.lib
+# Build outputs
 *.o
-*.obj
+*.a
+*.dll
 *.luac
-*.shell
+*.so
+*.lua
+*.dylib
+*.exe
+lxc-lua
+luac
+lxclua
+lbcdump
+src\bin\luaccheck.c
+*.html
+/test/
+test/
+wasmtest/
+/wasmtest/
+test/*
+# Editor and IDE
+.vscode/
+.idea/
+.trae/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
 
-# pcre2 源码自带的文本清单（.so 后缀但非二进制，保留）
-!pcre2/maint/manifest-*.so
+# Qoder
+.qoder/
 
-# ===== 构建中间目录 =====
-/build/obj/
+# Git rewrite backup
+.git-rewrite/
 
-# ===== build/ 下的测试输出与日志 =====
-/build/*.txt
+# Temporary files
+*.tmp
+*.temp
 *.log
-
-# ===== 本地临时输出 / 备份 =====
-/wasi_out.txt
 *.bak
 
-# ===== 第三方预编译 SDK 与源码检出（不入库）=====
-/wasmtime/wasmtime-v*/
-/wasmtime-main/
+# Compiled Lua bytecode
+*.luac
+*.out
+
+# Debug files
+*.dSYM/
+*.pdb
+
+# Test outputs
+test_output/
+
+# SDK
+emsdk-main/
+wasmtime/
+wasmtime-main/
+openssl/
+*.wasm
+*.js
+
+# Koishi
+koishi/
+
+# Release packages
+*.zip
+*.tar.gz
+release/
+
+# Build scripts
+*.bat
+
+# Crash dumps
+*.dmp
+
+# Android build outputs
+app/src/main/jniLibs/
+app/src/main/jni/obj/
+app/src/main/jni/vmp/
+app/src/main/jni/*.zip
+app/src/main/jni/*.tar.gz
+
+# Java archives
+jar/
+
+# Generated HTML
+*.html
+
+# Root temp files
+check_*.py
+clean_*.py
+filter_*.sh
+debug_*.py
+add_features.py
+fix_features.py
+verify_*.py
+lecc_test*.c
+
+# Random temp/trash in root
+1
+sta*
+stY*
+stderr
+
+# Build binary
+lxclua-lsp

@@ -162,7 +162,7 @@ static int l_uuid_v5(lua_State *L) {
 
   /* SHA-256 哈希，取前 16 字节 */
   uint8_t digest[SHA256_DIGEST_SIZE];
-  SHA256(data, total, digest);
+  LX_SHA256(data, total, digest);
   free(data);
 
   uint8_t uuid[16];

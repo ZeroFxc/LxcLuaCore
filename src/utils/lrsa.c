@@ -1528,9 +1528,9 @@ static int pkcs1_decrypt_unpad(uint8_t *out, int out_len,
  */
 static int pkcs1_sign_pad(uint8_t *out, int k, const uint8_t *data,
                           int data_len) {
-  /* DigestInfo = prefix || SHA256(data) */
+  /* DigestInfo = prefix || LX_SHA256(data) */
   uint8_t digest[SHA256_DIGEST_SIZE];
-  SHA256(data, (size_t)data_len, digest);
+  LX_SHA256(data, (size_t)data_len, digest);
 
   int di_len = SHA256_DIGEST_PREFIX_LEN + SHA256_DIGEST_SIZE;
   int ps_len = k - di_len - 3;
@@ -1581,7 +1581,7 @@ static int pkcs1_verify_unpad(const uint8_t *data, int data_len,
 
   /* 验证 SHA-256 哈希 */
   uint8_t expected_digest[SHA256_DIGEST_SIZE];
-  SHA256((const uint8_t *)data, (size_t)data_len, expected_digest);
+  LX_SHA256((const uint8_t *)data, (size_t)data_len, expected_digest);
 
   if (memcmp(em + di_offset + SHA256_DIGEST_PREFIX_LEN,
              expected_digest, SHA256_DIGEST_SIZE) != 0)

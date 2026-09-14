@@ -396,7 +396,7 @@ static void nirithy_derive_key(uint64_t timestamp, uint8_t *key) {
   memcpy(input, &timestamp, 8);
   memcpy(input + 8, "NirithySalt", 11);
 
-  SHA256(input, 19, digest);
+  LX_SHA256(input, 19, digest);
   memcpy(key, digest, 16); /* Use first 16 bytes as AES-128 key */
 }
 
@@ -2465,7 +2465,7 @@ static int str_sha256(lua_State *L) {
   const char *data = luaL_checklstring(L, 1, &len);
   uint8_t digest[SHA256_DIGEST_SIZE];
   
-  SHA256((const uint8_t*)data, len, digest);
+  LX_SHA256((const uint8_t*)data, len, digest);
   
   char hex_digest[SHA256_DIGEST_SIZE * 2 + 1];
   for (int i = 0; i < SHA256_DIGEST_SIZE; i++) {

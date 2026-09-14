@@ -216,6 +216,76 @@ void l_rwlock_destroy(l_rwlock_t *l) {
 #endif
 }
 
+/* Semaphore */
+void l_sem_init(l_sem_t *s, unsigned int initial) {
+#if defined(LUA_USE_WINDOWS)
+  s->sem = CreateSemaphore(NULL, (LONG)initial, LONG_MAX, NULL);
+#else
+  sem_init(&s->sem, 0, initial);
+#endif
+}
+
+int l_sem_wait(l_sem_t *s) {
+#if defined(LUA_USE_WINDOWS)
+  return (WaitForSingleObject(s->sem, INFINITE) == WAIT_OBJECT_0) ? 0 : 1;
+#else
+  return sem_wait(&s->sem);
+#endif
+}
+
+int l_sem_wait_timeout(l_sem_t *s, long ms) {
+#if defined(LUA_USE_WINDOWS)
+  DWORD r = WaitForSingleObject(s->sem, (DWORD)ms);
+  if (r == WAIT_OBJECT_0) return 0;
+  return (r == WAIT_TIMEOUT) ? LTHREAD_TIMEDOUT : -1;
+#else
+  struct timespec ts;
+#if defined(__EMSCRIPTEN__)
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  ts.tv_sec = tv.tv_sec;
+  ts.tv_nsec = tv.tv_usec * 1000;
+#else
+  clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+  ts.tv_sec += ms / 1000;
+  ts.tv_nsec += (ms % 1000) * 1000000;
+  if (ts.tv_nsec >= 1000000000) {
+    ts.tv_sec++;
+    ts.tv_nsec -= 1000000000;
+  }
+  int r = sem_timedwait(&s->sem, &ts);
+  if (r == 0) return 0;
+  return (errno == ETIMEDOUT) ? LTHREAD_TIMEDOUT : -1;
+#endif
+}
+
+int l_sem_trywait(l_sem_t *s) {
+#if defined(LUA_USE_WINDOWS)
+  DWORD r = WaitForSingleObject(s->sem, 0);
+  if (r == WAIT_OBJECT_0) return 0;
+  return (r == WAIT_TIMEOUT) ? 1 : -1;
+#else
+  return sem_trywait(&s->sem);
+#endif
+}
+
+int l_sem_post(l_sem_t *s) {
+#if defined(LUA_USE_WINDOWS)
+  return ReleaseSemaphore(s->sem, 1, NULL) ? 0 : 1;
+#else
+  return sem_post(&s->sem);
+#endif
+}
+
+void l_sem_destroy(l_sem_t *s) {
+#if defined(LUA_USE_WINDOWS)
+  if (s->sem) CloseHandle(s->sem);
+#else
+  sem_destroy(&s->sem);
+#endif
+}
+
 /* Thread */
 int l_thread_create(l_thread_t *t, l_thread_func func, void *arg) {
 #if defined(LUA_USE_WINDOWS)

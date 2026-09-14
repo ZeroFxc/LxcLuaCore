@@ -220,7 +220,7 @@ static __maybe_unused void re_string_list_dump(const char *str, const REStringLi
     int i, j, k;
 
     printf("%s:\n", str);
-
+    
     j = 0;
     for(i = 0; i < s->hash_size; i++) {
         for(p = s->hash_table[i]; p != NULL; p = p->next) {
@@ -933,7 +933,7 @@ static BOOL is_emoji_modifier(uint32_t c)
 static void add_sequence_prop(int idx, int seq_len, int *seq)
 {
     int i;
-
+    
     assert(idx < SEQUENCE_PROP_COUNT);
     switch(idx) {
     case SEQUENCE_PROP_Basic_Emoji:
@@ -996,7 +996,7 @@ void parse_sequence_prop_list(const char *filename)
     uint32_t c0, c1, c;
     int idx, seq_len;
     int seq[SEQ_MAX_LEN];
-
+    
     f = fopen(filename, "rb");
     if (!f) {
         perror(filename);
@@ -1032,11 +1032,11 @@ void parse_sequence_prop_list(const char *filename)
             fprintf(stderr, "Property not found: %s\n", buf);
             exit(1);
         }
-
+        
         p = p_start;
         c0 = strtoul(p, (char **)&p, 16);
         assert(c0 <= CHARCODE_MAX);
-
+        
         if (*p == '.' && p[1] == '.') {
             p += 2;
             c1 = strtoul(p, (char **)&p, 16);
@@ -2262,7 +2262,7 @@ static BOOL mark_zwj_string(REStringList *sl, uint32_t *buf, int len, int mod_ty
     if (mark_flag)
         printf("mod_type=%d\n", mod_type);
 #endif
-
+    
     switch(mod_type) {
     case EMOJI_MOD_NONE:
         n_mod = 1;
@@ -2308,7 +2308,7 @@ static BOOL mark_zwj_string(REStringList *sl, uint32_t *buf, int len, int mod_ty
 
             if (hc_pos >= 0)
                 buf[hc_pos] = 0x1F9B0 + j;
-
+            
             p = re_string_find(sl, len, buf, FALSE);
             if (!p)
                 return FALSE;
@@ -2325,7 +2325,7 @@ static void zwj_encode_string(DynBuf *dbuf, const uint32_t *buf, int len, int mo
     int i, j;
     int c, code;
     uint32_t buf1[SEQ_MAX_LEN];
-
+    
     j = 0;
     for(i = 0; i < len;) {
         c = buf[i++];
@@ -2382,7 +2382,7 @@ static void build_rgi_emoji_zwj_sequence(FILE *f, REStringList *sl)
     //    printf("rgi_emoji_zwj_sequence: n=%d\n", sl->n_strings);
 
     dbuf_init(&dbuf);
-
+    
     /* avoid duplicating strings with emoji modifiers or hair colors */
     for(h = 0; h < sl->hash_size; h++) {
         for(p = sl->hash_table[h]; p != NULL; p = p->next) {
@@ -2399,7 +2399,7 @@ static void build_rgi_emoji_zwj_sequence(FILE *f, REStringList *sl)
                 }
                 buf[j] = p->buf[j];
             }
-
+            
             if (mod_count != 0 || hair_color_pos >= 0) {
                 int mod_type;
                 if (mod_count == 0)
@@ -2408,7 +2408,7 @@ static void build_rgi_emoji_zwj_sequence(FILE *f, REStringList *sl)
                     mod_type = EMOJI_MOD_TYPE1;
                 else
                     mod_type = EMOJI_MOD_TYPE2;
-
+                
                 if (mark_zwj_string(sl, buf, p->len, mod_type, mod_pos, hair_color_pos, FALSE)) {
                     mark_zwj_string(sl, buf, p->len, mod_type, mod_pos, hair_color_pos, TRUE);
                 } else if (mod_type == EMOJI_MOD_TYPE2) {
@@ -2430,7 +2430,7 @@ static void build_rgi_emoji_zwj_sequence(FILE *f, REStringList *sl)
             }
         }
     }
-
+    
     /* Encode */
     dump_byte_table(f, "unicode_rgi_emoji_zwj_sequence", dbuf.buf, dbuf.size);
 

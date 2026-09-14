@@ -2,7 +2,7 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := lua
-LOCAL_CFLAGS := -std=c23 -O3 \
+LOCAL_CFLAGS := -std=gnu23 -O3 \
                 -funroll-loops -fomit-frame-pointer \
                 -ffunction-sections -fdata-sections \
                 -fstrict-aliasing
@@ -10,7 +10,7 @@ LOCAL_CFLAGS += -g0 -DNDEBUG
 
 # 极致性能构建配置
 LOCAL_CFLAGS += -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -Wimplicit-function-declaration
-LOCAL_CFLAGS += -fasm
+# -fasm 是 GCC 选项，NDK clang 不支持，省略（clang 默认允许 asm 关键字）
 
 
 
@@ -161,9 +161,41 @@ LOCAL_SRC_FILES := \
 	pcre2/src/pcre2_tables.c \
 	pcre2/src/pcre2_ucd.c \
 	pcre2/src/pcre2_valid_utf.c \
-	pcre2/src/pcre2_xclass.c
+	pcre2/src/pcre2_xclass.c \
+	src/openssl/asn1.c \
+	src/openssl/bio.c \
+	src/openssl/callback.c \
+	src/openssl/cipher.c \
+	src/openssl/cms.c \
+	src/openssl/compat.c \
+	src/openssl/crl.c \
+	src/openssl/csr.c \
+	src/openssl/digest.c \
+	src/openssl/hmac.c \
+	src/openssl/kdf.c \
+	src/openssl/lbn.c \
+	src/openssl/lhash.c \
+	src/openssl/mac.c \
+	src/openssl/misc.c \
+	src/openssl/ocsp.c \
+	src/openssl/openssl.c \
+	src/openssl/param.c \
+	src/openssl/pkcs12.c \
+	src/openssl/pkcs7.c \
+	src/openssl/provider.c \
+	src/openssl/ssl.c \
+	src/openssl/th-lock.c \
+	src/openssl/util.c \
+	src/openssl/x509.c \
+	src/openssl/xalgor.c \
+	src/openssl/xattrs.c \
+	src/openssl/xexts.c \
+	src/openssl/xname.c \
+	src/openssl/xstore.c \
+	src/openssl/auxiliar/auxiliar.c \
+	src/openssl/auxiliar/subsidiar.c
 
-LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/src/core -I$(LOCAL_PATH)/src/stdlib -I$(LOCAL_PATH)/src/vm -I$(LOCAL_PATH)/src/compiler -I$(LOCAL_PATH)/src/utils -I$(LOCAL_PATH)/src/wasm -I$(LOCAL_PATH)/src/bin -I$(LOCAL_PATH)/wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/include -I$(LOCAL_PATH)/pcre2 -I$(LOCAL_PATH)/pcre2/src -I$(LOCAL_PATH)/src/openssl -I$(LOCAL_PATH)/src/openssl/auxiliar -I$(LOCAL_PATH)/openssl/arm64-v8a-android/usr/local/include
 LOCAL_CFLAGS += -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 
 # QuickJS 配置
@@ -186,7 +218,9 @@ endif
 
 # 添加缺失的库依赖
 LOCAL_LDLIBS += -llog -lz
+# HTTPS（libhttp.c）依赖 OpenSSL：静态链接 openssl/ 目录下预编译的 OpenSSL 3.6.1（aarch64）
+LOCAL_LDLIBS += $(LOCAL_PATH)/openssl/arm64-v8a-android/usr/local/lib/libssl.a $(LOCAL_PATH)/openssl/arm64-v8a-android/usr/local/lib/libcrypto.a -ldl
 # 静态库的 LDLIBS 会被忽略，需要用 EXPORT 传递给链接它的共享库
-LOCAL_EXPORT_LDLIBS := -llog
+LOCAL_EXPORT_LDLIBS := -llog -lz $(LOCAL_PATH)/openssl/arm64-v8a-android/usr/local/lib/libssl.a $(LOCAL_PATH)/openssl/arm64-v8a-android/usr/local/lib/libcrypto.a -ldl
 
 include $(BUILD_STATIC_LIBRARY) 

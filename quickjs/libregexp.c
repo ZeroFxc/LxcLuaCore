@@ -43,7 +43,7 @@
     model.
 */
 
-#if defined(TEST)
+#if defined(TEST) 
 #define DUMP_REOP
 #endif
 //#define DUMP_REOP
@@ -210,7 +210,7 @@ static __maybe_unused void re_string_list_dump(const char *str, const REStringLi
         }
     }
     printf("]\n");
-
+    
     j = 0;
     for(i = 0; i < s->hash_size; i++) {
         for(p = s->hash_table[i]; p != NULL; p = p->next) {
@@ -357,7 +357,7 @@ static int re_string_list_canonicalize(REParseState *s1,
         REStringList a_s, *a = &a_s;
         int i, j;
         REString *p;
-
+        
         /* XXX: simplify */
         re_string_list_init(s1, a);
 
@@ -365,7 +365,7 @@ static int re_string_list_canonicalize(REParseState *s1,
         a->hash_size = s->hash_size;
         a->hash_bits = s->hash_bits;
         a->hash_table = s->hash_table;
-
+        
         s->n_strings = 0;
         s->hash_size = 0;
         s->hash_bits = 0;
@@ -996,14 +996,14 @@ static int parse_class_string_disjunction(REParseState *s, REStringList *cr,
     const uint8_t *p;
     DynBuf str;
     int c;
-
+    
     p = *pp;
     if (*p != '{')
         return re_parse_error(s, "expecting '{' after \\q");
 
     dbuf_init2(&str, s->opaque, lre_realloc);
     re_string_list_init(s, cr);
-
+    
     p++;
     for(;;) {
         str.size = 0;
@@ -1278,7 +1278,7 @@ static int re_emit_string_list(REParseState *s, const REStringList *sl)
     REString **tab, *p;
     int i, j, split_pos, last_match_pos, n;
     BOOL has_empty_string, is_last;
-
+    
     //    re_string_list_dump("sl", sl);
     if (sl->n_strings == 0) {
         /* simple case: only characters */
@@ -1304,7 +1304,7 @@ static int re_emit_string_list(REParseState *s, const REStringList *sl)
             }
         }
         assert(n <= sl->n_strings);
-
+        
         rqsort(tab, n, sizeof(tab[0]), re_string_cmp_len, NULL);
 
         last_match_pos = -1;
@@ -1345,7 +1345,7 @@ static int re_emit_string_list(REParseState *s, const REStringList *sl)
             put_u32(s->byte_code.buf + last_match_pos, s->byte_code.size - (last_match_pos + 4));
             last_match_pos = next_pos;
         }
-
+        
         lre_realloc(s->opaque, tab, 0);
     }
     return 0;
@@ -1357,7 +1357,7 @@ static int re_parse_class_set_operand(REParseState *s, REStringList *cr, const u
 {
     int c1;
     const uint8_t *p = *pp;
-
+    
     if (*p == '[') {
         if (re_parse_nested_class(s, cr, pp))
             return -1;
@@ -1399,7 +1399,7 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
         p++;
         invert = TRUE;
     }
-
+    
     /* handle unions */
     is_first = TRUE;
     for(;;) {
@@ -1787,7 +1787,7 @@ static BOOL is_duplicate_group_name(REParseState *s, const char *name, int scope
     const char *p, *buf_end;
     size_t len, name_len;
     int scope1;
-
+    
     p = (char *)s->group_names.buf;
     if (!p)
         return 0;
@@ -2043,7 +2043,7 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                 const uint8_t *p1;
                 int dummy_res, n;
                 BOOL is_forward;
-
+                
                 p1 = p;
                 if (p1[2] != '<') {
                     /* annex B: we tolerate invalid group names in non
@@ -2078,7 +2078,7 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                 }
                 last_atom_start = s->byte_code.size;
                 last_capture_count = s->capture_count;
-
+                
                 /* emit back references to all the captures indexes matching the group name */
                 re_emit_op_u8(s, REOP_back_reference + 2 * is_backward_dir + s->ignore_case, n);
                 if (is_forward) {
@@ -2136,7 +2136,7 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                 }
                 last_atom_start = s->byte_code.size;
                 last_capture_count = s->capture_count;
-
+                
                 re_emit_op_u8(s, REOP_back_reference + 2 * is_backward_dir + s->ignore_case, 1);
                 dbuf_putc(&s->byte_code, c);
             }
@@ -2257,7 +2257,7 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
             {
                 BOOL need_capture_init, add_zero_advance_check;
                 int len, pos;
-
+                
                 /* the spec tells that if there is no advance when
                    running the atom after the first quant_min times,
                    then there is no match. We remove this test when we
@@ -2266,7 +2266,7 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                     re_need_check_adv_and_capture_init(&need_capture_init,
                                                        s->byte_code.buf + last_atom_start,
                                                        s->byte_code.size - last_atom_start);
-
+            
                 /* general case: need to reset the capture at each
                    iteration. We don't do it if there are no captures
                    in the atom or if we are sure all captures are
@@ -2428,7 +2428,7 @@ static int re_parse_disjunction(REParseState *s, BOOL is_backward_dir)
         pos = re_emit_op_u32(s, REOP_goto, 0);
 
         s->group_name_scope++;
-
+        
         if (re_parse_alternative(s, is_backward_dir))
             return -1;
 
@@ -2507,7 +2507,7 @@ static int compute_register_count(uint8_t *bc_buf, int bc_buf_len)
 static void *lre_bytecode_realloc(void *opaque, void *ptr, size_t size)
 {
     if (size > (INT32_MAX / 2)) {
-        /* the bytecode cannot be larger than 2G. Leave some slack to
+        /* the bytecode cannot be larger than 2G. Leave some slack to 
            avoid some overflows. */
         return NULL;
     } else {
@@ -2788,7 +2788,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
     sp = s->stack_buf;
     bp = s->stack_buf;
     stack_end = s->stack_buf + s->stack_size;
-
+    
 #define CHECK_STACK_SPACE(n)                            \
     if (unlikely((stack_end - sp) < (n))) {             \
         size_t saved_sp = sp - s->stack_buf;            \
@@ -2835,7 +2835,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
 
 #ifdef DUMP_EXEC
     printf("%5s %5s %5s %5s %s\n", "PC", "CP", "BP", "SP", "OPCODE");
-#endif
+#endif    
     for(;;) {
         opcode = *pc++;
 #ifdef DUMP_EXEC
@@ -2845,7 +2845,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                bp - s->stack_buf,
                sp - s->stack_buf,
                reopcode_info[opcode].name);
-#endif
+#endif        
         switch(opcode) {
         case REOP_match:
             return 1;
@@ -2859,7 +2859,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                     capture[sp[-2].val] = sp[-1].ptr;
                     sp -= 2;
                 }
-
+                
                 pc = sp[-3].ptr;
                 cptr = sp[-2].ptr;
                 type = sp[-1].bp.type;
@@ -3103,7 +3103,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                         val2 != limit) {
                         goto no_match;
                     }
-
+                    
                     /* otherwise conditional split */
                     if (val2 != 0) {
                         if (opcode == REOP_loop_split_next_first ||
@@ -3314,7 +3314,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
         default:
 #ifdef DUMP_EXEC
             printf("unknown opcode pc=%ld\n", pc - 1 - pc_start);
-#endif
+#endif            
             abort();
         }
     }

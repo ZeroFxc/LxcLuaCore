@@ -172,7 +172,7 @@ void hash (uint8_t** blocks,int noOfBlocks,uint8_t* hashedMsg) {
   }
 }
 
-int SHA256(const uint8_t* msg, size_t msgLen, uint8_t* digest) {
+int LX_SHA256(const uint8_t* msg, size_t msgLen, uint8_t* digest) {
 
   uint8_t* binary = malloc(msgLen * sizeof(uint8_t));
   if (binary == NULL) {
@@ -244,7 +244,7 @@ int HMAC_SHA256(const uint8_t* key, size_t keyLen,
         memcpy(k, key, keyLen);
     } else {
         /* 密钥过长时先进行哈希 */
-        SHA256(key, keyLen, k);
+        LX_SHA256(key, keyLen, k);
         memset(k + SHA256_DIGEST_SIZE, 0, BLOCK_SIZE - SHA256_DIGEST_SIZE);
     }
 
@@ -255,7 +255,7 @@ int HMAC_SHA256(const uint8_t* key, size_t keyLen,
         opad[i] = k[i] ^ 0x5c;  // 外部填充
     }
 
-    /* 步骤3：计算 inner hash = SHA256(ipad || data) */
+    /* 步骤3：计算 inner hash = LX_SHA256(ipad || data) */
     size_t inner_len = BLOCK_SIZE + dataLen;
     uint8_t* inner_data = (uint8_t*)malloc(inner_len);
     if (inner_data == NULL) return 1;
@@ -263,18 +263,18 @@ int HMAC_SHA256(const uint8_t* key, size_t keyLen,
     memcpy(inner_data + BLOCK_SIZE, data, dataLen);
 
     uint8_t inner_hash[SHA256_DIGEST_SIZE];
-    int status = SHA256(inner_data, inner_len, inner_hash);
+    int status = LX_SHA256(inner_data, inner_len, inner_hash);
     free(inner_data);
     if (status != 0) return status;
 
-    /* 步骤4：计算 outer hash = SHA256(opad || inner_hash) */
+    /* 步骤4：计算 outer hash = LX_SHA256(opad || inner_hash) */
     size_t outer_len = BLOCK_SIZE + SHA256_DIGEST_SIZE;
     uint8_t* outer_data = (uint8_t*)malloc(outer_len);
     if (outer_data == NULL) return 1;
     memcpy(outer_data, opad, BLOCK_SIZE);
     memcpy(outer_data + BLOCK_SIZE, inner_hash, SHA256_DIGEST_SIZE);
 
-    status = SHA256(outer_data, outer_len, digest);
+    status = LX_SHA256(outer_data, outer_len, digest);
     free(outer_data);
 
     return status;

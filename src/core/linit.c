@@ -100,6 +100,9 @@ int luaopen_rsa(lua_State *L);
 /* 声明 ecc 库的初始化函数 */
 int luaopen_ecc(lua_State *L);
 
+/* 声明 lua-openssl 绑定库的初始化函数 */
+int luaopen_openssl(lua_State *L);
+
 /* 声明 map 库的初始化函数 */
 int luaopen_map(lua_State *L);
 
@@ -161,6 +164,7 @@ static const luaL_Reg stdlibs[] = {
   {"uuid", luaopen_uuid},
   {"rsa", luaopen_rsa},
   {"ecc", luaopen_ecc},
+  {"openssl", luaopen_openssl},
   {"map", luaopen_map},
   {"ast", luaopen_ast},
 
@@ -239,6 +243,7 @@ static const luaL_Reg loadedlibs[] = {
   {"uuid", luaopen_uuid},
   {"rsa", luaopen_rsa},
   {"ecc", luaopen_ecc},
+  {"openssl", luaopen_openssl},
   {"map", luaopen_map},
   {"ast", luaopen_ast},
 

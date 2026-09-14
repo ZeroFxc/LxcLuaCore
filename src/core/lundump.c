@@ -201,7 +201,7 @@ static TString *loadStringN (LoadState *S, Proto *p) {
     loadVector(S, expected_hash, SHA256_DIGEST_SIZE);
     /* 计算字符串映射表的SHA-256哈希 */
     uint8_t actual_hash[SHA256_DIGEST_SIZE];
-    SHA256((uint8_t *)S->string_map, 256 * sizeof(int), actual_hash);
+    LX_SHA256((uint8_t *)S->string_map, 256 * sizeof(int), actual_hash);
     /* 验证哈希值 */
     if (memcmp(actual_hash, expected_hash, SHA256_DIGEST_SIZE) != 0) {
       error(S, "string map integrity verification failed");
@@ -244,7 +244,7 @@ static TString *loadStringN (LoadState *S, Proto *p) {
     loadVector(S, expected_hash, SHA256_DIGEST_SIZE);
     /* 计算字符串映射表的SHA-256哈希 */
     uint8_t actual_hash[SHA256_DIGEST_SIZE];
-    SHA256((uint8_t *)S->string_map, 256 * sizeof(int), actual_hash);
+    LX_SHA256((uint8_t *)S->string_map, 256 * sizeof(int), actual_hash);
     /* 验证哈希值 */
     if (memcmp(actual_hash, expected_hash, SHA256_DIGEST_SIZE) != 0) {
       error(S, "string map integrity verification failed");
@@ -298,7 +298,7 @@ static TString *loadStringN (LoadState *S, Proto *p) {
       
       // 验证字符串内容的SHA-256哈希值（完整性验证）
       uint8_t actual_content_hash[SHA256_DIGEST_SIZE];
-      SHA256((uint8_t *)str, size, actual_content_hash);
+      LX_SHA256((uint8_t *)str, size, actual_content_hash);
       if (memcmp(actual_content_hash, expected_content_hash, SHA256_DIGEST_SIZE) != 0) {
         error(S, "string content integrity verification failed");
         return NULL;
@@ -377,7 +377,7 @@ static void loadCode (LoadState *S, Proto *f) {
   memcpy(combined_map + NUM_OPCODES, S->third_opcode_map, NUM_OPCODES * sizeof(int));
   /* 计算SHA-256哈希 */
   uint8_t actual_hash[SHA256_DIGEST_SIZE];
-  SHA256((uint8_t *)combined_map, combined_map_size * sizeof(int), actual_hash);
+  LX_SHA256((uint8_t *)combined_map, combined_map_size * sizeof(int), actual_hash);
   luaM_free_(S->L, combined_map, combined_map_size * sizeof(int));
   /* 验证哈希值 */
   if (memcmp(actual_hash, expected_hash, SHA256_DIGEST_SIZE) != 0) {
@@ -547,7 +547,7 @@ static void loadUpvalues (LoadState *S, Proto *f) {
     
     // 计算基于时间戳的哈希值进行验证
     uint8_t expected_sha[32];
-    SHA256((uint8_t *)&S->timestamp, sizeof(S->timestamp), expected_sha);
+    LX_SHA256((uint8_t *)&S->timestamp, sizeof(S->timestamp), expected_sha);
     
     // 验证 SHA-256 数据
     if (memcmp(sha_data, expected_sha, 32) != 0) {
@@ -699,7 +699,7 @@ static void loadSegmented(LoadState *S, Proto *main_f) {
   /* ===== 第二阶段：验证所有签名 ===== */
   {
     uint8_t hmac_key[32];
-    SHA256((uint8_t*)&S->timestamp, sizeof(S->timestamp), hmac_key);
+    LX_SHA256((uint8_t*)&S->timestamp, sizeof(S->timestamp), hmac_key);
 
     /* 验证每个段的独立签名 */
     for (int i = 0; i < 6; i++) {

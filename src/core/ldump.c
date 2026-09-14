@@ -304,7 +304,7 @@ static void dumpString (DumpState *D, const TString *s) {
     
     /* 计算并写入字符串映射表的SHA-256哈希值（完整性验证） */
     uint8_t string_map_hash[SHA256_DIGEST_SIZE];
-    SHA256((uint8_t *)D->string_map, 256 * sizeof(int), string_map_hash);
+    LX_SHA256((uint8_t *)D->string_map, 256 * sizeof(int), string_map_hash);
     dumpVector(D, string_map_hash, SHA256_DIGEST_SIZE);
 
     if (size < 0xFF) {
@@ -333,7 +333,7 @@ static void dumpString (DumpState *D, const TString *s) {
       
       /* 计算原始字符串的SHA-256哈希值（完整性验证） */
       uint8_t string_content_hash[SHA256_DIGEST_SIZE];
-      SHA256((uint8_t *)str, size, string_content_hash);
+      LX_SHA256((uint8_t *)str, size, string_content_hash);
       /* 写入字符串内容的SHA-256哈希值 */
       dumpVector(D, string_content_hash, SHA256_DIGEST_SIZE);
       
@@ -437,7 +437,7 @@ static void dumpCode (DumpState *D, const Proto *f) {
   memcpy(combined_map, D->reverse_opcode_map, NUM_OPCODES * sizeof(int));
   memcpy(combined_map + NUM_OPCODES, D->third_opcode_map, NUM_OPCODES * sizeof(int));
   /* 计算SHA-256哈希 */
-  SHA256((uint8_t *)combined_map, combined_map_size * sizeof(int), opcode_map_hash);
+  LX_SHA256((uint8_t *)combined_map, combined_map_size * sizeof(int), opcode_map_hash);
   luaM_free_(D->L, combined_map, combined_map_size * sizeof(int));
   /* 写入哈希值 */
   dumpVector(D, opcode_map_hash, SHA256_DIGEST_SIZE);
@@ -531,7 +531,7 @@ static void dumpUpvalues (DumpState *D, const Proto *f) {
   // 4. 添加 SHA-256 验证数据
   uint8_t sha_data[32];
   // 计算基于时间戳和 OPcode 映射表的哈希值
-  SHA256((uint8_t *)&D->timestamp, sizeof(D->timestamp), sha_data);
+  LX_SHA256((uint8_t *)&D->timestamp, sizeof(D->timestamp), sha_data);
   dumpVector(D, sha_data, 32);
 }
 
@@ -740,7 +740,7 @@ static void dumpSegmented(DumpState *D, const Proto *f) {
   /* 从时间戳派生动态密钥（每次编译都不同，所有签名共用） */
   /* 重要：必须使用base_timestamp（与load端从第一个proto读取的timestamp一致） */
   uint8_t hmac_key[32];
-  SHA256((uint8_t*)&base_timestamp, sizeof(base_timestamp), hmac_key);
+  LX_SHA256((uint8_t*)&base_timestamp, sizeof(base_timestamp), hmac_key);
 
   /* 多轮签名：为每个段生成独立的HMAC-SHA256签名 + 全局签名 */
   {

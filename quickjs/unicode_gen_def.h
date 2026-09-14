@@ -242,7 +242,7 @@ DEF(Changes_When_NFKC_Casefolded1, "")
 DEF(Basic_Emoji1, "")
 DEF(Basic_Emoji2, "")
 DEF(RGI_Emoji_Modifier_Sequence, "")
-DEF(RGI_Emoji_Flag_Sequence, "")
+DEF(RGI_Emoji_Flag_Sequence, "") 
 DEF(Emoji_Keycap_Sequence, "")
 
 /* Prop list exported to JS */

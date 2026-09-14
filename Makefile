@@ -29,8 +29,10 @@ SYSCFLAGS= -DLUA_DL_DLOPEN -DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_M
 override CFLAGS+= $(SYSCFLAGS) $(MYCFLAGS)
 SYSLDFLAGS=
 SYSLIBS=
+# luaccheck 链接用的控制台子系统标志（仅 MinGW/Windows 需要，Linux 目标覆盖为空）
+CONSOLE_FLAG= -mconsole
 
-MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H $(WASMTIME_INC)
+MYCFLAGS= -Isrc/core -Isrc/stdlib -Isrc/vm -Isrc/compiler -Isrc/utils -Isrc/wasm -Isrc/bin -Isrc/openssl -Isrc/openssl/auxiliar -Iquickjs -Ipcre2 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H $(WASMTIME_INC)
 MYLDFLAGS=
 MYLIBS=
 MYOBJS= 
@@ -66,7 +68,7 @@ PLATS= guess aix bsd c89 freebsd generic ios linux macosx mingw posix solaris
 LUA_A=	liblxclua.a
 CORE_O= $(addprefix $(BUILDDIR)/,lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmap.o lmem.o lobject.o lopcodes.o lparser.o lasm.o last.o last_parse.o last_visitor.o last_serialize.o last_unparse.o lcodegen.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o lobfuscate.o lthread.o lstruct.o lnamespace.o lbigint.o lsuper.o lvmustom.o)
 WASM3_O= $(addprefix $(BUILDDIR)/,m3_api_libc.o m3_api_meta_wasi.o m3_api_tracer.o m3_api_uvwasi.o m3_api_wasi.o m3_bind.o m3_code.o m3_compile.o m3_core.o m3_env.o m3_exec.o m3_function.o m3_info.o m3_module.o m3_parse.o)
-LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o lmaplib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lnativeparser.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lcrypto.o luuid.o lrsa.o lecc.o lastlib.o)
+LIB_O=	$(addprefix $(BUILDDIR)/,lauxlib.o lpatchlib.o lbaselib.o lcorolib.o ldblib.o liolib.o lmathlib.o loadlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o lmaplib.o linit.o json_parser.o lboolib.o lbitlib.o lptrlib.o ludatalib.o lvmlib.o lvmustom.o lnativevm.o lnativeparser.o lclass.o ltranslator.o llexerlib.o llexer_compiler.o logtable.o sha256.o aes.o crc.o csprng.o lthreadlib.o libhttp.o lfs.o lproclib.o lvmpro.o lbctc.o lbytecode.o lquickjs.o leventloop.o lpromise.o laio.o lcrypto.o luuid.o lrsa.o lecc.o lastlib.o openssl/asn1.o openssl/bio.o openssl/callback.o openssl/cipher.o openssl/cms.o openssl/compat.o openssl/crl.o openssl/csr.o openssl/digest.o openssl/hmac.o openssl/kdf.o openssl/lbn.o openssl/lhash.o openssl/mac.o openssl/misc.o openssl/ocsp.o openssl/openssl.o openssl/param.o openssl/pkcs12.o openssl/pkcs7.o openssl/provider.o openssl/ssl.o openssl/th-lock.o openssl/util.o openssl/x509.o openssl/xalgor.o openssl/xattrs.o openssl/xexts.o openssl/xname.o openssl/xstore.o openssl/auxiliar/auxiliar.o openssl/auxiliar/subsidiar.o)
 # PCRE2 正则引擎库
 PCRE2_CFLAGS = -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H
 PCRE2_O= $(addprefix $(BUILDDIR)/,pcre2_auto_possess.o pcre2_chartables.o pcre2_chkdint.o pcre2_compile.o pcre2_compile_cgroup.o pcre2_compile_class.o pcre2_config.o pcre2_context.o pcre2_convert.o pcre2_dfa_match.o pcre2_error.o pcre2_extuni.o pcre2_find_bracket.o pcre2_jit_compile.o pcre2_maketables.o pcre2_match.o pcre2_match_data.o pcre2_match_next.o pcre2_newline.o pcre2_ord2utf.o pcre2_pattern_info.o pcre2_script_run.o pcre2_serialize.o pcre2_string_utils.o pcre2_study.o pcre2_substitute.o pcre2_substring.o pcre2_tables.o pcre2_ucd.o pcre2_valid_utf.o pcre2_xclass.o)
@@ -120,6 +122,16 @@ $(BUILDDIR):
 $(BUILDDIR)/%.o: %.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(MYCFLAGS) -c $< -o $@
 
+# lua-openssl 绑定源码（子目录模式无法用 VPATH 解析，使用显式规则）
+$(BUILDDIR)/openssl/auxiliar:
+	mkdir -p $@
+
+$(BUILDDIR)/openssl/auxiliar/%.o: src/openssl/auxiliar/%.c | $(BUILDDIR)/openssl/auxiliar
+	$(CC) $(CFLAGS) $(MYCFLAGS) -c $< -o $@
+
+$(BUILDDIR)/openssl/%.o: src/openssl/%.c | $(BUILDDIR)/openssl/auxiliar
+	$(CC) $(CFLAGS) $(MYCFLAGS) -c $< -o $@
+
 $(LUA_A): $(BASE_O)
 	$(AR) $@ $(BASE_O) $(if $(findstring .dll,$(LUA_A)),$(LDFLAGS) $(LIBS))
 	$(RANLIB) $@
@@ -136,7 +148,7 @@ $(QJSC_T): $(QJSC_O) $(LUA_A)
 	$(CC) -o $@ $(LDFLAGS) $(QJSC_O) $(LUA_A) $(LIBS)
 
 $(LUACCHECK_T): $(LUACCHECK_O) $(LUA_A)
-	$(CC) -mconsole -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
+	$(CC) $(CONSOLE_FLAG) -o $@ $(LDFLAGS) $(WASM_EXPORT_NAME_LUACCHECK) $(LUACCHECK_O) $(LUA_A) $(LIBS)
 
 # ---- LSP Server (lxclua-lsp) ----
 # LSP 服务器不需要 wasmtime 运行时，仅链接基础数学库
@@ -663,6 +675,8 @@ ios:
 
 Linux linux:
 	$(MAKE) $(ALL) CC="gcc -std=gnu11" CFLAGS="-O2 -fPIC -DNDEBUG -D_DEFAULT_SOURCE" SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lm -lpthread -lssl -lcrypto" SYSLDFLAGS="-s" \
+	"MYOBJS=$(BUILDDIR)/lpcre2_stubs.o" \
+	"CONSOLE_FLAG=" \
 	"WASMTIME_DIR=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api" \
 	"WASMTIME_LIB=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api/lib/libwasmtime.a" \
 	"WASMTIME_DLL=wasmtime/wasmtime-v48.0.1-x86_64-linux-c-api/lib/libwasmtime.so"
@@ -672,6 +686,8 @@ Linux linux:
 
 termux:
 	$(MAKE) $(ALL) CC="clang -std=c23" CFLAGS="-O2 -fPIC -DNDEBUG" SYSCFLAGS="-DLUA_USE_LINUX -DLUA_USE_DLOPEN" SYSLIBS="-ldl -lm -lssl -lcrypto" SYSLDFLAGS="-Wl,--build-id -fuse-ld=lld" \
+	"MYOBJS=$(BUILDDIR)/lpcre2_stubs.o" \
+	"CONSOLE_FLAG=" \
 	"WASMTIME_DIR=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api" \
 	"WASMTIME_LIB=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/lib/libwasmtime.a" \
 	"WASMTIME_DLL=wasmtime/wasmtime-v48.0.1-aarch64-android-c-api/lib/libwasmtime.so"
@@ -687,16 +703,19 @@ Darwin macos macosx:
 mingw:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -Wl,--stack,16777216" \
+	"MYCFLAGS=$(MYCFLAGS) -Iopenssl/x86_64-w64-mingw32/usr/local/include" \
+	"MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -static -Wl,--stack,16777216" \
 	"PCRE2_O=$(PCRE2_O_NOJIT)" \
 	"MYOBJS=$(BUILDDIR)/lpcre2_stubs.o" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
+	"MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -static" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -mconsole" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
-	$(CC) -shared -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblxclua.a -Wl,--no-whole-archive $(WASMTIME_LIB) -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s" "SYSLIBS=" lxclua-lsp.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -static -mconsole" "MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
+	$(CC) -shared -static -o lxclua.dll -Wl,--export-all-symbols -Wl,--allow-multiple-definition -Wl,--whole-archive liblxclua.a -Wl,--no-whole-archive $(WASMTIME_LIB) openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a -lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32 -lm
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LSP_SRV_T=lxclua-lsp.exe" "SYSLDFLAGS=-s -static" "SYSLIBS=" lxclua-lsp.exe
 	@# -- 生成聚合头
 	$(MAKE) gen-header
 
@@ -711,13 +730,16 @@ lsp-linux:
 mingw-static:
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUA_T=lxclua.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
+	"MYCFLAGS=$(MYCFLAGS) -Iopenssl/x86_64-w64-mingw32/usr/local/include" \
+	"MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE -DGUI_PLATFORM_WINDOWS -D_UNICODE -DUNICODE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lcomctl32 -lshell32 -lcomdlg32 -lole32 -luuid -lgdi32 -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -static" \
 	"MYOBJS=$(MYOBJS)" lxclua.exe
 	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUA_A=liblxclua.a" "LUAC_T=luac.exe" \
 	"AR=$(AR)" "RANLIB=$(RANLIB)" \
-	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s" \
+	"MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" \
+	"SYSCFLAGS=-DLUA_COMPAT_MATHLIB -DLUA_COMPAT_MAXN -DLUA_COMPAT_MODULE" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" "SYSLDFLAGS=-s -static" \
 	luac.exe
-	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -mconsole" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
+	TMPDIR=. TMP=. TEMP=. $(MAKE) "LUACCHECK_T=luaccheck.exe" "SYSLDFLAGS=-s -static -mconsole" "MYLIBS=openssl/x86_64-w64-mingw32/usr/local/lib/libssl.a openssl/x86_64-w64-mingw32/usr/local/lib/libcrypto.a" "SYSLIBS=-lwininet -lws2_32 -lpsapi -lpthread -lsecur32 -lcrypt32" luaccheck.exe
 	@# -- 生成聚合头
 	$(MAKE) gen-header
 

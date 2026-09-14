@@ -262,7 +262,7 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
         uint8_t *buf;
         char cname[1024];
         int res;
-
+        
         buf = js_load_file(ctx, &buf_len, module_name);
         if (!buf) {
             JS_ThrowReferenceError(ctx, "could not load module filename '%s'",
@@ -318,7 +318,7 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
                 find_unique_cname(cname, sizeof(cname));
             }
             output_object_code(ctx, outfile, func_val, cname, CNAME_TYPE_MODULE);
-
+            
             /* the module is already referenced, so we must free it */
             m = JS_VALUE_GET_PTR(func_val);
             JS_FreeValue(ctx, func_val);
