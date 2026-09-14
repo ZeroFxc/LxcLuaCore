@@ -7,6 +7,7 @@
   #include <windows.h>
 #else
   #include <pthread.h>
+  #include <semaphore.h>
   #include <time.h>
   #include <errno.h>
   #if defined(__EMSCRIPTEN__)
@@ -51,6 +52,14 @@ typedef struct l_rwlock_t {
   int write_recursion;
 } l_rwlock_t;
 
+typedef struct l_sem_t {
+#if defined(LUA_USE_WINDOWS)
+  HANDLE sem;
+#else
+  sem_t sem;
+#endif
+} l_sem_t;
+
 typedef struct l_thread_t {
 #if defined(LUA_USE_WINDOWS)
   HANDLE thread;
@@ -83,6 +92,14 @@ void l_rwlock_rdlock(l_rwlock_t *l);
 void l_rwlock_wrlock(l_rwlock_t *l);
 void l_rwlock_unlock(l_rwlock_t *l);
 void l_rwlock_destroy(l_rwlock_t *l);
+
+/* Semaphore API */
+void l_sem_init(l_sem_t *s, unsigned int initial);
+int l_sem_wait(l_sem_t *s);              /* 阻塞等待；0 成功 */
+int l_sem_wait_timeout(l_sem_t *s, long ms); /* 0 成功，LTHREAD_TIMEDOUT 超时 */
+int l_sem_trywait(l_sem_t *s);           /* 非阻塞；0 成功（有资源），非 0 无资源 */
+int l_sem_post(l_sem_t *s);              /* 释放；0 成功 */
+void l_sem_destroy(l_sem_t *s);
 
 /* Thread API */
 int l_thread_create(l_thread_t *t, l_thread_func func, void *arg);
